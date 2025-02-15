@@ -1,0 +1,39 @@
+input_dir = "/path/to/validation-data/mouse-1/raw_wsi"
+output_dir = "/tmp/histopia-registration-runs/4577/example"
+# Leave reference_slide unset to use the first natural-order section.
+# This has been more stable for current KPF validation than forcing HE.
+max_processed_image_dim_px = 1200
+crop_mode = "reference"
+rigid_method = "feature"
+align_strategy = "hybrid"
+non_rigid = false
+write_processed_images = true
+write_warped_images = false
+registered_output_dir = "/tmp/histopia-registration-runs/4577/registered"
+wsi_compression = "jpeg"
+wsi_jpeg_quality = 95
+wsi_tile_size = 512
+
+[mask]
+mode = "auto_tissue"
+allow_full_fallback = true
+
+[refinement]
+enabled = true
+max_dim_px = 500
+min_dice_improvement = 0.01
+max_relative_scale_change = 0.35
+max_relative_anisotropy = 1.30
+
+[non_rigid_refinement]
+# Keep disabled for the validated rigid-only workflow. Enable only when
+# deformation QC and scientific assumptions are appropriate for the study.
+enabled = false
+max_displacement_fraction = 0.03
+smoothing_sigma_px = 12.0
+support_dilation_fraction = 0.03
+min_similarity_improvement = 0.01
+max_mask_dice_loss = 0.01
+min_jacobian_p01 = 0.25
+max_jacobian_p99 = 4.0
+max_inverse_consistency_fraction = 0.02
