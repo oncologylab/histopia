@@ -23,11 +23,14 @@ from histopia.registration._pipeline import (
     RegistrationResult,
     register_sections,
 )
+from histopia.registration._review import MaskReviewEntry
 from histopia.registration._rigid import (
     RigidTransformResult,
     estimate_rigid_transform,
     refine_rigid_transform,
 )
+from histopia.registration._slides import SlideGeometry, SlideRecord, discover_slides
+from histopia.registration._viewer import build_section_viewer
 from histopia.registration._wsi import (
     WsiWarpResult,
     calculate_thumbnail_overlap_bbox,
@@ -40,6 +43,7 @@ __all__ = [
     "BrightfieldMaskConfig",
     "AlignmentMetrics",
     "MaskRefinementConfig",
+    "MaskReviewEntry",
     "NonRigidRefinementConfig",
     "NonRigidTransformResult",
     "KpfManifest",
@@ -47,10 +51,14 @@ __all__ = [
     "RegistrationResult",
     "RigidTransformResult",
     "SlidePair",
+    "SlideGeometry",
+    "SlideRecord",
     "WsiWarpResult",
     "build_kpf_manifest",
+    "build_section_viewer",
     "calculate_thumbnail_overlap_bbox",
     "create_tissue_mask",
+    "discover_slides",
     "estimate_rigid_transform",
     "estimate_non_rigid_transform",
     "refine_rigid_transform",

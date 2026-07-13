@@ -16,10 +16,23 @@ def test_create_tissue_mask_detects_weak_brightfield_tissue() -> None:
     assert 0.15 < result.metrics["foreground_fraction"] < 0.45
 
 
-def test_create_tissue_mask_records_full_fallback_for_blank_slide() -> None:
+def test_create_tissue_mask_rejects_blank_slide_by_default() -> None:
     image = np.full((64, 64, 3), 255, dtype=np.uint8)
 
     result = create_tissue_mask(image)
+
+    assert not result.accepted
+    assert result.method != "full_fallback"
+    assert not result.mask.any()
+
+
+def test_create_tissue_mask_allows_explicit_legacy_full_fallback() -> None:
+    image = np.full((64, 64, 3), 255, dtype=np.uint8)
+
+    result = create_tissue_mask(
+        image,
+        BrightfieldMaskConfig(allow_full_fallback=True),
+    )
 
     assert result.accepted
     assert result.method == "full_fallback"

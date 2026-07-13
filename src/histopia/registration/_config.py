@@ -10,6 +10,7 @@ MaskMode = Literal["auto_tissue", "full"]
 CropMode = Literal["overlap", "reference", "none"]
 RigidMethod = Literal["feature", "mask_moments", "phase_correlation"]
 AlignStrategy = Literal["hybrid", "serial", "reference"]
+SectionOrderStrategy = Literal["natural", "manifest", "similarity"]
 WsiCompression = Literal["jpeg", "lzw", "deflate"]
 
 
@@ -23,7 +24,7 @@ class BrightfieldMaskConfig:
     """
 
     mode: MaskMode = "auto_tissue"
-    allow_full_fallback: bool = True
+    allow_full_fallback: bool = False
     min_foreground_fraction: float = 0.002
     max_foreground_fraction: float = 0.85
     min_largest_component_fraction: float = 0.05
@@ -97,6 +98,14 @@ class RegistrationConfig:
     input_dir: Path
     output_dir: Path
     reference_slide: str | None = None
+    reference_policy: Literal["explicit", "best_connected"] = "best_connected"
+    section_order_path: Path | None = None
+    section_order_strategy: SectionOrderStrategy = "natural"
+    mask_review_path: Path | None = None
+    mask_override_dir: Path | None = None
+    affine_override_path: Path | None = None
+    require_approved_masks: bool = False
+    wsi_only: bool = False
     registered_reference_dir: Path | None = None
     max_processed_image_dim_px: int = 1200
     crop_mode: CropMode = "reference"
@@ -120,6 +129,14 @@ class RegistrationConfig:
         self.output_dir = Path(self.output_dir)
         if self.registered_reference_dir is not None:
             self.registered_reference_dir = Path(self.registered_reference_dir)
+        if self.section_order_path is not None:
+            self.section_order_path = Path(self.section_order_path)
+        if self.mask_review_path is not None:
+            self.mask_review_path = Path(self.mask_review_path)
+        if self.mask_override_dir is not None:
+            self.mask_override_dir = Path(self.mask_override_dir)
+        if self.affine_override_path is not None:
+            self.affine_override_path = Path(self.affine_override_path)
         if self.registered_output_dir is not None:
             self.registered_output_dir = Path(self.registered_output_dir)
         if self.max_processed_image_dim_px <= 0:

@@ -10,20 +10,24 @@ Run profile:
 - input root: external KPF validation dataset (not tracked)
 - output root: `/tmp/histopia-registration-runs`
 - processing size: `max_processed_image_dim_px = 1200`
-- reference strategy: first natural-order section
+- reference strategy: best-connected central anchor
+- order strategy: recorded physical order for 4257, 4577, and 4630;
+  provisional morphology-similarity order for 5997
 - alignment strategy: `hybrid`
 - mask mode: `auto_tissue`
-- full-mask fallback: enabled but not used
+- full-mask fallback: disabled
+- mask review: 105 visually reviewed; 84 automatic passes and 21 reviewed
+  overrides
 - affine refinement: signed-distance ECC with conservative plausibility gates
 
 Current results:
 
 | Mouse | Slides | Reference | Pass | Review | Fail | Full masks | Median Dice |
 |---|---:|---|---:|---:|---:|---:|---:|
-| 4257 | 38 | `[#008] Yi_#4257_panc_Myc.ndpi` | 37 | 0 | 0 | 0 | 0.873 |
-| 4577 | 25 | `[#040] Yi_#4577_panc_Nr2f1.ndpi` | 23 | 1 | 0 | 0 | 0.845 |
-| 4630 | 24 | `[#053] Yi_#4630_panc_CK18.ndpi` | 22 | 1 | 0 | 0 | 0.954 |
-| 5997 | 18 | `[#051] Yi_#5997_panc_GFP.ndpi` | 15 | 2 | 0 | 0 | 0.748 |
+| 4257 | 38 | `[#220] Yi_#4257_panc_p-p38.ndpi` | 37 | 0 | 0 | 0 | 0.894 |
+| 4577 | 25 | `[#206] Yi_#4577_panc_PAS.ndpi` | 24 | 0 | 0 | 0 | 0.873 |
+| 4630 | 24 | `[#234] Yi_#4630_panc_Yap.ndpi` | 22 | 1 | 0 | 0 | 0.964 |
+| 5997 | 18 | `[#475] Yi_#5997_panc_SMA.ndpi` | 16 | 1 | 0 | 0 | 0.878 |
 
 Reference sections are listed separately and are not counted as pass slides.
 All 101 non-reference sections completed without a hard registration failure.
@@ -54,8 +58,8 @@ case is visually adjudicated.
   below 0.50, or a full-image mask was used.
 - `pass`: none of the fail or review conditions apply.
 
-Final-v4 has four review cases: 4577 pERK, 4630 pERK, 5997 pERK, and 5997 Tm.
-Their panels show partial sections placed in plausible reference locations.
+The remaining low-coverage cases are 4630 pERK and 5997 pERK. Their panels
+show partial sections placed in plausible reference locations.
 The missing reference anatomy is not present in those source slides, so these
 are coverage limitations rather than transform failures.
 

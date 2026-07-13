@@ -10,6 +10,7 @@ from typing import Any
 import numpy as np
 
 from histopia.registration._errors import OptionalDependencyError
+from histopia.registration._slides import SlideGeometry
 
 
 @dataclass(slots=True)
@@ -61,6 +62,25 @@ def thumbnail_to_full_resolution_matrix(
     return np.linalg.inv(reference_scale) @ matrix @ moving_scale
 
 
+def geometry_thumbnail_to_native_matrix(
+    thumbnail_matrix: np.ndarray,
+    *,
+    moving_geometry: SlideGeometry,
+    reference_geometry: SlideGeometry,
+) -> np.ndarray:
+    """Convert a thumbnail transform using explicit scanner content bounds."""
+
+    matrix = np.asarray(thumbnail_matrix, dtype=float)
+    if matrix.shape != (3, 3):
+        msg = "thumbnail_matrix must have shape (3, 3)"
+        raise ValueError(msg)
+    return (
+        reference_geometry.thumbnail_to_native
+        @ matrix
+        @ moving_geometry.native_to_thumbnail
+    )
+
+
 def read_slide_shape(path: Path | str) -> tuple[int, int]:
     """Return auto-oriented full-resolution slide shape as ``(height, width)``."""
 
@@ -76,6 +96,8 @@ def warp_slide_to_reference(
     *,
     moving_thumbnail_shape: tuple[int, int],
     reference_thumbnail_shape: tuple[int, int],
+    moving_geometry: SlideGeometry | None = None,
+    reference_geometry: SlideGeometry | None = None,
     compression: str = "jpeg",
     jpeg_quality: int = 95,
     tile_size: int = 512,
@@ -93,18 +115,29 @@ def warp_slide_to_reference(
     reference = _load_slide(Path(reference_path))
     moving_shape = (moving.height, moving.width)
     reference_shape = (reference.height, reference.width)
-    full_matrix = thumbnail_to_full_resolution_matrix(
-        thumbnail_matrix,
-        moving_thumbnail_shape=moving_thumbnail_shape,
-        moving_full_shape=moving_shape,
-        reference_thumbnail_shape=reference_thumbnail_shape,
-        reference_full_shape=reference_shape,
-    )
-    reference_bbox = _thumbnail_bbox_to_full_resolution(
-        reference_thumbnail_bbox,
-        reference_thumbnail_shape,
-        reference_shape,
-    )
+    if moving_geometry is not None and reference_geometry is not None:
+        full_matrix = geometry_thumbnail_to_native_matrix(
+            thumbnail_matrix,
+            moving_geometry=moving_geometry,
+            reference_geometry=reference_geometry,
+        )
+        reference_bbox = _thumbnail_bbox_to_native(
+            reference_thumbnail_bbox,
+            reference_geometry,
+        )
+    else:
+        full_matrix = thumbnail_to_full_resolution_matrix(
+            thumbnail_matrix,
+            moving_thumbnail_shape=moving_thumbnail_shape,
+            moving_full_shape=moving_shape,
+            reference_thumbnail_shape=reference_thumbnail_shape,
+            reference_full_shape=reference_shape,
+        )
+        reference_bbox = _thumbnail_bbox_to_full_resolution(
+            reference_thumbnail_bbox,
+            reference_thumbnail_shape,
+            reference_shape,
+        )
     offset_x, offset_y, output_width, output_height = reference_bbox
     crop_translation = np.eye(3, dtype=float)
     crop_translation[:2, 2] = [-offset_x, -offset_y]
@@ -447,6 +480,28 @@ def _thumbnail_bbox_to_full_resolution(
     top = max(0, int(np.floor(y * scale_y)))
     right = min(full_width, int(np.ceil((x + width) * scale_x)))
     bottom = min(full_height, int(np.ceil((y + height) * scale_y)))
+    return left, top, right - left, bottom - top
+
+
+def _thumbnail_bbox_to_native(
+    bbox: tuple[int, int, int, int] | None,
+    geometry: SlideGeometry,
+) -> tuple[int, int, int, int]:
+    native_height, native_width = geometry.native_shape
+    if bbox is None:
+        return 0, 0, native_width, native_height
+    x, y, width, height = bbox
+    matrix = geometry.thumbnail_to_native
+    left = max(0, int(np.floor(matrix[0, 0] * x + matrix[0, 2])))
+    top = max(0, int(np.floor(matrix[1, 1] * y + matrix[1, 2])))
+    right = min(
+        native_width,
+        int(np.ceil(matrix[0, 0] * (x + width) + matrix[0, 2])),
+    )
+    bottom = min(
+        native_height,
+        int(np.ceil(matrix[1, 1] * (y + height) + matrix[1, 2])),
+    )
     return left, top, right - left, bottom - top
 
 

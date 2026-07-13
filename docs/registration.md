@@ -20,7 +20,10 @@ The WSI loader uses `pyvips`, which also requires native `libvips`. See
 Implemented now:
 
 - brightfield/IHC tissue-mask candidates with artifact, frame, and QC scoring
-- explicit full-mask mode and recorded full-mask fallback
+- fail-closed mask review manifests and exact-shape binary overrides
+- strict WSI discovery that excludes label photos and generated artifacts
+- scanner-content geometry for SCN thumbnails and native-coordinate warping
+- explicit full-mask mode for legacy reproduction only
 - feature and mask-moment rigid thumbnail registration
 - conservative affine tissue-mask refinement with transform plausibility gates
 - direct, serial, and hybrid transform selection
@@ -31,6 +34,7 @@ Implemented now:
   forward/backward consistency gates
 - KPF raw/reference manifest generation
 - CLI entry point for manifests and config-driven thumbnail registration
+- static Three.js section-stack viewer generation
 
 Not implemented yet:
 
@@ -62,9 +66,9 @@ data tree.
 ```toml
 input_dir = "/path/to/validation-data/mouse-1/raw_wsi"
 output_dir = "/tmp/histopia-registration-runs/4577/test-run"
-reference_slide = "[#429] Yi_#4577__panc_HE.ndpi"
+reference_policy = "best_connected"
 max_processed_image_dim_px = 1200
-crop_mode = "overlap"
+crop_mode = "reference"
 rigid_method = "feature"
 align_strategy = "hybrid"
 non_rigid = false
@@ -77,7 +81,7 @@ wsi_tile_size = 512
 
 [mask]
 mode = "auto_tissue"
-allow_full_fallback = true
+allow_full_fallback = false
 
 [refinement]
 enabled = true
@@ -101,11 +105,17 @@ max_inverse_consistency_fraction = 0.02
 `mode = "full"` is available only for legacy reproduction and debugging. The
 default production path should use `auto_tissue`.
 
-For current KPF validation, leaving `reference_slide` unset uses the first
-natural-order section and has produced better thumbnail-level alignment than
-forcing HE for every mouse. `align_strategy = "hybrid"` evaluates direct
-reference alignment and serial-neighbor composition, then keeps the transform
-with better final tissue-mask overlap.
+`reference_policy = "best_connected"` chooses a central, well-connected anchor.
+`align_strategy = "hybrid"` evaluates direct-reference alignment and
+serial-neighbor composition, then keeps the transform with better final
+tissue-mask overlap. Physical section order should come from a manifest;
+similarity order is provisional and must not be interpreted as a measured
+z-axis.
+
+Set `mask_review_path`, `mask_override_dir`, and
+`require_approved_masks = true` for production runs. Changed thumbnail pixels
+or geometry invalidate the saved approval fingerprint. Candidate overlays and
+binary masks are written under `qc/mask_candidates/` for adjudication.
 
 Affine refinement uses signed distance fields from tissue masks, not stain
 intensity. A candidate is accepted only if it improves tissue Dice and stays
@@ -137,6 +147,19 @@ remove reference anatomy when a cohort contains partial sections. Pyramidal
 output currently requires JPEG compression, the path validated against the KPF
 slides. Files are named `*.registered.tiff`: Histopia does not claim OME-TIFF
 until OME-XML metadata is implemented and independently validated.
+
+## Section-Stack Viewer
+
+```bash
+histopia-register \
+  --viewer-run mouse-1=/path/to/run-1 \
+  --viewer-run mouse-2=/path/to/run-2 \
+  --provisional-mouse mouse-2 \
+  --viewer-output-dir /path/to/viewer
+```
+
+Serve the output directory over HTTP. Browser module imports do not work
+reliably when opening `index.html` directly from the filesystem.
 
 ## Non-Rigid Refinement
 

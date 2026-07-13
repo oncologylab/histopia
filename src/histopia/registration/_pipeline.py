@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,7 +14,6 @@ from histopia.registration._config import RegistrationConfig
 from histopia.registration._io import (
     blend_rgb,
     checkerboard_rgb,
-    load_thumbnail,
     overlay_mask,
     resize_mask,
     resize_rgb,
@@ -22,7 +22,6 @@ from histopia.registration._io import (
     warp_mask_thumbnail,
     warp_rgb_thumbnail,
 )
-from histopia.registration._manifest import _natural_key
 from histopia.registration._masking import (
     TissueMaskResult,
     _dominant_component_mask,
@@ -33,23 +32,27 @@ from histopia.registration._nonrigid import (
     estimate_non_rigid_transform,
     warp_with_displacement,
 )
-from histopia.registration._rigid import RigidTransformResult, estimate_rigid_transform
+from histopia.registration._qc import write_labeled_review_panel
+from histopia.registration._review import (
+    MaskReviewEntry,
+    load_mask_review,
+    resolve_reviewed_mask,
+    write_mask_review,
+)
+from histopia.registration._rigid import (
+    RigidTransformResult,
+    estimate_rigid_transform,
+)
+from histopia.registration._slides import (
+    SlideGeometry,
+    discover_slides,
+    load_slide_thumbnail,
+)
 from histopia.registration._wsi import (
     WsiWarpResult,
     calculate_thumbnail_overlap_bbox,
     warp_slide_to_reference,
 )
-
-INPUT_SUFFIXES = {
-    ".ndpi",
-    ".scn",
-    ".svs",
-    ".jpg",
-    ".jpeg",
-    ".png",
-    ".tif",
-    ".tiff",
-}
 
 
 @dataclass(slots=True)
@@ -79,6 +82,8 @@ class SlideRegistration:
     mask: TissueMaskResult
     transform: RigidTransformResult
     alignment_metrics: AlignmentMetrics
+    geometry: SlideGeometry | None = None
+    mask_review: MaskReviewEntry | None = None
     aligned_to: Path | None = None
     full_resolution_warp: WsiWarpResult | None = None
     non_rigid_transform: NonRigidTransformResult | None = None
@@ -91,6 +96,10 @@ class SlideRegistration:
             "mask": self.mask.to_json_dict(),
             "transform": self.transform.to_json_dict(),
             "alignment_metrics": self.alignment_metrics.to_json_dict(),
+            "geometry": self.geometry.to_json_dict() if self.geometry else None,
+            "mask_review": (
+                self.mask_review.to_json_dict() if self.mask_review else None
+            ),
             "full_resolution_warp": (
                 self.full_resolution_warp.to_json_dict()
                 if self.full_resolution_warp is not None
@@ -135,12 +144,12 @@ class RegistrationResult:
 def register_sections(config: RegistrationConfig) -> RegistrationResult:
     """Run rigid thumbnail registration for a serial-section image folder."""
 
-    slide_paths = _discover_input_slides(config.input_dir)
+    slide_paths = discover_slides(config.input_dir, wsi_only=config.wsi_only)
     if not slide_paths:
         msg = f"no registration input slides found in {config.input_dir}"
         raise FileNotFoundError(msg)
 
-    reference_path = _select_reference(slide_paths, config.reference_slide)
+    slide_paths = _apply_section_order(slide_paths, config.section_order_path)
     config.output_dir.mkdir(parents=True, exist_ok=True)
     processed_dir = config.output_dir / "processed"
     qc_dir = config.output_dir / "qc"
@@ -150,24 +159,55 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
     displacement_dir = config.output_dir / "transforms" / "non_rigid"
 
     thumbnails: dict[Path, np.ndarray] = {}
+    geometries: dict[Path, SlideGeometry] = {}
     masks: dict[Path, TissueMaskResult] = {}
+    review_entries = load_mask_review(config.mask_review_path)
+    resolved_reviews: dict[Path, MaskReviewEntry] = {}
     warnings: list[str] = []
 
     for path in slide_paths:
-        image = load_thumbnail(path, config.max_processed_image_dim_px)
-        mask = create_tissue_mask(image, config.mask)
+        image, geometry = load_slide_thumbnail(path, config.max_processed_image_dim_px)
+        automatic_mask = create_tissue_mask(image, config.mask)
+        mask, review = resolve_reviewed_mask(
+            slide_path=path,
+            image=image,
+            geometry=geometry,
+            automatic=automatic_mask,
+            review_entries=review_entries,
+            override_dir=config.mask_override_dir,
+            require_approved=False,
+        )
         thumbnails[path] = image
+        geometries[path] = geometry
         masks[path] = mask
+        review_entries[path.name] = review
+        resolved_reviews[path] = review
         warnings.extend(f"{path.name}: {warning}" for warning in mask.warnings)
         if config.write_processed_images:
             save_rgb(processed_dir / f"{path.stem}.thumbnail.png", image)
+            save_rgb(
+                processed_dir / f"{path.stem}.mask.png",
+                (mask.mask * 255).astype(np.uint8),
+            )
             save_rgb(
                 qc_dir / f"{path.stem}.mask_overlay.png",
                 overlay_mask(image, mask.mask),
             )
             _write_candidate_mask_overlays(mask_candidate_dir, path, image, mask)
 
-    reference_image = thumbnails[reference_path]
+    review_path = config.mask_review_path or config.output_dir / "mask_review.json"
+    write_mask_review(review_path, review_entries)
+    invalid_masks = [path.name for path in slide_paths if not masks[path].accepted]
+    unapproved_masks = [
+        path.name for path in slide_paths if not resolved_reviews[path].approved
+    ]
+    if invalid_masks:
+        msg = "automatic tissue masks failed: " + ", ".join(invalid_masks)
+        raise ValueError(msg)
+    if config.require_approved_masks and unapproved_masks:
+        msg = "registration requires approved masks: " + ", ".join(unapproved_masks)
+        raise ValueError(msg)
+
     crops = {
         path: _crop_to_mask(
             thumbnails[path],
@@ -176,6 +216,13 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
         )
         for path in slide_paths
     }
+    if config.section_order_strategy == "similarity":
+        slide_paths = _similarity_section_order(slide_paths, crops, config)
+    if config.reference_slide is not None or config.reference_policy == "explicit":
+        reference_path = _select_reference(slide_paths, config.reference_slide)
+    else:
+        reference_path = _select_best_connected_reference(slide_paths, crops, config)
+    reference_image = thumbnails[reference_path]
     reference_crop = crops[reference_path]
     transforms_to_reference, aligned_to = _estimate_transforms_to_reference(
         slide_paths,
@@ -183,6 +230,13 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
         crops,
         config,
         alignment_dir,
+    )
+    _apply_affine_overrides(
+        transforms_to_reference,
+        aligned_to,
+        slide_paths,
+        reference_path,
+        config.affine_override_path,
     )
 
     slides: list[SlideRegistration] = []
@@ -279,6 +333,8 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
                         transform.matrix,
                     )
                 ),
+                geometry=geometries[path],
+                mask_review=resolved_reviews[path],
                 aligned_to=aligned_to.get(path),
                 non_rigid_transform=non_rigid_transform,
             )
@@ -290,16 +346,64 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
         slides=tuple(slides),
         warnings=tuple(warnings),
     )
+    if config.write_processed_images:
+        _write_primary_review_panels(result, thumbnails, geometries, qc_dir / "review")
     if config.write_warped_images:
-        _write_full_resolution_warps(result, thumbnails, config)
+        _write_full_resolution_warps(result, thumbnails, geometries, config)
     result.write_json()
     _write_validation_report(result)
     return result
 
 
+def _write_primary_review_panels(
+    result: RegistrationResult,
+    thumbnails: dict[Path, np.ndarray],
+    geometries: dict[Path, SlideGeometry],
+    output_dir: Path,
+) -> None:
+    reference = thumbnails[result.reference_slide]
+    for slide in result.slides:
+        source = thumbnails[slide.path]
+        registered = warp_rgb_thumbnail(
+            source,
+            slide.transform.matrix,
+            reference.shape[:2],
+        )
+        mask_overlay = overlay_mask(source, slide.mask.mask)
+        geometry = geometries[slide.path]
+        review_status = slide.mask_review.status if slide.mask_review else "untracked"
+        x, y, width, height = geometry.content_bbox_xywh
+        write_labeled_review_panel(
+            output_dir / f"{slide.path.stem}.review.png",
+            panes=[
+                ("Source WSI content", source),
+                ("Approved tissue mask", mask_overlay),
+                ("Affine registered", registered),
+                ("Reference overlay", blend_rgb(reference, registered)),
+            ],
+            title=slide.path.name,
+            metadata=[
+                (
+                    f"format={slide.path.suffix.lower()} "
+                    f"native={geometry.native_shape[1]}x{geometry.native_shape[0]}"
+                ),
+                (
+                    f"content_bounds=({x},{y},{width},{height}) "
+                    f"source={geometry.bounds_source}"
+                ),
+                (
+                    f"mask={review_status}:{slide.mask.method} "
+                    f"affine={slide.transform.method}"
+                ),
+                f"reference={result.reference_slide.name}",
+            ],
+        )
+
+
 def _write_full_resolution_warps(
     result: RegistrationResult,
     thumbnails: dict[Path, np.ndarray],
+    geometries: dict[Path, SlideGeometry],
     config: RegistrationConfig,
 ) -> None:
     output_dir = config.registered_output_dir or config.output_dir / "registered"
@@ -322,6 +426,8 @@ def _write_full_resolution_warps(
             slide.transform.matrix,
             moving_thumbnail_shape=thumbnails[slide.path].shape[:2],
             reference_thumbnail_shape=reference_shape,
+            moving_geometry=geometries[slide.path],
+            reference_geometry=geometries[result.reference_slide],
             compression=config.wsi_compression,
             jpeg_quality=config.wsi_jpeg_quality,
             tile_size=config.wsi_tile_size,
@@ -756,7 +862,13 @@ def _write_candidate_mask_overlays(
     image: np.ndarray,
     mask: TissueMaskResult,
 ) -> None:
+    from PIL import Image
+
+    output_dir.mkdir(parents=True, exist_ok=True)
     for method, candidate in mask.candidate_masks.items():
+        Image.fromarray(candidate.astype(np.uint8) * 255).save(
+            output_dir / f"{path.stem}.{method}.mask.png"
+        )
         save_rgb(
             output_dir / f"{path.stem}.{method}.png",
             overlay_mask(image, candidate),
@@ -863,17 +975,158 @@ def _escape_table(value: str) -> str:
     return value.replace("|", "\\|")
 
 
-def _discover_input_slides(input_dir: Path) -> tuple[Path, ...]:
-    return tuple(
-        sorted(
-            (
-                path
-                for path in input_dir.iterdir()
-                if path.is_file() and path.suffix.lower() in INPUT_SUFFIXES
-            ),
-            key=lambda path: _natural_key(path.name),
+def _apply_section_order(
+    slide_paths: tuple[Path, ...],
+    order_path: Path | None,
+) -> tuple[Path, ...]:
+    if order_path is None:
+        return slide_paths
+    if not order_path.exists():
+        raise FileNotFoundError(f"section order manifest not found: {order_path}")
+    if order_path.suffix.lower() == ".json":
+        payload = json.loads(order_path.read_text())
+        rows = payload.get("slides", payload)
+        if isinstance(rows, dict):
+            order_by_name = {str(name): int(order) for name, order in rows.items()}
+        else:
+            order_by_name = {
+                str(row.get("slide", row.get("filename"))): int(row["order"])
+                for row in rows
+            }
+    else:
+        with order_path.open(newline="") as stream:
+            rows = list(csv.DictReader(stream))
+        order_by_name = {
+            str(row.get("slide") or row.get("filename") or row.get("raw_name")): int(
+                row["order"]
+            )
+            for row in rows
+            if row.get("order") not in {None, "", "0"}
+        }
+    path_by_name = {path.name: path for path in slide_paths}
+    path_by_stem = {path.stem: path for path in slide_paths}
+    ordered: list[tuple[int, Path]] = []
+    for name, order in order_by_name.items():
+        path = path_by_name.get(name) or path_by_stem.get(Path(name).stem)
+        if path is not None:
+            ordered.append((order, path))
+    ordered_paths = [path for _, path in sorted(ordered, key=lambda item: item[0])]
+    remaining = [path for path in slide_paths if path not in set(ordered_paths)]
+    return tuple([*ordered_paths, *remaining])
+
+
+def _apply_affine_overrides(
+    transforms: dict[Path, RigidTransformResult],
+    aligned_to: dict[Path, Path],
+    slide_paths: tuple[Path, ...],
+    reference_path: Path,
+    override_path: Path | None,
+) -> None:
+    if override_path is None:
+        return
+    payload = json.loads(override_path.read_text())
+    rows = payload.get("slides", payload)
+    if isinstance(rows, dict):
+        matrix_by_name = rows
+    else:
+        matrix_by_name = {
+            str(row.get("slide", row.get("filename"))): row["matrix"] for row in rows
+        }
+    for path in slide_paths:
+        matrix_payload = matrix_by_name.get(path.name) or matrix_by_name.get(path.stem)
+        if matrix_payload is None:
+            continue
+        matrix = np.asarray(matrix_payload, dtype=float)
+        if matrix.shape != (3, 3) or not np.isfinite(matrix).all():
+            msg = f"invalid affine override for {path.name}"
+            raise ValueError(msg)
+        transforms[path] = RigidTransformResult(
+            matrix=matrix,
+            method="manual_affine_override",
+            match_count=0,
+            inlier_count=0,
+            warnings=[],
         )
-    )
+        aligned_to[path] = reference_path
+
+
+def _select_best_connected_reference(
+    slide_paths: tuple[Path, ...],
+    crops: dict[Path, _Crop],
+    config: RegistrationConfig,
+) -> Path:
+    if len(slide_paths) == 1:
+        return slide_paths[0]
+    midpoint = (len(slide_paths) - 1) / 2
+    scored: list[tuple[float, Path]] = []
+    for index, candidate in enumerate(slide_paths):
+        neighbor_indices = {
+            other
+            for delta in (-2, -1, 1, 2)
+            if 0 <= (other := index + delta) < len(slide_paths)
+        }
+        edge_score = 0.0
+        successful_edges = 0
+        for other_index in neighbor_indices:
+            moving = slide_paths[other_index]
+            try:
+                transform, _ = _estimate_pair_transform(
+                    candidate,
+                    moving,
+                    crops,
+                    config,
+                )
+            except (ValueError, np.linalg.LinAlgError):
+                continue
+            dice = _final_mask_dice(crops[candidate], crops[moving], transform.matrix)
+            edge_score += np.log1p(transform.inlier_count) + 3.0 * dice
+            successful_edges += 1
+        centrality = 1.0 - abs(index - midpoint) / max(midpoint, 1.0)
+        scored.append((edge_score + successful_edges + centrality, candidate))
+    return max(scored, key=lambda item: item[0])[1]
+
+
+def _similarity_section_order(
+    slide_paths: tuple[Path, ...],
+    crops: dict[Path, _Crop],
+    config: RegistrationConfig,
+) -> tuple[Path, ...]:
+    """Infer an undirected morphology order for registration, not physical z."""
+
+    if len(slide_paths) < 3:
+        return slide_paths
+    from scipy.cluster.hierarchy import leaves_list, linkage, optimal_leaf_ordering
+    from scipy.spatial.distance import squareform
+
+    count = len(slide_paths)
+    distances = np.ones((count, count), dtype=float)
+    np.fill_diagonal(distances, 0.0)
+    for first in range(count):
+        for second in range(first + 1, count):
+            try:
+                transform, _ = _estimate_pair_transform(
+                    slide_paths[first],
+                    slide_paths[second],
+                    crops,
+                    config,
+                )
+                dice = _final_mask_dice(
+                    crops[slide_paths[first]],
+                    crops[slide_paths[second]],
+                    transform.matrix,
+                )
+                support = min(1.0, transform.inlier_count / 40.0)
+                similarity = max(1e-3, 0.75 * dice + 0.25 * support)
+                distance = 1.0 - min(similarity, 1.0)
+            except (ValueError, np.linalg.LinAlgError):
+                distance = 1.0
+            distances[first, second] = distance
+            distances[second, first] = distance
+    condensed = squareform(distances, checks=False)
+    tree = linkage(condensed, method="average")
+    ordered_tree = optimal_leaf_ordering(tree, condensed)
+    indices = leaves_list(ordered_tree)
+    return tuple(slide_paths[int(index)] for index in indices)
 
 
 def _select_reference(
@@ -881,7 +1134,8 @@ def _select_reference(
     reference_slide: str | None,
 ) -> Path:
     if reference_slide is None:
-        return slide_paths[0]
+        msg = "reference_policy='explicit' requires reference_slide"
+        raise ValueError(msg)
     for path in slide_paths:
         if path.name == reference_slide or path.stem == reference_slide:
             return path

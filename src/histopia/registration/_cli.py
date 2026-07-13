@@ -63,7 +63,44 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Export only accepted non-rigid slides used with --warp-run.",
     )
+    parser.add_argument(
+        "--viewer-run",
+        action="append",
+        default=[],
+        metavar="MOUSE=RUN_DIR",
+        help="Add a completed mouse run to a static section viewer.",
+    )
+    parser.add_argument(
+        "--viewer-output-dir",
+        type=Path,
+        help="Output directory used with --viewer-run.",
+    )
+    parser.add_argument(
+        "--provisional-mouse",
+        action="append",
+        default=[],
+        help="Mark a viewer mouse as having provisional physical order.",
+    )
     args = parser.parse_args(argv)
+
+    if args.viewer_run:
+        if args.viewer_output_dir is None:
+            parser.error("--viewer-output-dir is required with --viewer-run")
+        from histopia.registration._viewer import build_section_viewer
+
+        runs: dict[str, Path] = {}
+        for item in args.viewer_run:
+            if "=" not in item:
+                parser.error("--viewer-run must use MOUSE=RUN_DIR")
+            mouse, run_dir = item.split("=", 1)
+            runs[mouse] = Path(run_dir)
+        index_path = build_section_viewer(
+            runs,
+            args.viewer_output_dir,
+            provisional_mice=set(args.provisional_mouse),
+        )
+        print(index_path)
+        return 0
 
     if args.warp_run is not None:
         from histopia.registration._wsi import warp_saved_registration
@@ -101,7 +138,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if manifest.is_complete else 1
 
     if args.config is None:
-        parser.error("--config, --manifest, or --warp-run is required")
+        parser.error("--config, --manifest, --warp-run, or --viewer-run is required")
 
     from histopia.registration._pipeline import register_sections
 
@@ -146,10 +183,24 @@ def _config_from_mapping(data: dict[str, Any]) -> RegistrationConfig:
         if registered_output_dir_value is not None
         else None
     )
+    section_order_value = data.pop("section_order_path", None)
+    mask_review_value = data.pop("mask_review_path", None)
+    mask_override_value = data.pop("mask_override_dir", None)
+    affine_override_value = data.pop("affine_override_path", None)
     return RegistrationConfig(
         input_dir=Path(data.pop("input_dir")),
         output_dir=Path(data.pop("output_dir")),
         reference_slide=data.pop("reference_slide", None),
+        reference_policy=data.pop("reference_policy", "best_connected"),
+        section_order_path=Path(section_order_value) if section_order_value else None,
+        section_order_strategy=data.pop("section_order_strategy", "natural"),
+        mask_review_path=Path(mask_review_value) if mask_review_value else None,
+        mask_override_dir=Path(mask_override_value) if mask_override_value else None,
+        affine_override_path=(
+            Path(affine_override_value) if affine_override_value else None
+        ),
+        require_approved_masks=data.pop("require_approved_masks", False),
+        wsi_only=data.pop("wsi_only", False),
         registered_reference_dir=registered_reference_dir,
         max_processed_image_dim_px=data.pop("max_processed_image_dim_px", 1200),
         crop_mode=data.pop("crop_mode", "reference"),

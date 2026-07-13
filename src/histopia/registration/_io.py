@@ -7,18 +7,14 @@ from pathlib import Path
 import numpy as np
 
 from histopia.registration._errors import OptionalDependencyError
-
-STANDARD_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
-WSI_EXTENSIONS = {".ndpi", ".scn", ".svs", ".tif", ".tiff"}
+from histopia.registration._slides import load_slide_thumbnail
 
 
 def load_thumbnail(path: Path | str, max_dim_px: int) -> np.ndarray:
     """Load an RGB thumbnail with longest side no larger than ``max_dim_px``."""
 
-    path = Path(path)
-    if path.suffix.lower() in WSI_EXTENSIONS:
-        return _load_wsi_thumbnail(path, max_dim_px)
-    return _load_pillow_thumbnail(path, max_dim_px)
+    image, _ = load_slide_thumbnail(path, max_dim_px)
+    return image
 
 
 def save_rgb(path: Path | str, image: np.ndarray) -> None:
@@ -179,38 +175,6 @@ def side_by_side(images: list[np.ndarray], separator_px: int = 8) -> np.ndarray:
             pieces.append(separator)
         pieces.append(image)
     return np.concatenate(pieces, axis=1)
-
-
-def _load_pillow_thumbnail(path: Path, max_dim_px: int) -> np.ndarray:
-    try:
-        from PIL import Image
-    except ImportError as exc:
-        raise OptionalDependencyError("pillow", "wsi") from exc
-
-    with Image.open(path) as img:
-        img = img.convert("RGB")
-        img.thumbnail((max_dim_px, max_dim_px))
-        return np.asarray(img)
-
-
-def _load_wsi_thumbnail(path: Path, max_dim_px: int) -> np.ndarray:
-    try:
-        import pyvips
-    except ImportError as exc:
-        raise OptionalDependencyError("pyvips", "wsi") from exc
-
-    image = pyvips.Image.thumbnail(str(path), max_dim_px, auto_rotate=True)
-    if image.bands > 3:
-        image = image[:3]
-    if image.bands == 1:
-        image = image.bandjoin([image, image])
-    memory = image.write_to_memory()
-    arr = np.frombuffer(memory, dtype=np.uint8).reshape(
-        image.height,
-        image.width,
-        image.bands,
-    )
-    return arr[:, :, :3].copy()
 
 
 def _as_uint8_rgb(image: np.ndarray) -> np.ndarray:

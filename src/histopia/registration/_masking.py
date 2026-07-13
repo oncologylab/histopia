@@ -56,6 +56,10 @@ def create_tissue_mask(
         )
 
     candidates = {
+        "hysteresis_tissue": _clean_mask(
+            _hysteresis_tissue_candidate(rgb),
+            config,
+        ),
         "background_corrected": _clean_mask(
             _background_corrected_candidate(rgb),
             config,
@@ -128,6 +132,19 @@ def create_tissue_mask(
     )
 
 
+def evaluate_tissue_mask(
+    mask: np.ndarray,
+    config: BrightfieldMaskConfig | None = None,
+) -> tuple[dict[str, float], list[str]]:
+    """Return the standard metrics and warnings for an externally supplied mask."""
+
+    config = config or BrightfieldMaskConfig()
+    binary = np.asarray(mask, dtype=bool)
+    if binary.ndim != 2:
+        raise ValueError("mask must be a two-dimensional array")
+    return _mask_metrics(binary), _mask_warnings(binary, config)
+
+
 def _as_rgb_float(image: np.ndarray) -> np.ndarray:
     arr = np.asarray(image)
     if arr.ndim == 2:
@@ -174,6 +191,31 @@ def _background_corrected_candidate(rgb: np.ndarray) -> np.ndarray:
     return candidate & (brightness < 0.985)
 
 
+def _hysteresis_tissue_candidate(rgb: np.ndarray) -> np.ndarray:
+    """Grow pale tissue from stain-rich or textured tissue seeds."""
+
+    background_rgb = _estimate_background_rgb(rgb)
+    color_delta = np.linalg.norm(rgb - background_rgb, axis=2)
+    brightness = np.mean(rgb, axis=2)
+    optical_density = np.mean(-np.log(np.clip(rgb, 1 / 255, 1.0)), axis=2)
+    gradient = np.hypot(
+        ndi.sobel(brightness, axis=0),
+        ndi.sobel(brightness, axis=1),
+    )
+    strong = (
+        (color_delta > max(0.075, _otsu_threshold(color_delta)))
+        | (optical_density > max(0.055, _otsu_threshold(optical_density)))
+        | ((gradient > np.percentile(gradient, 94)) & (brightness < 0.97))
+    )
+    weak = (
+        (color_delta > 0.025)
+        | (optical_density > 0.018)
+        | ((gradient > np.percentile(gradient, 82)) & (brightness < 0.985))
+    ) & (brightness < 0.992)
+    seeds = ndi.binary_dilation(strong, iterations=2)
+    return ndi.binary_propagation(seeds, mask=weak | seeds)
+
+
 def _saturation_value_candidate(rgb: np.ndarray) -> np.ndarray:
     max_channel = np.max(rgb, axis=2)
     min_channel = np.min(rgb, axis=2)
@@ -209,11 +251,19 @@ def _estimate_background_rgb(rgb: np.ndarray) -> np.ndarray:
         [rgb[0, :, :], rgb[-1, :, :], rgb[:, 0, :], rgb[:, -1, :]],
         axis=0,
     )
-    border_brightness = np.mean(border, axis=1)
-    bright_border = border[border_brightness >= np.percentile(border_brightness, 60)]
-    if bright_border.size == 0:
-        bright_border = border
-    return np.median(bright_border, axis=0)
+    pixels = rgb.reshape(-1, 3)
+    sample_step = max(1, pixels.shape[0] // 100_000)
+    pixels = pixels[::sample_step]
+    candidates = np.concatenate([border, pixels], axis=0)
+    brightness = np.mean(candidates, axis=1)
+    saturation = _saturation(candidates[:, np.newaxis, :])[:, 0]
+    bright_neutral = candidates[
+        (brightness >= np.percentile(brightness, 70))
+        & (saturation <= np.percentile(saturation, 60))
+    ]
+    if bright_neutral.size == 0:
+        bright_neutral = candidates[brightness >= np.percentile(brightness, 80)]
+    return np.median(bright_neutral, axis=0)
 
 
 def _saturation(rgb: np.ndarray) -> np.ndarray:
@@ -241,7 +291,32 @@ def _clean_mask(mask: np.ndarray, config: BrightfieldMaskConfig) -> np.ndarray:
     keep = sizes >= config.min_object_area_px
     keep[0] = False
     cleaned = keep[labels]
-    return _remove_border_dominated_components(cleaned, config)
+    cleaned = _remove_border_dominated_components(cleaned, config)
+    return _remove_long_thin_components(cleaned, config)
+
+
+def _remove_long_thin_components(
+    mask: np.ndarray,
+    config: BrightfieldMaskConfig,
+) -> np.ndarray:
+    labels, label_count = ndi.label(mask)
+    if label_count == 0:
+        return mask
+    keep = np.ones(label_count + 1, dtype=bool)
+    keep[0] = False
+    for label in range(1, label_count + 1):
+        rows, cols = np.nonzero(labels == label)
+        row_span = rows.max() - rows.min() + 1
+        col_span = cols.max() - cols.min() + 1
+        bbox_area = row_span * col_span
+        fill = rows.size / max(bbox_area, 1)
+        long_axis = max(row_span / mask.shape[0], col_span / mask.shape[1])
+        short_axis = min(row_span / mask.shape[0], col_span / mask.shape[1])
+        if long_axis > 0.65 and short_axis < 0.08 and fill < 0.35:
+            keep[label] = False
+        if rows.size < config.min_object_area_px:
+            keep[label] = False
+    return keep[labels]
 
 
 def _remove_border_dominated_components(
