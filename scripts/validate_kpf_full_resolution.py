@@ -42,7 +42,9 @@ def audit_mouse(
     max_dim_px: int,
 ) -> dict[str, Any]:
     pyvips = _import_pyvips()
-    run_dir = registration_root / mouse / "qc-1200-hybrid"
+    run_dir = registration_root / mouse
+    if not (run_dir / "registration_result.json").exists():
+        run_dir = run_dir / "qc-1200-hybrid"
     output_dir = full_resolution_root / mouse
     payload = json.loads((run_dir / "registration_result.json").read_text())
     warp_summary = json.loads((output_dir / "full_resolution_warps.json").read_text())
@@ -53,7 +55,7 @@ def audit_mouse(
     }
     missing = sorted(set(expected_paths) - set(output_paths))
     unexpected = sorted(set(output_paths) - set(expected_paths))
-    temporary_files = sorted(path.name for path in output_dir.glob(".*.tmp"))
+    temporary_files = sorted(path.name for path in output_dir.glob(".*.tmp*"))
     bad_headers: list[dict[str, Any]] = []
     page_counts: list[int] = []
     maes: list[float] = []
