@@ -66,20 +66,21 @@ are coverage limitations rather than transform failures.
 ## Full-Resolution Validation
 
 All 105 affine results were applied to the original NDPI/SCN files and read
-back from `/tmp/histopia-full-resolution-runs`. The source data tree was not
-modified.
+back from the dedicated registration output tree under
+`/media/volume/data/histopia`. The source data tree was not modified.
 
 | Mouse | Files | Reference canvas (H x W) | Pyramid levels | Native/thumb mask Dice | Native/thumb MAE |
 |---|---:|---:|---:|---:|---:|
-| 4257 | 38 | 36,864 x 44,160 | 8 | 0.992 | 3.05 |
-| 4577 | 25 | 47,616 x 59,520 | 8 | 0.976 | 2.32 |
-| 4630 | 24 | 12,800 x 15,360 | 6 | 0.993 | 2.88 |
-| 5997 | 18 | 17,920 x 19,200 | 7 | 0.988 | 3.17 |
+| 4257 | 38 | 43,264 x 51,840 | 8 | 0.968 | 3.62 |
+| 4577 | 25 | 47,360 x 59,520 | 8 | 0.977 | 2.68 |
+| 4630 | 24 | 17,664 x 17,280 | 7 | 0.998 | 2.63 |
+| 5997 | 18 | 19,456 x 19,200 | 7 | 0.981 | 3.21 |
 
 Every TIFF had the expected reference dimensions, three `uchar` RGB bands,
-readable pyramid pages, and no unfinished temporary file. `Native/thumb` values
-compare a thumbnail rendered from the native pyramid with the previously
-accepted thumbnail-space warp. MAE is measured on the 0-255 RGB scale.
+readable pyramid pages, and no unfinished temporary file. There were no
+missing, unexpected, or malformed outputs. `Native/thumb` values compare a
+thumbnail rendered from the native pyramid with the previously accepted
+thumbnail-space warp. MAE is measured on the 0-255 RGB scale.
 
 Visual readback included representative aligned sections, all four rigid review
 cases, and rescued 4257 pAMPKa. Native output preserved the same placement and
@@ -89,9 +90,9 @@ Reproduce this audit with:
 
 ```bash
 python scripts/validate_kpf_full_resolution.py \
-    --registration-root /tmp/histopia-registration-runs \
-    --full-resolution-root /tmp/histopia-full-resolution-runs \
-    --output /tmp/histopia-full-resolution-runs/audit.json
+    --registration-root /media/volume/data/histopia/registration/KPF/runs \
+    --full-resolution-root /media/volume/data/histopia/registration/KPF/registered \
+    --output /media/volume/data/histopia/registration/KPF/registered/audit.json
 ```
 
 ## Non-Rigid Validation
