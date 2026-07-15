@@ -10,7 +10,9 @@ MaskMode = Literal["auto_tissue", "full"]
 CropMode = Literal["overlap", "reference", "none"]
 RigidMethod = Literal["feature", "mask_moments", "phase_correlation"]
 AlignStrategy = Literal["hybrid", "serial", "reference"]
-SectionOrderStrategy = Literal["natural", "manifest", "similarity"]
+SectionOrderStrategy = Literal[
+    "natural", "manifest", "similarity", "anchored_similarity"
+]
 WsiCompression = Literal["jpeg", "lzw", "deflate"]
 
 
@@ -101,6 +103,8 @@ class RegistrationConfig:
     reference_policy: Literal["explicit", "best_connected"] = "best_connected"
     section_order_path: Path | None = None
     section_order_strategy: SectionOrderStrategy = "natural"
+    section_order_review_path: Path | None = None
+    require_approved_order: bool = False
     mask_review_path: Path | None = None
     mask_override_dir: Path | None = None
     affine_override_path: Path | None = None
@@ -131,6 +135,8 @@ class RegistrationConfig:
             self.registered_reference_dir = Path(self.registered_reference_dir)
         if self.section_order_path is not None:
             self.section_order_path = Path(self.section_order_path)
+        if self.section_order_review_path is not None:
+            self.section_order_review_path = Path(self.section_order_review_path)
         if self.mask_review_path is not None:
             self.mask_review_path = Path(self.mask_review_path)
         if self.mask_override_dir is not None:

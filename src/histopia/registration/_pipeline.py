@@ -26,11 +26,17 @@ from histopia.registration._masking import (
     TissueMaskResult,
     _dominant_component_mask,
     create_tissue_mask,
+    refine_group_tissue_masks,
 )
 from histopia.registration._nonrigid import (
     NonRigidTransformResult,
     estimate_non_rigid_transform,
     warp_with_displacement,
+)
+from histopia.registration._ordering import (
+    order_is_approved,
+    propose_anchored_order,
+    write_order_proposal,
 )
 from histopia.registration._qc import write_labeled_review_panel
 from histopia.registration._review import (
@@ -149,7 +155,8 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
         msg = f"no registration input slides found in {config.input_dir}"
         raise FileNotFoundError(msg)
 
-    slide_paths = _apply_section_order(slide_paths, config.section_order_path)
+    if config.section_order_strategy != "anchored_similarity":
+        slide_paths = _apply_section_order(slide_paths, config.section_order_path)
     config.output_dir.mkdir(parents=True, exist_ok=True)
     processed_dir = config.output_dir / "processed"
     qc_dir = config.output_dir / "qc"
@@ -167,7 +174,19 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
 
     for path in slide_paths:
         image, geometry = load_slide_thumbnail(path, config.max_processed_image_dim_px)
-        automatic_mask = create_tissue_mask(image, config.mask)
+        masks[path] = create_tissue_mask(image, config.mask)
+        thumbnails[path] = image
+        geometries[path] = geometry
+
+    physical_pixel_areas = {
+        path: _thumbnail_physical_pixel_area(geometry)
+        for path, geometry in geometries.items()
+    }
+    masks = refine_group_tissue_masks(masks, physical_pixel_areas=physical_pixel_areas)
+    for path in slide_paths:
+        image = thumbnails[path]
+        geometry = geometries[path]
+        automatic_mask = masks[path]
         mask, review = resolve_reviewed_mask(
             slide_path=path,
             image=image,
@@ -177,8 +196,6 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
             override_dir=config.mask_override_dir,
             require_approved=False,
         )
-        thumbnails[path] = image
-        geometries[path] = geometry
         masks[path] = mask
         review_entries[path.name] = review
         resolved_reviews[path] = review
@@ -218,6 +235,32 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
     }
     if config.section_order_strategy == "similarity":
         slide_paths = _similarity_section_order(slide_paths, crops, config)
+    elif config.section_order_strategy == "anchored_similarity":
+        physical_areas = {
+            path: _physical_mask_area(masks[path].mask, geometries[path])
+            for path in slide_paths
+        }
+        distances = _section_distance_matrix(
+            slide_paths, crops, config, physical_areas=physical_areas
+        )
+        fixed_positions = _read_fixed_positions(slide_paths, config.section_order_path)
+        proposal = propose_anchored_order(
+            tuple(path.name for path in slide_paths), distances, fixed_positions
+        )
+        order_review_path = (
+            config.section_order_review_path
+            or config.output_dir / "section_order_review.json"
+        )
+        write_order_proposal(order_review_path, proposal)
+        if config.require_approved_order and not order_is_approved(
+            order_review_path, proposal.fingerprint
+        ):
+            raise ValueError(
+                "registration requires approval of the current section order: "
+                f"{order_review_path}"
+            )
+        path_by_name = {path.name: path for path in slide_paths}
+        slide_paths = tuple(path_by_name[name] for name in proposal.slides)
     if config.reference_slide is not None or config.reference_policy == "explicit":
         reference_path = _select_reference(slide_paths, config.reference_slide)
     else:
@@ -1098,6 +1141,23 @@ def _similarity_section_order(
     from scipy.cluster.hierarchy import leaves_list, linkage, optimal_leaf_ordering
     from scipy.spatial.distance import squareform
 
+    distances = _section_distance_matrix(slide_paths, crops, config)
+    condensed = squareform(distances, checks=False)
+    tree = linkage(condensed, method="average")
+    ordered_tree = optimal_leaf_ordering(tree, condensed)
+    indices = leaves_list(ordered_tree)
+    return tuple(slide_paths[int(index)] for index in indices)
+
+
+def _section_distance_matrix(
+    slide_paths: tuple[Path, ...],
+    crops: dict[Path, _Crop],
+    config: RegistrationConfig,
+    *,
+    physical_areas: dict[Path, float | None] | None = None,
+) -> np.ndarray:
+    """Return deterministic pairwise morphology distances for section ordering."""
+
     count = len(slide_paths)
     distances = np.ones((count, count), dtype=float)
     np.fill_diagonal(distances, 0.0)
@@ -1116,17 +1176,132 @@ def _similarity_section_order(
                     transform.matrix,
                 )
                 support = min(1.0, transform.inlier_count / 40.0)
-                similarity = max(1e-3, 0.75 * dice + 0.25 * support)
-                distance = 1.0 - min(similarity, 1.0)
+                registration_distance = 1.0 - min(
+                    max(1e-3, 0.75 * dice + 0.25 * support), 1.0
+                )
+                shape_distance = _mask_shape_distance(
+                    crops[slide_paths[first]].mask,
+                    crops[slide_paths[second]].mask,
+                )
+                area_distance = _physical_area_distance(
+                    slide_paths[first],
+                    slide_paths[second],
+                    physical_areas,
+                )
+                distance = (
+                    0.65 * registration_distance
+                    + 0.20 * area_distance
+                    + 0.15 * shape_distance
+                )
             except (ValueError, np.linalg.LinAlgError):
                 distance = 1.0
             distances[first, second] = distance
             distances[second, first] = distance
-    condensed = squareform(distances, checks=False)
-    tree = linkage(condensed, method="average")
-    ordered_tree = optimal_leaf_ordering(tree, condensed)
-    indices = leaves_list(ordered_tree)
-    return tuple(slide_paths[int(index)] for index in indices)
+    return distances
+
+
+def _physical_mask_area(mask: np.ndarray, geometry: SlideGeometry) -> float | None:
+    """Return thumbnail-mask area in square micrometres when calibrated."""
+
+    if geometry.mpp_xy is None:
+        return None
+    linear = geometry.thumbnail_to_physical[:2, :2]
+    return float(np.count_nonzero(mask) * abs(np.linalg.det(linear)))
+
+
+def _thumbnail_physical_pixel_area(geometry: SlideGeometry) -> float | None:
+    if geometry.mpp_xy is None:
+        return None
+    return float(abs(np.linalg.det(geometry.thumbnail_to_physical[:2, :2])))
+
+
+def _physical_area_distance(
+    first: Path,
+    second: Path,
+    areas: dict[Path, float | None] | None,
+) -> float:
+    if areas is None or areas.get(first) is None or areas.get(second) is None:
+        return 0.0
+    first_area = float(areas[first])
+    second_area = float(areas[second])
+    if first_area <= 0 or second_area <= 0:
+        return 1.0
+    return min(1.0, abs(float(np.log(first_area / second_area))))
+
+
+def _mask_shape_distance(first: np.ndarray, second: np.ndarray) -> float:
+    """Compare scale-independent extent and connected-component topology."""
+
+    from scipy import ndimage as ndi
+
+    def descriptor(mask: np.ndarray) -> tuple[float, float]:
+        binary = np.asarray(mask, dtype=bool)
+        rows, cols = np.nonzero(binary)
+        if not rows.size:
+            return 0.0, 0.0
+        height = rows.max() - rows.min() + 1
+        width = cols.max() - cols.min() + 1
+        aspect = float(np.log(max(width, 1) / max(height, 1)))
+        _, components = ndi.label(binary)
+        return aspect, float(np.log1p(components))
+
+    first_aspect, first_components = descriptor(first)
+    second_aspect, second_components = descriptor(second)
+    aspect_distance = min(1.0, abs(first_aspect - second_aspect))
+    topology_distance = min(1.0, abs(first_components - second_components) / 2.0)
+    return 0.7 * aspect_distance + 0.3 * topology_distance
+
+
+def _read_fixed_positions(
+    slide_paths: tuple[Path, ...], order_path: Path | None
+) -> dict[str, int]:
+    """Read positive manifest orders as hard one-based sequence positions."""
+
+    if order_path is None:
+        return {}
+    if not order_path.exists():
+        raise FileNotFoundError(f"section order manifest not found: {order_path}")
+    if order_path.suffix.lower() == ".json":
+        payload = json.loads(order_path.read_text())
+        rows = payload.get("slides", payload)
+        if isinstance(rows, dict):
+            raw = rows.items()
+        else:
+            raw = (
+                (row.get("slide", row.get("filename")), row.get("order"))
+                for row in rows
+            )
+    else:
+        with order_path.open(newline="") as stream:
+            rows = list(csv.DictReader(stream))
+        raw = (
+            (
+                row.get("slide") or row.get("filename") or row.get("raw_name"),
+                row.get("order"),
+            )
+            for row in rows
+        )
+    path_by_name = {path.name: path.name for path in slide_paths}
+    path_by_stem = {path.stem: path.name for path in slide_paths}
+    fixed: dict[str, int] = {}
+    unresolved: list[str] = []
+    for name, order in raw:
+        if name in {None, ""} or order in {None, "", "0", 0}:
+            continue
+        requested = str(name)
+        resolved = path_by_name.get(requested) or path_by_stem.get(
+            Path(requested).stem
+        )
+        if resolved is None:
+            unresolved.append(requested)
+            continue
+        fixed[resolved] = int(order)
+    if unresolved:
+        raise ValueError(
+            "section order contains anchors that do not match discovered slides: "
+            + ", ".join(sorted(unresolved))
+        )
+    return fixed
 
 
 def _select_reference(

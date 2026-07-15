@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+from scipy import ndimage as ndi
 
 from histopia.registration._errors import OptionalDependencyError
 from histopia.registration._slides import load_slide_thumbnail
@@ -34,13 +35,19 @@ def save_rgb(path: Path | str, image: np.ndarray) -> None:
 
 
 def overlay_mask(image: np.ndarray, mask: np.ndarray) -> np.ndarray:
-    """Return a simple red tissue-mask overlay for QC."""
+    """Return a high-contrast tissue overlay with an unambiguous boundary."""
 
-    rgb = _as_uint8_rgb(image).copy()
+    source = _as_uint8_rgb(image)
     mask_bool = np.asarray(mask, dtype=bool)
+    luminance = np.mean(source, axis=2, keepdims=True)
+    rgb = np.repeat(luminance, 3, axis=2)
+    rgb = np.clip(0.65 * rgb + 70, 0, 255).astype(np.uint8)
+    rgb[mask_bool] = source[mask_bool]
     rgb[mask_bool, 0] = np.maximum(rgb[mask_bool, 0], 220)
     rgb[mask_bool, 1] = (0.65 * rgb[mask_bool, 1]).astype(np.uint8)
     rgb[mask_bool, 2] = (0.65 * rgb[mask_bool, 2]).astype(np.uint8)
+    boundary = mask_bool & ~ndi.binary_erosion(mask_bool)
+    rgb[boundary] = np.array([0, 210, 230], dtype=np.uint8)
     return rgb
 
 

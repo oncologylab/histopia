@@ -22,6 +22,8 @@ class SlideGeometry:
     content_bbox_xywh: tuple[int, int, int, int]
     thumbnail_shape: tuple[int, int]
     bounds_source: str
+    mpp_xy: tuple[float, float] | None = None
+    mpp_source: str = "unavailable"
 
     @property
     def thumbnail_to_native(self) -> np.ndarray:
@@ -44,13 +46,46 @@ class SlideGeometry:
 
         return np.linalg.inv(self.thumbnail_to_native)
 
+    @property
+    def native_to_physical(self) -> np.ndarray:
+        """Return a native-pixel to micrometre transform.
+
+        Raises when the source does not provide calibrated pixel spacing. This
+        prevents a silent fallback to pixel units for mixed-scanner studies.
+        """
+
+        if self.mpp_xy is None:
+            raise ValueError("physical pixel spacing is unavailable")
+        mpp_x, mpp_y = self.mpp_xy
+        return np.array(
+            [[mpp_x, 0.0, 0.0], [0.0, mpp_y, 0.0], [0.0, 0.0, 1.0]],
+            dtype=float,
+        )
+
+    @property
+    def physical_to_native(self) -> np.ndarray:
+        """Return a micrometre to native-pixel transform."""
+
+        return np.linalg.inv(self.native_to_physical)
+
+    @property
+    def thumbnail_to_physical(self) -> np.ndarray:
+        """Return a thumbnail-pixel to micrometre transform."""
+
+        return self.native_to_physical @ self.thumbnail_to_native
+
     def to_json_dict(self) -> dict[str, object]:
         return {
             "native_shape": list(self.native_shape),
             "content_bbox_xywh": list(self.content_bbox_xywh),
             "thumbnail_shape": list(self.thumbnail_shape),
             "bounds_source": self.bounds_source,
+            "mpp_xy": list(self.mpp_xy) if self.mpp_xy is not None else None,
+            "mpp_source": self.mpp_source,
             "thumbnail_to_native": self.thumbnail_to_native.tolist(),
+            "thumbnail_to_physical": (
+                self.thumbnail_to_physical.tolist() if self.mpp_xy is not None else None
+            ),
         }
 
 
@@ -122,6 +157,7 @@ def _load_wsi_thumbnail(
     pyvips = _import_pyvips()
     native = pyvips.Image.new_from_file(str(path), access="sequential")
     native_shape = (native.height, native.width)
+    mpp_xy, mpp_source = _openslide_mpp(native)
     bbox = _openslide_content_bbox(native)
     if bbox is None:
         bbox = (0, 0, native.width, native.height)
@@ -145,6 +181,8 @@ def _load_wsi_thumbnail(
         content_bbox_xywh=bbox,
         thumbnail_shape=thumbnail.shape[:2],
         bounds_source=bounds_source,
+        mpp_xy=mpp_xy,
+        mpp_source=mpp_source,
     )
     return thumbnail, geometry
 
@@ -189,6 +227,22 @@ def _openslide_content_bbox(image: Any) -> tuple[int, int, int, int] | None:
     if x < 0 or y < 0 or x + width > image.width or y + height > image.height:
         return None
     return values
+
+
+def _openslide_mpp(image: Any) -> tuple[tuple[float, float] | None, str]:
+    """Read calibrated micrometres-per-pixel from OpenSlide metadata."""
+
+    fields = set(image.get_fields())
+    keys = ("openslide.mpp-x", "openslide.mpp-y")
+    if not all(key in fields for key in keys):
+        return None, "unavailable"
+    try:
+        values = tuple(float(image.get(key)) for key in keys)
+    except (TypeError, ValueError):
+        return None, "invalid:openslide.mpp"
+    if not all(np.isfinite(value) and value > 0 for value in values):
+        return None, "invalid:openslide.mpp"
+    return (values[0], values[1]), "openslide.mpp"
 
 
 def _vips_to_rgb(image: Any) -> np.ndarray:

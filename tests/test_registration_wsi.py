@@ -4,10 +4,33 @@ import numpy as np
 import pytest
 
 from histopia.registration import (
+    SlideGeometry,
     calculate_thumbnail_overlap_bbox,
     thumbnail_to_full_resolution_matrix,
     warp_slide_to_reference,
 )
+
+
+def test_slide_geometry_maps_thumbnail_pixels_to_micrometres() -> None:
+    geometry = SlideGeometry(
+        (1000, 2000),
+        (100, 200, 1000, 500),
+        (100, 200),
+        "openslide.bounds",
+        (0.5, 0.25),
+        "openslide.mpp",
+    )
+
+    point = geometry.thumbnail_to_physical @ np.array([20.0, 40.0, 1.0])
+
+    assert np.allclose(point, [100.0, 100.0, 1.0])
+
+
+def test_slide_geometry_rejects_uncalibrated_physical_mapping() -> None:
+    geometry = SlideGeometry((10, 10), (0, 0, 10, 10), (10, 10), "full")
+
+    with pytest.raises(ValueError, match="spacing is unavailable"):
+        _ = geometry.thumbnail_to_physical
 
 
 def test_thumbnail_matrix_scales_to_full_resolution_coordinates() -> None:

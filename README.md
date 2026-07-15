@@ -7,10 +7,6 @@ histology and proteomic image analysis. The long-term goal is to support
 inter-section image alignment, spatial topology reconstruction, protein and
 marker intensity profiling, and later 3D reconstruction across tissue sections.
 
-The published `0.0.1` release intentionally reserved the package name. The
-current development tree is `0.1.0.dev0` and contains the first validated
-registration workflow migrated from earlier research codebases.
-
 ## Installation
 
 ```bash

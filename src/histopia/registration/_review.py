@@ -11,7 +11,11 @@ from typing import Literal
 import numpy as np
 
 from histopia.registration._errors import OptionalDependencyError
-from histopia.registration._masking import TissueMaskResult, evaluate_tissue_mask
+from histopia.registration._masking import (
+    TissueMaskResult,
+    clean_external_tissue_mask,
+    evaluate_tissue_mask,
+)
 from histopia.registration._slides import SlideGeometry
 
 MaskReviewStatus = Literal["pending", "auto_pass", "override_pass", "rejected"]
@@ -46,12 +50,24 @@ class MaskReviewEntry:
         }
 
 
-def thumbnail_sha256(image: np.ndarray, geometry: SlideGeometry) -> str:
-    """Fingerprint thumbnail pixels and their native-coordinate geometry."""
+def thumbnail_sha256(
+    image: np.ndarray,
+    geometry: SlideGeometry,
+    *,
+    automatic_mask: np.ndarray | None = None,
+    override_mask: np.ndarray | None = None,
+) -> str:
+    """Fingerprint image geometry and every mask input requiring approval."""
 
     digest = hashlib.sha256()
     digest.update(np.ascontiguousarray(image).tobytes())
     digest.update(json.dumps(geometry.to_json_dict(), sort_keys=True).encode())
+    if automatic_mask is not None:
+        digest.update(b"automatic-mask-v2")
+        digest.update(np.ascontiguousarray(automatic_mask, dtype=np.uint8).tobytes())
+    if override_mask is not None:
+        digest.update(b"override-mask-v1")
+        digest.update(np.ascontiguousarray(override_mask, dtype=np.uint8).tobytes())
     return digest.hexdigest()
 
 
@@ -74,7 +90,7 @@ def write_mask_review(
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "slides": [entries[key].to_json_dict() for key in sorted(entries)],
     }
     path.write_text(json.dumps(payload, indent=2) + "\n")
@@ -93,19 +109,14 @@ def resolve_reviewed_mask(
 ) -> tuple[TissueMaskResult, MaskReviewEntry]:
     """Apply an override and enforce review approval for one slide."""
 
-    fingerprint = thumbnail_sha256(image, geometry)
     entry = review_entries.get(slide_path.name)
-    if entry is None or entry.thumbnail_sha256 != fingerprint:
-        entry = MaskReviewEntry(
-            slide=slide_path.name,
-            thumbnail_sha256=fingerprint,
-            method=automatic.method,
-        )
-
     override_path = _find_override(slide_path, entry, override_dir)
     result = automatic
+    override: np.ndarray | None = None
     if override_path is not None:
-        override = _load_binary_mask(override_path, image.shape[:2])
+        override = clean_external_tissue_mask(
+            _load_binary_mask(override_path, image.shape[:2])
+        )
         metrics, warnings = evaluate_tissue_mask(override)
         result = TissueMaskResult(
             mask=override,
@@ -117,10 +128,22 @@ def resolve_reviewed_mask(
             candidate_warnings=automatic.candidate_warnings,
             candidate_masks=automatic.candidate_masks,
         )
-        entry.override_path = str(override_path)
-        entry.method = result.method
+    fingerprint = thumbnail_sha256(
+        image,
+        geometry,
+        automatic_mask=automatic.mask,
+        override_mask=override,
+    )
+    if entry is None or entry.thumbnail_sha256 != fingerprint:
+        entry = MaskReviewEntry(
+            slide=slide_path.name,
+            thumbnail_sha256=fingerprint,
+            method=result.method,
+            override_path=str(override_path) if override_path is not None else None,
+        )
     else:
-        entry.method = automatic.method
+        entry.method = result.method
+        entry.override_path = str(override_path) if override_path is not None else None
 
     if require_approved and not entry.approved:
         msg = f"mask for {slide_path.name} is not approved (status={entry.status})"
@@ -133,11 +156,11 @@ def resolve_reviewed_mask(
 
 def _find_override(
     slide_path: Path,
-    entry: MaskReviewEntry,
+    entry: MaskReviewEntry | None,
     override_dir: Path | None,
 ) -> Path | None:
     candidates: list[Path] = []
-    if entry.override_path:
+    if entry is not None and entry.override_path:
         candidates.append(Path(entry.override_path))
     if override_dir is not None:
         candidates.extend(
