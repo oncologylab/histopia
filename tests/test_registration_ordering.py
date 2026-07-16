@@ -101,6 +101,27 @@ def test_order_fingerprint_changes_with_anchor_or_morphology() -> None:
     assert baseline.fingerprint != changed_distances.fingerprint
 
 
+def test_order_fingerprint_changes_with_accepted_mask_input() -> None:
+    names = ("HE", "A")
+    distances = np.array([[0.0, 0.2], [0.2, 0.0]])
+    baseline = propose_anchored_order(
+        names,
+        distances,
+        {"HE": 1},
+        input_fingerprints={"HE": "mask-a", "A": "mask-b"},
+    )
+    changed = propose_anchored_order(
+        names,
+        distances,
+        {"HE": 1},
+        input_fingerprints={"HE": "mask-a", "A": "mask-c"},
+    )
+
+    assert baseline.fingerprint != changed.fingerprint
+    assert baseline.to_json_dict()["schema_version"] == 2
+    assert baseline.to_json_dict()["input_fingerprints"]["A"] == "mask-b"
+
+
 def test_order_proposal_records_physical_calibration() -> None:
     proposal = propose_anchored_order(
         ("HE", "A"),

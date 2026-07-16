@@ -251,6 +251,13 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
             physical_areas_um2={
                 path.name: physical_areas[path] for path in slide_paths
             },
+            input_fingerprints={
+                path.name: _ordering_input_fingerprint(
+                    masks[path].mask,
+                    geometries[path],
+                )
+                for path in slide_paths
+            },
         )
         order_review_path = (
             config.section_order_review_path
@@ -1212,6 +1219,18 @@ def _physical_mask_area(mask: np.ndarray, geometry: SlideGeometry) -> float | No
         return None
     linear = geometry.thumbnail_to_physical[:2, :2]
     return float(np.count_nonzero(mask) * abs(np.linalg.det(linear)))
+
+
+def _ordering_input_fingerprint(mask: np.ndarray, geometry: SlideGeometry) -> str:
+    """Fingerprint the accepted mask and physical geometry used for ordering."""
+
+    import hashlib
+
+    digest = hashlib.sha256()
+    digest.update(b"histopia-ordering-input-v1")
+    digest.update(np.ascontiguousarray(mask, dtype=np.uint8).tobytes())
+    digest.update(json.dumps(geometry.to_json_dict(), sort_keys=True).encode())
+    return digest.hexdigest()
 
 
 def _thumbnail_physical_pixel_area(geometry: SlideGeometry) -> float | None:

@@ -21,10 +21,12 @@ class SectionOrderProposal:
     runner_up_objective: float | None = None
     adjacent_distances: tuple[float, ...] = ()
     physical_areas_um2: dict[str, float | None] | None = None
+    input_fingerprints: dict[str, str] | None = None
 
     def to_json_dict(self, *, approved: bool = False) -> dict[str, object]:
         return {
-            "schema_version": 1,
+            "schema_version": 2,
+            "algorithm": "anchored-morphology-v2",
             "approved": approved,
             "fingerprint": self.fingerprint,
             "objective": self.objective,
@@ -35,6 +37,7 @@ class SectionOrderProposal:
                 else None
             ),
             "fixed_positions": self.fixed_positions,
+            "input_fingerprints": self.input_fingerprints or {},
             "physically_calibrated": bool(self.physical_areas_um2) and all(
                 area is not None for area in self.physical_areas_um2.values()
             ),
@@ -64,6 +67,7 @@ def propose_anchored_order(
     *,
     beam_width: int = 4096,
     physical_areas_um2: dict[str, float | None] | None = None,
+    input_fingerprints: dict[str, str] | None = None,
 ) -> SectionOrderProposal:
     """Optimize morphology continuity without moving fixed sequence slots."""
 
@@ -83,6 +87,14 @@ def propose_anchored_order(
         raise ValueError("fixed positions must be unique")
     if beam_width <= 0:
         raise ValueError("beam_width must be positive")
+    if input_fingerprints is not None:
+        missing = set(slide_names) - set(input_fingerprints)
+        extra = set(input_fingerprints) - set(slide_names)
+        if missing or extra:
+            raise ValueError(
+                "input fingerprints must exactly match slides "
+                f"(missing={sorted(missing)}, extra={sorted(extra)})"
+            )
 
     index = {name: offset for offset, name in enumerate(slide_names)}
     fixed_by_position = {position: name for name, position in fixed_positions.items()}
@@ -136,7 +148,13 @@ def propose_anchored_order(
         cost for cost, candidate, _ in beam if candidate != ordered
     )
     runner_up = alternative_costs[0] if alternative_costs else None
-    fingerprint = _fingerprint(ordered, fixed_positions, matrix)
+    fingerprint = _fingerprint(
+        ordered,
+        fixed_positions,
+        matrix,
+        physical_areas_um2=physical_areas_um2,
+        input_fingerprints=input_fingerprints,
+    )
     adjacent_distances = tuple(
         float(matrix[index[first], index[second]])
         for first, second in zip(ordered, ordered[1:], strict=False)
@@ -149,6 +167,7 @@ def propose_anchored_order(
         runner_up,
         adjacent_distances,
         dict(physical_areas_um2) if physical_areas_um2 is not None else None,
+        dict(input_fingerprints) if input_fingerprints is not None else None,
     )
 
 
@@ -188,12 +207,24 @@ def _path_objective(
 
 
 def _fingerprint(
-    slides: tuple[str, ...], fixed_positions: dict[str, int], matrix: np.ndarray
+    slides: tuple[str, ...],
+    fixed_positions: dict[str, int],
+    matrix: np.ndarray,
+    *,
+    physical_areas_um2: dict[str, float | None] | None,
+    input_fingerprints: dict[str, str] | None,
 ) -> str:
     payload = {
+        "algorithm": "anchored-morphology-v2",
         "slides": slides,
         "fixed_positions": sorted(fixed_positions.items()),
         "distances": np.round(matrix, 8).tolist(),
+        "physical_areas_um2": (
+            sorted(physical_areas_um2.items()) if physical_areas_um2 else []
+        ),
+        "input_fingerprints": (
+            sorted(input_fingerprints.items()) if input_fingerprints else []
+        ),
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
