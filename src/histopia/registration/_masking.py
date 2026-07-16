@@ -255,8 +255,8 @@ def refine_group_tissue_masks(
             physical_pixel_area=(physical_pixel_areas or {}).get(key),
             expected_physical_area=expected_physical_area,
         )
-        recovery_candidate = result.candidate_masks.get(
-            "group_pale_tissue",
+        recovery_candidate = np.logical_or(
+            result.candidate_masks.get("group_pale_tissue", result.mask),
             proposal_masks[key],
         )
         recovered = _augment_with_group_components(
@@ -387,9 +387,15 @@ def refine_group_tissue_masks(
                     or direct_support >= max(0.02, 0.50 / (len(keys) - 1))
                 )
             )
+            close_native_fragment = (
+                0.02 <= relative_area < 0.10
+                and float(np.min(distance_to_main[component]))
+                <= 0.02 * float(np.hypot(*result.mask.shape))
+                and _component_center_fill_ratio(component) >= 0.45
+            )
             if (
                 support >= min_group_support and relative_area >= 0.10
-            ) or close_supported_fragment:
+            ) or close_supported_fragment or close_native_fragment:
                 keep[label] = True
         if not np.any(keep):
             if not component_support:
@@ -602,7 +608,7 @@ def _polish_selected_mask(result: TissueMaskResult) -> TissueMaskResult:
     if not result.candidate_masks:
         return result
     cleaned = _remove_straight_border_rails(
-        _remove_compact_connected_satellites(result.mask)
+        _remove_hollow_detached_artifacts(result.mask)
     )
     if result.method.startswith(("group_density_union", "group_pale_tissue")):
         if np.array_equal(cleaned, result.mask):
@@ -625,7 +631,7 @@ def _polish_selected_mask(result: TissueMaskResult) -> TissueMaskResult:
         max_area=max(64, int(polished.size * 0.004)),
     )
     polished = _remove_straight_border_rails(
-        _remove_compact_connected_satellites(polished)
+        _remove_hollow_detached_artifacts(polished)
     )
     if np.array_equal(polished, result.mask):
         return result
@@ -643,37 +649,51 @@ def _polish_selected_mask(result: TissueMaskResult) -> TissueMaskResult:
     )
 
 
-def _remove_compact_connected_satellites(mask: np.ndarray) -> np.ndarray:
+def _remove_hollow_detached_artifacts(mask: np.ndarray) -> np.ndarray:
+    """Remove detached ring-like objects while retaining solid tissue lobules."""
+
     labels, count = ndi.label(mask)
-    if count == 0:
+    if count < 2:
         return mask
-    connected_sizes = np.bincount(labels.ravel())
-    largest_connected_label = int(np.argmax(connected_sizes[1:]) + 1)
-    connected = labels == largest_connected_label
-    iterations = max(3, int(round(min(mask.shape) * 0.009)))
-    eroded = ndi.binary_erosion(connected, iterations=iterations)
-    core_labels, core_count = ndi.label(eroded)
-    if core_count < 2:
-        return mask
-    sizes = np.bincount(core_labels.ravel())
+    sizes = np.bincount(labels.ravel())
     largest = int(sizes[1:].max(initial=0))
-    remove = np.zeros_like(mask, dtype=bool)
-    for label in range(1, core_count + 1):
+    keep = np.ones(count + 1, dtype=bool)
+    keep[0] = False
+    for label in range(1, count + 1):
         area = int(sizes[label])
         ratio = area / max(largest, 1)
-        if not 0.03 <= ratio <= 0.15:
+        if not 0.015 <= ratio <= 0.15:
             continue
-        component = core_labels == label
+        component = labels == label
         rows, cols = np.nonzero(component)
         height = rows.max() - rows.min() + 1
         width = cols.max() - cols.min() + 1
         aspect = width / height
-        fill = area / (height * width)
-        if 0.55 <= aspect <= 1.80 and fill >= 0.55:
-            remove |= ndi.binary_dilation(component, iterations=iterations + 2)
-    if not remove.any():
-        return mask
-    return mask & ~remove
+        if 0.55 <= aspect <= 1.80 and _component_center_fill_ratio(component) < 0.35:
+            keep[label] = False
+    return keep[labels]
+
+
+def _component_center_fill_ratio(component: np.ndarray) -> float:
+    rows, cols = np.nonzero(component)
+    if not rows.size:
+        return 0.0
+    top, bottom = int(rows.min()), int(rows.max()) + 1
+    left, right = int(cols.min()), int(cols.max()) + 1
+    height = bottom - top
+    width = right - left
+    center_top = top + int(round(height * 0.30))
+    center_bottom = top + int(round(height * 0.70))
+    center_left = left + int(round(width * 0.30))
+    center_right = left + int(round(width * 0.70))
+    center = component[center_top:center_bottom, center_left:center_right]
+    outer_area = height * width - center.size
+    outer_count = int(np.count_nonzero(component[top:bottom, left:right])) - int(
+        np.count_nonzero(center)
+    )
+    center_fill = float(np.mean(center)) if center.size else 0.0
+    outer_fill = outer_count / max(outer_area, 1)
+    return center_fill / max(outer_fill, 1e-6)
 
 
 def _augment_with_group_components(
@@ -745,10 +765,20 @@ def _augment_with_group_components(
         close_to_trusted = (
             float(np.min(distance_to_trusted[component])) <= maximum_fragment_gap
         )
+        native_continuation = (
+            is_small_fragment
+            and component_area >= largest_trusted * 0.02
+            and float(np.min(distance_to_trusted[component]))
+            <= 0.02 * float(np.hypot(*candidate.shape))
+            and _component_center_fill_ratio(component) >= 0.45
+        )
         required_support = (
             small_fragment_support if is_small_fragment else minimum_support
         )
-        if support >= required_support and (not is_small_fragment or close_to_trusted):
+        if (
+            support >= required_support
+            and (not is_small_fragment or close_to_trusted)
+        ) or native_continuation:
             augmented |= component
     return augmented
 
@@ -795,29 +825,78 @@ def _remove_straight_border_rails(candidate: np.ndarray) -> np.ndarray:
     edge_rows = max(2, int(round(height * 0.005)))
     edge_cols = max(2, int(round(width * 0.005)))
     distance = ndi.distance_transform_edt(candidate)
-    thin = distance <= max(edge_rows, edge_cols) * 1.5
-    edge_zone = np.zeros_like(candidate)
+    thickness = max(edge_rows, edge_cols)
+    thin = distance <= thickness * 1.5
+    tissue_core = distance > thickness * 1.5
+    protected_perimeter = ndi.binary_dilation(
+        tissue_core,
+        iterations=thickness * 3,
+    )
+    horizontal_zone = np.zeros_like(candidate)
     zone_rows = max(edge_rows, int(round(height * 0.12)))
-    zone_cols = max(edge_cols, int(round(width * 0.12)))
-    edge_zone[:zone_rows] = True
-    edge_zone[-zone_rows:] = True
-    edge_zone[:, :zone_cols] = True
-    edge_zone[:, -zone_cols:] = True
-    rail_source = candidate & thin & edge_zone
-    horizontal = ndi.binary_opening(
-        rail_source,
+    horizontal_zone[:zone_rows] = True
+    horizontal_zone[-zone_rows:] = True
+    vertical_zone = np.zeros_like(candidate)
+    zone_cols = max(edge_cols, int(round(width * 0.04)))
+    vertical_zone[:, :zone_cols] = True
+    vertical_zone[:, -zone_cols:] = True
+    horizontal_seed = ndi.binary_opening(
+        candidate & thin & ~protected_perimeter & horizontal_zone,
         structure=np.ones((1, max(12, int(round(width * 0.12)))), dtype=bool),
     )
-    vertical = ndi.binary_opening(
-        rail_source,
+    vertical_seed = ndi.binary_opening(
+        candidate & thin & ~protected_perimeter & vertical_zone,
         structure=np.ones((max(12, int(round(height * 0.12))), 1), dtype=bool),
     )
+    horizontal = ndi.binary_dilation(
+        horizontal_seed,
+        structure=np.ones((1, max(3, int(round(width * 0.25)))), dtype=bool),
+    ) & (candidate & thin & horizontal_zone)
+    vertical = ndi.binary_dilation(
+        vertical_seed,
+        structure=np.ones((max(3, int(round(height * 0.25))), 1), dtype=bool),
+    ) & (candidate & thin & vertical_zone)
     rails = ndi.binary_dilation(
         horizontal | vertical,
         iterations=max(edge_rows, edge_cols) * 2,
     )
     candidate &= ~rails
-    return candidate
+    return _remove_border_bar_components(candidate)
+
+
+def _remove_border_bar_components(candidate: np.ndarray) -> np.ndarray:
+    """Remove detached elongated components that run along the scanner edge."""
+
+    labels, count = ndi.label(candidate)
+    if count < 2:
+        return candidate
+    height, width = candidate.shape
+    keep = np.ones(count + 1, dtype=bool)
+    keep[0] = False
+    for label in range(1, count + 1):
+        component = labels == label
+        rows, cols = np.nonzero(component)
+        row_span = rows.max() - rows.min() + 1
+        col_span = cols.max() - cols.min() + 1
+        long_axis = max(row_span / height, col_span / width)
+        short_axis = min(row_span / height, col_span / width)
+        effective_short_axis = min(
+            short_axis,
+            (
+                np.count_nonzero(component) / (row_span * width)
+                if row_span >= col_span
+                else np.count_nonzero(component) / (col_span * height)
+            ),
+        )
+        touches_edge = (
+            rows.min() < height * 0.02
+            or rows.max() >= height * 0.98
+            or cols.min() < width * 0.02
+            or cols.max() >= width * 0.98
+        )
+        if touches_edge and long_axis > 0.10 and effective_short_axis < 0.08:
+            keep[label] = False
+    return keep[labels]
 
 
 def _pale_tissue_candidate(

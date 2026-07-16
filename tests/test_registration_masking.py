@@ -14,6 +14,8 @@ from histopia.registration._masking import (
     _group_density_union_candidate,
     _mask_score,
     _pale_tissue_candidate,
+    _remove_border_bar_components,
+    _remove_hollow_detached_artifacts,
     _remove_scanner_edges,
     clean_external_tissue_mask,
 )
@@ -29,6 +31,35 @@ def test_scanner_edge_removal_disconnects_straight_rail_from_tissue() -> None:
 
     assert not cleaned[11, 20]
     assert cleaned[60:95, 120:180].mean() > 0.8
+
+
+def test_hollow_detached_artifact_is_removed_but_solid_fragment_remains() -> None:
+    mask = np.zeros((220, 300), dtype=bool)
+    mask[70:190, 80:220] = True
+    yy, xx = np.ogrid[:220, :300]
+    ring = ((yy - 35) ** 2 + (xx - 245) ** 2 <= 24**2) & (
+        (yy - 35) ** 2 + (xx - 245) ** 2 >= 16**2
+    )
+    mask |= ring
+    mask[35:60, 35:65] = True
+
+    cleaned = _remove_hollow_detached_artifacts(mask)
+
+    assert not cleaned[35, 245]
+    assert cleaned[45:55, 45:55].all()
+    assert cleaned[100:160, 110:190].all()
+
+
+def test_border_bar_component_is_removed_without_clipping_edge_tissue() -> None:
+    mask = np.zeros((240, 320), dtype=bool)
+    mask[70:240, 100:290] = True
+    mask[20:180, :10] = True
+
+    cleaned = _remove_border_bar_components(mask)
+
+    assert not cleaned[50, 5]
+    assert cleaned[150:230, 150:250].all()
+    assert cleaned[-1, 180]
 
 
 def test_group_augmentation_only_adds_nearby_or_substantial_tissue() -> None:
