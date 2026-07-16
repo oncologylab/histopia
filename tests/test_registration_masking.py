@@ -14,8 +14,21 @@ from histopia.registration._masking import (
     _group_density_union_candidate,
     _mask_score,
     _pale_tissue_candidate,
+    _remove_scanner_edges,
     clean_external_tissue_mask,
 )
+
+
+def test_scanner_edge_removal_disconnects_straight_rail_from_tissue() -> None:
+    candidate = np.zeros((200, 300), dtype=bool)
+    candidate[10:14, 5:180] = True
+    candidate[12:100, 90:210] = True
+    candidate[35:115, 80:220] |= np.tri(80, 140, dtype=bool)
+
+    cleaned = _remove_scanner_edges(candidate)
+
+    assert not cleaned[11, 20]
+    assert cleaned[60:95, 120:180].mean() > 0.8
 
 
 def test_group_augmentation_only_adds_nearby_or_substantial_tissue() -> None:

@@ -599,10 +599,12 @@ def _select_group_supported_candidate(
 
 
 def _polish_selected_mask(result: TissueMaskResult) -> TissueMaskResult:
-    cleaned = _remove_compact_connected_satellites(result.mask)
-    if not result.candidate_masks or result.method.startswith(
-        ("group_density_union", "group_pale_tissue")
-    ):
+    if not result.candidate_masks:
+        return result
+    cleaned = _remove_straight_border_rails(
+        _remove_compact_connected_satellites(result.mask)
+    )
+    if result.method.startswith(("group_density_union", "group_pale_tissue")):
         if np.array_equal(cleaned, result.mask):
             return result
         metrics = _mask_metrics(cleaned)
@@ -622,7 +624,9 @@ def _polish_selected_mask(result: TissueMaskResult) -> TissueMaskResult:
         polished,
         max_area=max(64, int(polished.size * 0.004)),
     )
-    polished = _remove_compact_connected_satellites(polished)
+    polished = _remove_straight_border_rails(
+        _remove_compact_connected_satellites(polished)
+    )
     if np.array_equal(polished, result.mask):
         return result
     metrics = _mask_metrics(polished)
@@ -764,7 +768,7 @@ def _group_density_union_candidate(
 def _remove_scanner_edges(candidate: np.ndarray) -> np.ndarray:
     """Disconnect scanner-bed borders and dense rails from tissue proposals."""
 
-    candidate = candidate.copy()
+    candidate = _remove_straight_border_rails(candidate)
     height, width = candidate.shape
     edge_rows = max(2, int(round(height * 0.005)))
     edge_cols = max(2, int(round(width * 0.005)))
@@ -780,6 +784,39 @@ def _remove_scanner_edges(candidate: np.ndarray) -> np.ndarray:
     if np.any(dense_cols):
         dense_cols = ndi.binary_dilation(dense_cols, iterations=edge_cols)
         candidate[:, dense_cols] = False
+    return candidate
+
+
+def _remove_straight_border_rails(candidate: np.ndarray) -> np.ndarray:
+    """Remove long axis-aligned runs near the slide boundary."""
+
+    candidate = candidate.copy()
+    height, width = candidate.shape
+    edge_rows = max(2, int(round(height * 0.005)))
+    edge_cols = max(2, int(round(width * 0.005)))
+    distance = ndi.distance_transform_edt(candidate)
+    thin = distance <= max(edge_rows, edge_cols) * 1.5
+    edge_zone = np.zeros_like(candidate)
+    zone_rows = max(edge_rows, int(round(height * 0.12)))
+    zone_cols = max(edge_cols, int(round(width * 0.12)))
+    edge_zone[:zone_rows] = True
+    edge_zone[-zone_rows:] = True
+    edge_zone[:, :zone_cols] = True
+    edge_zone[:, -zone_cols:] = True
+    rail_source = candidate & thin & edge_zone
+    horizontal = ndi.binary_opening(
+        rail_source,
+        structure=np.ones((1, max(12, int(round(width * 0.12)))), dtype=bool),
+    )
+    vertical = ndi.binary_opening(
+        rail_source,
+        structure=np.ones((max(12, int(round(height * 0.12))), 1), dtype=bool),
+    )
+    rails = ndi.binary_dilation(
+        horizontal | vertical,
+        iterations=max(edge_rows, edge_cols) * 2,
+    )
+    candidate &= ~rails
     return candidate
 
 
@@ -835,7 +872,7 @@ def _carve_large_blank_regions(rgb: np.ndarray, mask: np.ndarray) -> np.ndarray:
     local_std = np.sqrt(np.maximum(local_square_mean - local_mean * local_mean, 0))
     background = _estimate_background_rgb(rgb)
     color_delta = np.linalg.norm(rgb - background, axis=2)
-    labels, count = ndi.label((local_std < 0.008) & (color_delta < 0.15))
+    labels, count = ndi.label((local_std < 0.025) & (color_delta < 0.15))
     if count == 0:
         return mask
     sizes = np.bincount(labels.ravel())
