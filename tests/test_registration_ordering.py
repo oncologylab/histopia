@@ -26,6 +26,7 @@ def test_anchored_order_preserves_fixed_slots() -> None:
 
     assert proposal.slides == names
     assert proposal.fixed_positions == {"HE.ndpi": 1, "C.ndpi": 4}
+    assert proposal.adjacent_distances == (0.1, 0.2, 0.1)
 
 
 def test_order_approval_is_bound_to_fingerprint(tmp_path: Path) -> None:
@@ -98,6 +99,21 @@ def test_order_fingerprint_changes_with_anchor_or_morphology() -> None:
 
     assert baseline.fingerprint != changed_anchor.fingerprint
     assert baseline.fingerprint != changed_distances.fingerprint
+
+
+def test_order_proposal_records_physical_calibration() -> None:
+    proposal = propose_anchored_order(
+        ("HE", "A"),
+        np.array([[0.0, 0.2], [0.2, 0.0]]),
+        {"HE": 1},
+        physical_areas_um2={"HE": 2_000_000.0, "A": 1_800_000.0},
+    )
+
+    payload = proposal.to_json_dict()
+
+    assert payload["physically_calibrated"] is True
+    assert payload["slides"][1]["distance_from_previous"] == 0.2
+    assert payload["slides"][1]["physical_tissue_area_um2"] == 1_800_000.0
 
 
 def test_fixed_position_reader_rejects_unknown_anchor(tmp_path: Path) -> None:

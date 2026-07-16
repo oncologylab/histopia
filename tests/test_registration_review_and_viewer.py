@@ -10,7 +10,11 @@ from PIL import Image
 from histopia.registration._masking import TissueMaskResult
 from histopia.registration._review import MaskReviewEntry, resolve_reviewed_mask
 from histopia.registration._slides import SlideGeometry, discover_slides
-from histopia.registration._viewer import build_section_viewer
+from histopia.registration._viewer import (
+    _tissue_review_crop,
+    build_section_order_review,
+    build_section_viewer,
+)
 
 
 def test_discover_slides_excludes_labels_and_generated_files(tmp_path: Path) -> None:
@@ -101,3 +105,58 @@ def test_viewer_builds_manifest_and_pinned_import_map(tmp_path: Path) -> None:
         "three/addons/controls/OrbitControls.js"
         in (index.parent / "viewer.js").read_text()
     )
+
+
+def test_order_review_builds_fixed_height_fingerprinted_grid(tmp_path: Path) -> None:
+    processed = tmp_path / "processed"
+    processed.mkdir()
+    image = np.full((24, 30, 3), 230, dtype=np.uint8)
+    image[5:20, 7:24] = (130, 80, 60)
+    mask = np.zeros((24, 30), dtype=np.uint8)
+    mask[5:20, 7:24] = 255
+    Image.fromarray(image).save(processed / "HE.thumbnail.png")
+    Image.fromarray(mask).save(processed / "HE.mask.png")
+    proposal = tmp_path / "order.json"
+    proposal.write_text(
+        json.dumps(
+            {
+                "approved": False,
+                "fingerprint": "abc123",
+                "objective": 0.0,
+                "runner_up_objective": None,
+                "confidence_margin": None,
+                "physically_calibrated": True,
+                "slides": [
+                    {
+                        "order": 1,
+                        "slide": "HE.ndpi",
+                        "fixed": True,
+                        "distance_from_previous": None,
+                        "physical_tissue_area_um2": 2_000_000.0,
+                    }
+                ],
+            }
+        )
+    )
+
+    index = build_section_order_review(
+        proposal,
+        processed,
+        tmp_path / "order-review",
+    )
+
+    manifest = json.loads((index.parent / "manifest.json").read_text())
+    assert manifest["fingerprint"] == "abc123"
+    assert manifest["slides"][0]["fixed"] is True
+    assert "overflow:hidden" in (index.parent / "order-review.css").read_text()
+
+
+def test_order_review_crop_normalizes_scanner_canvas() -> None:
+    image = np.full((100, 160, 3), 240, dtype=np.uint8)
+    mask = np.zeros((100, 160), dtype=bool)
+    mask[40:60, 70:90] = True
+
+    cropped = _tissue_review_crop(image, mask)
+
+    assert cropped.shape[:2] == (30, 30)
+    assert np.count_nonzero(cropped[..., 3] == 255) == 400

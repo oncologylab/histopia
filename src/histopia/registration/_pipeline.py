@@ -245,7 +245,12 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
         )
         fixed_positions = _read_fixed_positions(slide_paths, config.section_order_path)
         proposal = propose_anchored_order(
-            tuple(path.name for path in slide_paths), distances, fixed_positions
+            tuple(path.name for path in slide_paths),
+            distances,
+            fixed_positions,
+            physical_areas_um2={
+                path.name: physical_areas[path] for path in slide_paths
+            },
         )
         order_review_path = (
             config.section_order_review_path

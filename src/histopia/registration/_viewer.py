@@ -98,6 +98,89 @@ def build_section_viewer(
     return output_dir / "index.html"
 
 
+def build_section_order_review(
+    proposal_path: Path | str,
+    processed_dir: Path | str,
+    output_dir: Path | str,
+) -> Path:
+    """Build a non-scrolling review grid for a fingerprinted order proposal."""
+
+    try:
+        from PIL import Image
+    except ImportError as exc:
+        raise OptionalDependencyError("pillow", "wsi") from exc
+
+    proposal_path = Path(proposal_path)
+    processed_dir = Path(processed_dir)
+    output_dir = Path(output_dir)
+    assets_dir = output_dir / "assets"
+    assets_dir.mkdir(parents=True, exist_ok=True)
+    payload = json.loads(proposal_path.read_text())
+    slides = payload.get("slides", [])
+    if not isinstance(slides, list) or not slides:
+        raise ValueError("section order proposal contains no slides")
+
+    review_slides: list[dict[str, object]] = []
+    for row in slides:
+        slide_name = str(row["slide"])
+        stem = Path(slide_name).stem
+        image = _read_rgb(processed_dir / f"{stem}.thumbnail.png")
+        mask = _read_mask(processed_dir / f"{stem}.mask.png")
+        rgba = _tissue_review_crop(image, mask)
+        filename = f"{int(row['order']):03d}-{_safe_name(stem)}.webp"
+        Image.fromarray(rgba).save(
+            assets_dir / filename,
+            "WEBP",
+            lossless=False,
+            quality=86,
+            method=6,
+        )
+        review_slides.append(
+            {
+                **row,
+                "label": _marker_label(stem),
+                "texture": f"assets/{filename}",
+            }
+        )
+
+    review_payload = {
+        "schema_version": 1,
+        "approved": bool(payload.get("approved")),
+        "fingerprint": str(payload.get("fingerprint", "")),
+        "objective": payload.get("objective"),
+        "runner_up_objective": payload.get("runner_up_objective"),
+        "confidence_margin": payload.get("confidence_margin"),
+        "physically_calibrated": bool(payload.get("physically_calibrated")),
+        "slides": review_slides,
+    }
+    (output_dir / "manifest.json").write_text(
+        json.dumps(review_payload, indent=2) + "\n"
+    )
+    (output_dir / "index.html").write_text(_ORDER_REVIEW_HTML)
+    (output_dir / "order-review.js").write_text(_ORDER_REVIEW_JS)
+    (output_dir / "order-review.css").write_text(_ORDER_REVIEW_CSS)
+    return output_dir / "index.html"
+
+
+def _tissue_review_crop(image: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """Crop a review image around accepted tissue while retaining context."""
+
+    rows, cols = np.nonzero(mask)
+    if not rows.size:
+        raise ValueError("section order review masks must contain tissue")
+    height, width = mask.shape
+    padding = max(4, int(round(max(height, width) * 0.03)))
+    top = max(0, int(rows.min()) - padding)
+    bottom = min(height, int(rows.max()) + padding + 1)
+    left = max(0, int(cols.min()) - padding)
+    right = min(width, int(cols.max()) + padding + 1)
+    cropped_image = image[top:bottom, left:right]
+    cropped_mask = mask[top:bottom, left:right]
+    return np.dstack(
+        [cropped_image, np.where(cropped_mask, 255, 32).astype(np.uint8)]
+    )
+
+
 def _read_rgb(path: Path) -> np.ndarray:
     try:
         from PIL import Image
@@ -158,6 +241,76 @@ _INDEX_HTML = """<!doctype html>
   <script type="module" src="viewer.js"></script>
 </body>
 </html>
+"""
+
+_ORDER_REVIEW_HTML = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Histopia Section Order Review</title>
+  <link rel="stylesheet" href="order-review.css">
+</head>
+<body>
+  <header>
+    <strong>Histopia section order</strong>
+    <span id="status"></span>
+    <span id="score"></span>
+    <code id="fingerprint"></code>
+  </header>
+  <main id="slides"></main>
+  <script type="module" src="order-review.js"></script>
+</body>
+</html>
+"""
+
+_ORDER_REVIEW_JS = """const data = await (await fetch('manifest.json')).json();
+const slides = document.querySelector('#slides');
+const rowCount = innerWidth >= 2400
+  ? (data.slides.length <= 18 ? 2 : 3)
+  : (data.slides.length <= 18 ? 3 : 4);
+slides.style.setProperty('--rows', rowCount);
+slides.style.setProperty('--columns', Math.ceil(data.slides.length / rowCount));
+document.querySelector('#status').textContent =
+  `${data.approved ? 'Approved' : 'Approval required'} | ` +
+  `${data.physically_calibrated ? 'physical scale' : 'pixel scale'}`;
+document.querySelector('#score').textContent =
+  `cost ${Number(data.objective).toFixed(4)} | margin ` +
+  `${Number(data.confidence_margin).toFixed(4)}`;
+document.querySelector('#fingerprint').textContent =
+  data.fingerprint ? data.fingerprint.slice(0, 16) : '';
+for (const slide of data.slides) {
+  const card = document.createElement('article');
+  if (slide.fixed) card.classList.add('fixed');
+  const image = document.createElement('img');
+  image.src = slide.texture;
+  image.alt = slide.slide;
+  const label = document.createElement('div');
+  label.className = 'label';
+  label.textContent = `${String(slide.order).padStart(2, '0')} ${slide.label}`;
+  const metrics = document.createElement('div');
+  metrics.className = 'metrics';
+  const distance = slide.distance_from_previous == null
+    ? 'anchor'
+    : `d ${Number(slide.distance_from_previous).toFixed(3)}`;
+  const area = slide.physical_tissue_area_um2 == null
+    ? ''
+    : ` | ${(Number(slide.physical_tissue_area_um2) / 1e6).toFixed(1)} mm2`;
+  metrics.textContent = `${slide.fixed ? 'fixed | ' : ''}${distance}${area}`;
+  card.append(image, label, metrics);
+  slides.append(card);
+}
+"""
+
+_ORDER_REVIEW_CSS = """*{box-sizing:border-box}html,body{margin:0;height:100%;overflow:hidden}
+body{background:#151719;color:#f3f4f5;font:13px Arial,sans-serif}
+header{height:46px;display:flex;align-items:center;gap:16px;padding:7px 12px;border-bottom:1px solid #45494d}
+header strong{font-size:16px}header code{margin-left:auto;color:#aeb7bf}
+main{height:calc(100vh - 46px);display:grid;grid-template-columns:repeat(var(--columns),minmax(0,1fr));grid-template-rows:repeat(var(--rows),minmax(0,1fr));gap:4px;padding:4px}
+article{position:relative;min-width:0;min-height:0;background:#f4f4f2;border:1px solid #555;overflow:hidden}
+article.fixed{border:3px solid #e0b84b}img{display:block;width:100%;height:calc(100% - 34px);object-fit:contain;background:white}
+.label,.metrics{height:17px;padding:1px 5px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:#16191b}
+.label{font-weight:700}.metrics{font-size:11px;color:#4b5156}
 """
 
 _VIEWER_JS = """import * as THREE from 'three';

@@ -37,7 +37,10 @@ from histopia.registration._rigid import (
     refine_rigid_transform,
 )
 from histopia.registration._slides import SlideGeometry, SlideRecord, discover_slides
-from histopia.registration._viewer import build_section_viewer
+from histopia.registration._viewer import (
+    build_section_order_review,
+    build_section_viewer,
+)
 from histopia.registration._wsi import (
     WsiWarpResult,
     calculate_thumbnail_overlap_bbox,
@@ -66,6 +69,7 @@ __all__ = [
     "WsiWarpResult",
     "build_kpf_manifest",
     "build_section_viewer",
+    "build_section_order_review",
     "apply_quarter_turn",
     "calculate_thumbnail_overlap_bbox",
     "create_tissue_mask",

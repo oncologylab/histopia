@@ -112,6 +112,32 @@ tissue-mask overlap. Physical section order should come from a manifest;
 similarity order is provisional and must not be interpreted as a measured
 z-axis.
 
+For semi-automatic ordering, set
+`section_order_strategy = "anchored_similarity"` and provide a CSV or JSON
+manifest whose positive one-based positions are fixed anchors. Unassigned
+slides are proposed only for the remaining slots using registration support,
+physical tissue area when slide calibration is available, and mask topology.
+The proposal records adjacent distances, physical areas, a runner-up margin,
+and a fingerprint. Set `require_approved_order = true` to stop before
+registration until the exact fingerprint is approved.
+
+Build a fixed-height visual review from the generated proposal and processed
+images:
+
+```python
+from histopia.registration import build_section_order_review
+
+build_section_order_review(
+    "run/section_order_review.json",
+    "run/processed",
+    "order-review",
+)
+```
+
+Review cards are cropped around accepted tissue for morphology comparison.
+Physical tissue area remains a separate displayed measurement. Changing masks,
+anchors, pairwise distances, or the proposed sequence invalidates approval.
+
 Set `mask_review_path`, `mask_override_dir`, and
 `require_approved_masks = true` for production runs. Changed thumbnail pixels
 or geometry invalidate the saved approval fingerprint. Candidate overlays and

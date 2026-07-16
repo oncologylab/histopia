@@ -19,6 +19,8 @@ class SectionOrderProposal:
     fingerprint: str
     objective: float
     runner_up_objective: float | None = None
+    adjacent_distances: tuple[float, ...] = ()
+    physical_areas_um2: dict[str, float | None] | None = None
 
     def to_json_dict(self, *, approved: bool = False) -> dict[str, object]:
         return {
@@ -33,11 +35,22 @@ class SectionOrderProposal:
                 else None
             ),
             "fixed_positions": self.fixed_positions,
+            "physically_calibrated": bool(self.physical_areas_um2) and all(
+                area is not None for area in self.physical_areas_um2.values()
+            ),
             "slides": [
                 {
                     "order": index + 1,
                     "slide": slide,
                     "fixed": self.fixed_positions.get(slide) == index + 1,
+                    "distance_from_previous": (
+                        self.adjacent_distances[index - 1] if index else None
+                    ),
+                    "physical_tissue_area_um2": (
+                        self.physical_areas_um2.get(slide)
+                        if self.physical_areas_um2 is not None
+                        else None
+                    ),
                 }
                 for index, slide in enumerate(self.slides)
             ],
@@ -50,6 +63,7 @@ def propose_anchored_order(
     fixed_positions: dict[str, int],
     *,
     beam_width: int = 4096,
+    physical_areas_um2: dict[str, float | None] | None = None,
 ) -> SectionOrderProposal:
     """Optimize morphology continuity without moving fixed sequence slots."""
 
@@ -123,12 +137,18 @@ def propose_anchored_order(
     )
     runner_up = alternative_costs[0] if alternative_costs else None
     fingerprint = _fingerprint(ordered, fixed_positions, matrix)
+    adjacent_distances = tuple(
+        float(matrix[index[first], index[second]])
+        for first, second in zip(ordered, ordered[1:], strict=False)
+    )
     return SectionOrderProposal(
         ordered,
         dict(fixed_positions),
         fingerprint,
         objective,
         runner_up,
+        adjacent_distances,
+        dict(physical_areas_um2) if physical_areas_um2 is not None else None,
     )
 
 
