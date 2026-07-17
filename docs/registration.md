@@ -78,6 +78,10 @@ registered_output_dir = "/tmp/histopia-registration-runs/4577/registered"
 wsi_compression = "jpeg"
 wsi_jpeg_quality = 95
 wsi_tile_size = 512
+mask_review_path = "/path/to/reviews/mask_review.json"
+mask_override_dir = "/path/to/reviews/mask_overrides"
+automatic_mask_snapshot_path = "/path/to/reviews/automatic_masks/snapshot.json"
+require_approved_masks = true
 
 [mask]
 mode = "auto_tissue"
@@ -142,6 +146,28 @@ Set `mask_review_path`, `mask_override_dir`, and
 `require_approved_masks = true` for production runs. Changed thumbnail pixels
 or geometry invalidate the saved approval fingerprint. Candidate overlays and
 binary masks are written under `qc/mask_candidates/` for adjudication.
+
+Use `automatic_mask_snapshot_path` when a complete set of automatically
+generated masks has already passed visual review. The JSON snapshot must use
+schema version 1 and contain exactly one row per input slide:
+
+```json
+{
+  "schema_version": 1,
+  "slides": [
+    {
+      "slide": "section-001.ndpi",
+      "mask": "section-001.mask.png",
+      "sha256": "<sha256-of-the-encoded-mask-file>"
+    }
+  ]
+}
+```
+
+Mask paths are relative to the snapshot. Histopia rejects missing or extra
+slides, hash mismatches, and masks whose pixel dimensions differ from the
+current processing thumbnail. The snapshot records reviewed automatic output;
+manual corrections still belong in `mask_override_dir`.
 
 Affine refinement uses signed distance fields from tissue masks, not stain
 intensity. A candidate is accepted only if it improves tissue Dice and stays

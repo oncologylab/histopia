@@ -107,6 +107,7 @@ class RegistrationConfig:
     require_approved_order: bool = False
     mask_review_path: Path | None = None
     mask_override_dir: Path | None = None
+    automatic_mask_snapshot_path: Path | None = None
     affine_override_path: Path | None = None
     require_approved_masks: bool = False
     wsi_only: bool = False

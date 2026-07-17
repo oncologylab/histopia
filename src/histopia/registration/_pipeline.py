@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,6 +27,7 @@ from histopia.registration._masking import (
     TissueMaskResult,
     _dominant_component_mask,
     create_tissue_mask,
+    evaluate_tissue_mask,
     refine_group_tissue_masks,
 )
 from histopia.registration._nonrigid import (
@@ -174,15 +176,28 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
 
     for path in slide_paths:
         image, geometry = load_slide_thumbnail(path, config.max_processed_image_dim_px)
-        masks[path] = create_tissue_mask(image, config.mask)
         thumbnails[path] = image
         geometries[path] = geometry
 
-    physical_pixel_areas = {
-        path: _thumbnail_physical_pixel_area(geometry)
-        for path, geometry in geometries.items()
-    }
-    masks = refine_group_tissue_masks(masks, physical_pixel_areas=physical_pixel_areas)
+    if config.automatic_mask_snapshot_path is not None:
+        masks = _load_automatic_mask_snapshot(
+            config.automatic_mask_snapshot_path,
+            slide_paths,
+            thumbnails,
+        )
+    else:
+        masks = {
+            path: create_tissue_mask(thumbnails[path], config.mask)
+            for path in slide_paths
+        }
+        physical_pixel_areas = {
+            path: _thumbnail_physical_pixel_area(geometry)
+            for path, geometry in geometries.items()
+        }
+        masks = refine_group_tissue_masks(
+            masks,
+            physical_pixel_areas=physical_pixel_areas,
+        )
     for path in slide_paths:
         image = thumbnails[path]
         geometry = geometries[path]
@@ -1231,6 +1246,57 @@ def _ordering_input_fingerprint(mask: np.ndarray, geometry: SlideGeometry) -> st
     digest.update(np.ascontiguousarray(mask, dtype=np.uint8).tobytes())
     digest.update(json.dumps(geometry.to_json_dict(), sort_keys=True).encode())
     return digest.hexdigest()
+
+
+def _load_automatic_mask_snapshot(
+    manifest_path: Path,
+    slide_paths: tuple[Path, ...],
+    thumbnails: dict[Path, np.ndarray],
+) -> dict[Path, TissueMaskResult]:
+    """Load hash-verified automatic masks previously accepted by a reviewer."""
+
+    from PIL import Image
+
+    payload = json.loads(manifest_path.read_text())
+    if payload.get("schema_version") != 1:
+        raise ValueError("unsupported automatic mask snapshot schema")
+    rows = payload.get("slides")
+    if not isinstance(rows, list):
+        raise ValueError("automatic mask snapshot must contain a slides list")
+    by_name = {str(row["slide"]): row for row in rows}
+    expected_names = {path.name for path in slide_paths}
+    if set(by_name) != expected_names:
+        missing = sorted(expected_names - set(by_name))
+        extra = sorted(set(by_name) - expected_names)
+        raise ValueError(
+            "automatic mask snapshot must exactly match input slides "
+            f"(missing={missing}, extra={extra})"
+        )
+    results: dict[Path, TissueMaskResult] = {}
+    for path in slide_paths:
+        row = by_name[path.name]
+        mask_path = manifest_path.parent / str(row["mask"])
+        encoded = mask_path.read_bytes()
+        observed_hash = hashlib.sha256(encoded).hexdigest()
+        if observed_hash != row.get("sha256"):
+            raise ValueError(f"automatic mask snapshot hash mismatch: {path.name}")
+        with Image.open(mask_path) as image:
+            mask = np.asarray(image.convert("L")) > 127
+        expected_shape = thumbnails[path].shape[:2]
+        if mask.shape != expected_shape:
+            raise ValueError(
+                f"automatic mask snapshot shape mismatch for {path.name}: "
+                f"{mask.shape} != {expected_shape}"
+            )
+        metrics, warnings = evaluate_tissue_mask(mask)
+        results[path] = TissueMaskResult(
+            mask=mask,
+            method="approved_automatic_snapshot",
+            metrics=metrics,
+            accepted=not warnings,
+            warnings=warnings,
+        )
+    return results
 
 
 def _thumbnail_physical_pixel_area(geometry: SlideGeometry) -> float | None:

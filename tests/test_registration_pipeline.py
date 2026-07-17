@@ -1,3 +1,4 @@
+import hashlib
 import json
 from pathlib import Path
 
@@ -5,7 +6,10 @@ import numpy as np
 from PIL import Image
 
 from histopia.registration import RegistrationConfig, register_sections
-from histopia.registration._pipeline import _crop_to_mask
+from histopia.registration._pipeline import (
+    _crop_to_mask,
+    _load_automatic_mask_snapshot,
+)
 
 
 def test_register_sections_writes_thumbnail_result(tmp_path: Path) -> None:
@@ -49,3 +53,42 @@ def test_tissue_crop_ignores_tiny_remote_artifact() -> None:
 
     assert np.array_equal(crop.offset_xy, np.array([120.0, 70.0]))
     assert crop.image.shape[:2] == (178, 200)
+
+
+def test_automatic_mask_snapshot_requires_exact_hash_and_slide_set(
+    tmp_path: Path,
+) -> None:
+    slide = tmp_path / "section.ndpi"
+    image = np.full((20, 24, 3), 255, dtype=np.uint8)
+    mask = np.zeros((20, 24), dtype=np.uint8)
+    mask[4:16, 6:18] = 255
+    mask_path = tmp_path / "section.mask.png"
+    Image.fromarray(mask).save(mask_path)
+    manifest = tmp_path / "snapshot.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "slides": [
+                    {
+                        "slide": slide.name,
+                        "mask": mask_path.name,
+                        "sha256": hashlib.sha256(mask_path.read_bytes()).hexdigest(),
+                    }
+                ],
+            }
+        )
+    )
+
+    loaded = _load_automatic_mask_snapshot(
+        manifest,
+        (slide,),
+        {slide: image},
+    )
+
+    assert loaded[slide].method == "approved_automatic_snapshot"
+    assert np.array_equal(loaded[slide].mask, mask > 127)
+
+    mask_path.write_bytes(b"changed")
+    with np.testing.assert_raises_regex(ValueError, "hash mismatch"):
+        _load_automatic_mask_snapshot(manifest, (slide,), {slide: image})

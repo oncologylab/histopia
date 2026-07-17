@@ -187,6 +187,7 @@ def _config_from_mapping(data: dict[str, Any]) -> RegistrationConfig:
     section_order_review_value = data.pop("section_order_review_path", None)
     mask_review_value = data.pop("mask_review_path", None)
     mask_override_value = data.pop("mask_override_dir", None)
+    automatic_mask_snapshot_value = data.pop("automatic_mask_snapshot_path", None)
     affine_override_value = data.pop("affine_override_path", None)
     return RegistrationConfig(
         input_dir=Path(data.pop("input_dir")),
@@ -201,6 +202,11 @@ def _config_from_mapping(data: dict[str, Any]) -> RegistrationConfig:
         require_approved_order=data.pop("require_approved_order", False),
         mask_review_path=Path(mask_review_value) if mask_review_value else None,
         mask_override_dir=Path(mask_override_value) if mask_override_value else None,
+        automatic_mask_snapshot_path=(
+            Path(automatic_mask_snapshot_value)
+            if automatic_mask_snapshot_value
+            else None
+        ),
         affine_override_path=(
             Path(affine_override_value) if affine_override_value else None
         ),
