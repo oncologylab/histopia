@@ -9,6 +9,8 @@ import numpy as np
 
 from histopia.registration._errors import OptionalDependencyError
 
+MIN_MASK_FALLBACK_DICE = 0.25
+
 
 @dataclass(slots=True)
 class RigidTransformResult:
@@ -328,21 +330,17 @@ def _estimate_feature_transform(
     matrix[:2, :] = affine
     inlier_count = int(inliers.sum())
     if inlier_count < 10 or not _feature_transform_is_plausible(matrix):
-        fallback = _estimate_mask_moments_transform(fixed_mask, moving_mask)
-        if fallback.inlier_count > 0:
-            reason = (
-                f"feature inliers too low ({inlier_count})"
-                if inlier_count < 10
-                else "feature transform was degenerate"
-            )
-            fallback.warnings.append(f"{reason}; used mask moments")
-            return fallback
-        warning = (
-            f"feature inliers too low ({inlier_count}); mask fallback failed"
+        reason = (
+            f"feature inliers too low ({inlier_count})"
             if inlier_count < 10
-            else "feature transform was degenerate; mask fallback failed"
+            else "feature transform was degenerate"
         )
-        return _failed_feature_result(warning, len(good_matches))
+        return _feature_or_mask_fallback(
+            reason,
+            fixed_mask,
+            moving_mask,
+            len(good_matches),
+        )
     return RigidTransformResult(
         matrix=matrix,
         method=f"feature:{detector_name}",
@@ -374,6 +372,18 @@ def _feature_or_mask_fallback(
     fallback = _estimate_mask_moments_transform(fixed_mask, moving_mask)
     if fallback.inlier_count <= 0:
         return _failed_feature_result(warning, match_count)
+    fallback_dice = fallback.inlier_count / 1000.0
+    if fallback_dice < MIN_MASK_FALLBACK_DICE:
+        return _failed_feature_result(
+            f"{warning}; rejected low-confidence mask fallback "
+            f"(Dice={fallback_dice:.3f}, minimum={MIN_MASK_FALLBACK_DICE:.3f})",
+            match_count,
+        )
+    if not _feature_transform_is_plausible(fallback.matrix):
+        return _failed_feature_result(
+            f"{warning}; rejected implausible mask fallback scale",
+            match_count,
+        )
     fallback.match_count = match_count
     fallback.warnings.append(f"{warning}; used mask moments")
     return fallback

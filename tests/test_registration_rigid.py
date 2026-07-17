@@ -71,7 +71,7 @@ def test_mask_refinement_improves_conservative_affine_initializer() -> None:
     assert result.inlier_count > 900
 
 
-def test_feature_fallback_keeps_valid_low_overlap_mask_transform() -> None:
+def test_feature_fallback_rejects_low_overlap_mask_transform() -> None:
     fixed_mask = np.zeros((100, 100), dtype=bool)
     moving_mask = np.zeros((100, 100), dtype=bool)
     fixed_mask[10:90, 10:90] = True
@@ -84,7 +84,25 @@ def test_feature_fallback_keeps_valid_low_overlap_mask_transform() -> None:
         match_count=2,
     )
 
-    assert result.method == "mask_moments"
-    assert result.inlier_count > 0
+    assert result.method == "feature"
+    assert result.inlier_count == 0
     assert result.match_count == 2
+    assert "rejected implausible mask fallback scale" in result.warnings[-1]
+
+
+def test_feature_fallback_accepts_confident_mask_transform() -> None:
+    fixed_mask = np.zeros((100, 100), dtype=bool)
+    moving_mask = np.zeros((100, 100), dtype=bool)
+    fixed_mask[20:80, 20:80] = True
+    moving_mask[25:85, 15:75] = True
+
+    result = _feature_or_mask_fallback(
+        "not enough feature matches",
+        fixed_mask,
+        moving_mask,
+        match_count=2,
+    )
+
+    assert result.method == "mask_moments"
+    assert result.inlier_count > 900
     assert result.warnings[-1].endswith("used mask moments")
