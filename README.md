@@ -56,6 +56,16 @@ See `docs/registration.md` for the current API and validation workflow, and
 `docs/dependency_management.md` for install profiles.
 Current KPF validation notes are in `docs/kpf_registration_validation.md`.
 
+## Serial-Section Semantic Atlas
+
+Histopia can extract compact UNI2-h patch features from unregistered source
+slides, map them through accepted registration transforms, and fit one global
+semantic atlas across the section stack. Install the light analysis layer with
+`.[semantic]` or the GPU extraction stack with `.[uni2h]`.
+
+Model weights remain external and subject to their own access and license
+terms. See `docs/semantic_atlas.md` for the staged, review-gated workflow.
+
 ## License
 
 The license is pending. See `LICENSE` for the current placeholder.

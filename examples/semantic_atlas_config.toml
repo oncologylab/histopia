@@ -1,0 +1,15 @@
+registration_run = "/path/to/accepted-registration-run"
+output_dir = "/path/to/semantic-atlas-output"
+model_cache_dir = "/external/path/to/huggingface-cache"
+
+analysis_mpp = 0.5
+patch_size_px = 224
+min_tissue_fraction = 0.5
+batch_size = 64
+primary_clusters = 7
+sensitivity_clusters = [5, 10]
+pca_components = 64
+balanced_patch_cap = 4096
+max_cross_section_distance_um = 112.0
+seed = 0
+device = "cuda"

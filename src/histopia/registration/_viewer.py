@@ -20,6 +20,7 @@ def build_section_viewer(
     output_dir: Path | str,
     *,
     provisional_mice: set[str] | None = None,
+    semantic_runs: dict[str, Path | str] | None = None,
 ) -> Path:
     """Build a browser viewer from completed registration run directories."""
 
@@ -32,12 +33,33 @@ def build_section_viewer(
     assets_dir = output_dir / "assets"
     assets_dir.mkdir(parents=True, exist_ok=True)
     provisional_mice = provisional_mice or set()
+    semantic_runs = semantic_runs or {}
     mouse_payloads: list[dict[str, object]] = []
 
     for mouse_id, run_value in sorted(runs.items()):
         run_dir = Path(run_value)
         payload = json.loads((run_dir / "registration_result.json").read_text())
+        semantic_dir = (
+            Path(semantic_runs[mouse_id]) if mouse_id in semantic_runs else None
+        )
+        semantic_payload = (
+            json.loads((semantic_dir / "semantic_result.json").read_text())
+            if semantic_dir is not None
+            else None
+        )
+        semantic_slides = (
+            {row["id"]: row for row in semantic_payload["slides"]}
+            if semantic_payload is not None
+            else {}
+        )
+        cluster_count = (
+            int(semantic_payload["primary_clusters"])
+            if semantic_payload is not None
+            else None
+        )
+        palette = semantic_payload["palette"] if semantic_payload is not None else []
         reference_path = Path(payload["reference_slide"])
+        reference_row = next(row for row in payload["slides"] if row["is_reference"])
         reference_image = _read_rgb(
             run_dir / "processed" / f"{reference_path.stem}.thumbnail.png"
         )
@@ -66,15 +88,46 @@ def build_section_viewer(
                 quality=88,
                 method=6,
             )
-            slides.append(
-                {
-                    "id": source_path.name,
-                    "label": _marker_label(source_path.stem),
-                    "order": order,
-                    "texture": f"assets/{_safe_name(mouse_id)}/{filename}",
-                    "reference": bool(slide["is_reference"]),
-                }
-            )
+            slide_payload = {
+                "id": source_path.name,
+                "label": _marker_label(source_path.stem),
+                "order": order,
+                "texture": f"assets/{_safe_name(mouse_id)}/{filename}",
+                "reference": bool(slide["is_reference"]),
+            }
+            if semantic_payload is not None:
+                semantic_row = semantic_slides.get(source_path.name)
+                if semantic_row is None:
+                    raise ValueError(f"semantic result is missing {source_path.name}")
+                labels_path = semantic_dir / semantic_row["labels"][str(cluster_count)]
+                semantic_rgba = _semantic_rgba(
+                    labels_path,
+                    palette,
+                    reference_row["geometry"],
+                    registered_mask,
+                )
+                semantic_name = (
+                    f"{order:03d}-{_safe_name(source_path.stem)}-semantic.webp"
+                )
+                blend_name = f"{order:03d}-{_safe_name(source_path.stem)}-blend.webp"
+                Image.fromarray(semantic_rgba).save(
+                    mouse_assets / semantic_name, "WEBP", lossless=True, method=6
+                )
+                blended = _blend_semantic(registered, registered_mask, semantic_rgba)
+                Image.fromarray(blended).save(
+                    mouse_assets / blend_name,
+                    "WEBP",
+                    lossless=False,
+                    quality=90,
+                    method=6,
+                )
+                slide_payload["semantic_texture"] = (
+                    f"assets/{_safe_name(mouse_id)}/{semantic_name}"
+                )
+                slide_payload["blend_texture"] = (
+                    f"assets/{_safe_name(mouse_id)}/{blend_name}"
+                )
+            slides.append(slide_payload)
         mouse_payloads.append(
             {
                 "id": mouse_id,
@@ -82,6 +135,14 @@ def build_section_viewer(
                 "width": int(reference_image.shape[1]),
                 "height": int(reference_image.shape[0]),
                 "slides": slides,
+                "semantic": (
+                    {
+                        "cluster_count": cluster_count,
+                        "palette": palette[:cluster_count],
+                    }
+                    if semantic_payload is not None
+                    else None
+                ),
             }
         )
 
@@ -96,6 +157,64 @@ def build_section_viewer(
     )
     (output_dir / "styles.css").write_text(_STYLES_CSS)
     return output_dir / "index.html"
+
+
+def _semantic_rgba(
+    labels_path: Path,
+    palette: list[str],
+    reference_geometry: dict[str, object],
+    registered_mask: np.ndarray,
+) -> np.ndarray:
+    from PIL import Image, ImageDraw
+
+    with np.load(labels_path, allow_pickle=False) as data:
+        labels = data["labels"]
+        points_um = data["reference_um_xy"]
+        patch_um = float(data["patch_size_px"]) * float(data["analysis_mpp"])
+    mpp_x, mpp_y = (float(value) for value in reference_geometry["mpp_xy"])
+    x, y, native_width, native_height = (
+        float(value) for value in reference_geometry["content_bbox_xywh"]
+    )
+    thumb_height, thumb_width = registered_mask.shape
+    points_px = np.column_stack(
+        [
+            (points_um[:, 0] / mpp_x - x) * thumb_width / native_width,
+            (points_um[:, 1] / mpp_y - y) * thumb_height / native_height,
+        ]
+    )
+    half_width = patch_um / mpp_x * thumb_width / native_width / 2
+    half_height = patch_um / mpp_y * thumb_height / native_height / 2
+    canvas = Image.new("RGBA", (thumb_width, thumb_height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(canvas)
+    for label, (center_x, center_y) in zip(labels, points_px, strict=True):
+        color = palette[int(label) % len(palette)]
+        draw.rectangle(
+            (
+                center_x - half_width,
+                center_y - half_height,
+                center_x + half_width,
+                center_y + half_height,
+            ),
+            fill=color + "dc",
+        )
+    rgba = np.asarray(canvas).copy()
+    rgba[..., 3] = np.where(registered_mask, rgba[..., 3], 0)
+    return rgba
+
+
+def _blend_semantic(
+    registered: np.ndarray,
+    registered_mask: np.ndarray,
+    semantic_rgba: np.ndarray,
+) -> np.ndarray:
+    alpha = semantic_rgba[..., 3:4].astype(np.float32) / 255 * 0.55
+    rgb = registered.astype(np.float32) * (1 - alpha) + semantic_rgba[..., :3] * alpha
+    return np.dstack(
+        [
+            np.clip(rgb, 0, 255).astype(np.uint8),
+            (registered_mask * 255).astype(np.uint8),
+        ]
+    )
 
 
 def build_section_order_review(
@@ -229,6 +348,12 @@ _INDEX_HTML = """<!doctype html>
       <h1>Histopia</h1>
       <label>Mouse<select id="mouse"></select></label>
       <p id="order-status"></p>
+      <div id="mode" class="segmented" aria-label="Texture mode">
+        <button data-mode="histology" class="active">Histology</button>
+        <button data-mode="blend">Blend</button>
+        <button data-mode="semantic">Semantic</button>
+      </div>
+      <div id="legend"></div>
       <label>Spacing<input id="spacing" type="range" min="2" max="80" value="24"></label>
       <label>Opacity<input id="opacity" type="range" min="0.05" max="1" step="0.05" value="0.72"></label>
       <div class="commands">
@@ -331,6 +456,8 @@ const group = new THREE.Group();
 scene.add(group);
 const loader = new THREE.TextureLoader();
 let current;
+let currentMode = 'histology';
+function disposeTexture(texture) { if (texture) texture.dispose(); }
 
 function resize() {
   const box = viewport.getBoundingClientRect();
@@ -396,18 +523,56 @@ function buildList() {
   const saved = JSON.parse(localStorage.getItem(`histopia-order-${current.id}`) || '[]');
   saved.forEach(id => { const item = list.querySelector(`[data-id="${CSS.escape(id)}"]`); if (item) list.append(item); });
 }
+function textureUrl(slide, mode) {
+  if (mode === 'semantic') return slide.semantic_texture;
+  if (mode === 'blend') return slide.blend_texture;
+  return slide.texture;
+}
+function updateModeControls() {
+  const available = Boolean(current?.semantic);
+  document.querySelectorAll('#mode button').forEach(button => {
+    button.disabled = button.dataset.mode !== 'histology' && !available;
+    button.classList.toggle('active', button.dataset.mode === currentMode);
+  });
+  const legend = document.querySelector('#legend');
+  legend.replaceChildren();
+  if (available && currentMode !== 'histology') {
+    current.semantic.palette.forEach((color, index) => {
+      const item = document.createElement('span');
+      item.innerHTML = `<i style="background:${color}"></i>Region ${index + 1}`;
+      legend.append(item);
+    });
+  }
+}
+async function setMode(mode) {
+  if (!current || (mode !== 'histology' && !current.semantic) || mode === currentMode) return;
+  currentMode = mode;
+  await Promise.all(current.slides.map(async slide => {
+    const texture = await loader.loadAsync(textureUrl(slide, mode));
+    texture.colorSpace = THREE.SRGBColorSpace;
+    const previous = slide.mesh.material.map;
+    slide.mesh.material.map = texture;
+    slide.mesh.material.needsUpdate = true;
+    disposeTexture(previous);
+  }));
+  updateModeControls();
+}
 async function loadMouse(mouse) {
+  group.children.forEach(mesh => {
+    disposeTexture(mesh.material.map); mesh.material.dispose(); mesh.geometry.dispose();
+  });
   group.clear(); current = mouse;
+  if (!mouse.semantic) currentMode = 'histology';
   document.querySelector('#order-status').textContent = mouse.provisional_order ? 'Provisional section order' : 'Confirmed section order';
   const scale = 320 / Math.max(mouse.width, mouse.height);
   await Promise.all(mouse.slides.map(async slide => {
-    const texture = await loader.loadAsync(slide.texture);
+    const texture = await loader.loadAsync(textureUrl(slide, currentMode));
     texture.colorSpace = THREE.SRGBColorSpace;
     const material = new THREE.MeshBasicMaterial({map: texture, transparent: true, side: THREE.DoubleSide, depthWrite: false});
     slide.mesh = new THREE.Mesh(new THREE.PlaneGeometry(mouse.width * scale, mouse.height * scale), material);
     group.add(slide.mesh);
   }));
-  buildList(); layout(); resetCamera();
+  buildList(); layout(); updateModeControls(); resetCamera();
 }
 const select = document.querySelector('#mouse');
 manifest.mice.forEach(mouse => select.add(new Option(mouse.id, mouse.id)));
@@ -419,9 +584,11 @@ document.querySelector('#export').addEventListener('click', () => {
   const blob = new Blob([JSON.stringify({mouse: current.id, slides: orderedSlides().map((s, i) => ({slide: s.id, order: i + 1}))}, null, 2)], {type: 'application/json'});
   const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = `${current.id}-section-order.json`; link.click(); URL.revokeObjectURL(link.href);
 });
+document.querySelectorAll('#mode button').forEach(button =>
+  button.addEventListener('click', () => setMode(button.dataset.mode)));
 new ResizeObserver(resize).observe(viewport); resize(); resetCamera();
 function animate() { requestAnimationFrame(animate); controls.update(); renderer.render(scene, camera); }
 await loadMouse(manifest.mice[0]); animate();
 """
 
-_STYLES_CSS = """*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden}body{font-family:Arial,sans-serif;color:#202426;background:#f4f5f3}main{display:grid;grid-template-columns:300px minmax(0,1fr);width:100%;height:100%;overflow:hidden}aside{min-width:0;min-height:0;padding:18px;border-right:1px solid #c9ceca;background:#fff;overflow-y:auto;overflow-x:hidden}h1{font-size:22px;margin:0 0 18px}label{display:grid;gap:6px;font-size:13px;margin:14px 0}select,input{width:100%}.commands{display:flex;gap:8px;margin:16px 0}button{border:1px solid #88918b;background:#fff;padding:7px 10px;border-radius:4px;cursor:pointer}#order-status{font-size:12px;color:#8a4f12}ol{padding:0;list-style:none}li{display:grid;grid-template-columns:20px minmax(0,1fr);align-items:center;min-height:32px;border-bottom:1px solid #eceeec;font-size:12px;cursor:grab}li span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}li input{width:14px}#viewport{position:relative;min-width:0;min-height:0;width:100%;height:100%;overflow:hidden}canvas{display:block;width:100%!important;height:100%!important}@media(max-width:720px){main{grid-template-columns:1fr;grid-template-rows:250px minmax(0,1fr)}aside{border-right:0;border-bottom:1px solid #c9ceca}#sections{display:none}}"""
+_STYLES_CSS = """*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden}body{font-family:Arial,sans-serif;color:#202426;background:#f4f5f3}main{display:grid;grid-template-columns:300px minmax(0,1fr);width:100%;height:100%;overflow:hidden}aside{min-width:0;min-height:0;padding:18px;border-right:1px solid #c9ceca;background:#fff;overflow-y:auto;overflow-x:hidden}h1{font-size:22px;margin:0 0 18px}label{display:grid;gap:6px;font-size:13px;margin:14px 0}select,input{width:100%}.commands,.segmented{display:flex;gap:8px;margin:16px 0}button{border:1px solid #88918b;background:#fff;padding:7px 10px;border-radius:4px;cursor:pointer}.segmented{gap:0}.segmented button{flex:1;border-radius:0;margin-left:-1px}.segmented button:first-child{margin-left:0;border-radius:4px 0 0 4px}.segmented button:last-child{border-radius:0 4px 4px 0}.segmented button.active{background:#202426;color:#fff}.segmented button:disabled{color:#a7aca8;cursor:default}#legend{display:grid;grid-template-columns:1fr 1fr;gap:5px;font-size:11px}#legend span{display:flex;align-items:center;gap:5px}#legend i{display:block;width:12px;height:12px;border:1px solid #555}#order-status{font-size:12px;color:#8a4f12}ol{padding:0;list-style:none}li{display:grid;grid-template-columns:20px minmax(0,1fr);align-items:center;min-height:32px;border-bottom:1px solid #eceeec;font-size:12px;cursor:grab}li span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}li input{width:14px}#viewport{position:relative;min-width:0;min-height:0;width:100%;height:100%;overflow:hidden}canvas{display:block;width:100%!important;height:100%!important}@media(max-width:720px){main{grid-template-columns:1fr;grid-template-rows:250px minmax(0,1fr)}aside{border-right:0;border-bottom:1px solid #c9ceca}#sections{display:none}}"""

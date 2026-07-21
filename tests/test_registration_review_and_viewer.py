@@ -116,6 +116,79 @@ def test_viewer_builds_manifest_and_pinned_import_map(tmp_path: Path) -> None:
     assert "controls.minDistance" in viewer
 
 
+def test_viewer_adds_lazy_semantic_and_blend_modes(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    processed = run_dir / "processed"
+    processed.mkdir(parents=True)
+    image = np.full((20, 20, 3), 220, dtype=np.uint8)
+    mask = np.full((20, 20), 255, dtype=np.uint8)
+    Image.fromarray(image).save(processed / "section.thumbnail.png")
+    Image.fromarray(mask).save(processed / "section.mask.png")
+    geometry = {
+        "native_shape": [200, 200],
+        "content_bbox_xywh": [0, 0, 200, 200],
+        "thumbnail_shape": [20, 20],
+        "bounds_source": "test",
+        "mpp_xy": [0.5, 0.5],
+        "mpp_source": "test",
+    }
+    (run_dir / "registration_result.json").write_text(
+        json.dumps(
+            {
+                "reference_slide": str(tmp_path / "section.ndpi"),
+                "slides": [
+                    {
+                        "path": str(tmp_path / "section.ndpi"),
+                        "is_reference": True,
+                        "geometry": geometry,
+                        "transform": {"matrix": np.eye(3).tolist()},
+                    }
+                ],
+            }
+        )
+    )
+    semantic = tmp_path / "semantic"
+    labels = semantic / "labels" / "k-2"
+    labels.mkdir(parents=True)
+    np.savez_compressed(
+        labels / "001.npz",
+        labels=np.array([0, 1], dtype=np.int16),
+        reference_um_xy=np.array([[25, 25], [75, 75]], dtype=float),
+        patch_size_px=np.int32(100),
+        analysis_mpp=np.float64(0.5),
+    )
+    (semantic / "semantic_result.json").write_text(
+        json.dumps(
+            {
+                "primary_clusters": 2,
+                "palette": ["#d73027", "#1a9850"],
+                "slides": [
+                    {
+                        "id": "section.ndpi",
+                        "labels": {"2": "labels/k-2/001.npz"},
+                    }
+                ],
+            }
+        )
+    )
+
+    index = build_section_viewer(
+        {"mouse": run_dir},
+        tmp_path / "viewer",
+        semantic_runs={"mouse": semantic},
+    )
+
+    manifest = json.loads((index.parent / "manifest.json").read_text())
+    slide = manifest["mice"][0]["slides"][0]
+    assert slide["semantic_texture"].endswith("-semantic.webp")
+    assert slide["blend_texture"].endswith("-blend.webp")
+    assert manifest["mice"][0]["semantic"]["cluster_count"] == 2
+    assert 'id="mode"' in index.read_text()
+    viewer = (index.parent / "viewer.js").read_text()
+    assert "texture.dispose()" in viewer
+    assert "semantic_texture" in viewer
+
+
 def test_order_review_builds_fixed_height_fingerprinted_grid(tmp_path: Path) -> None:
     processed = tmp_path / "processed"
     processed.mkdir()

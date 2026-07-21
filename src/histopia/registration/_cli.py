@@ -76,6 +76,13 @@ def main(argv: list[str] | None = None) -> int:
         help="Output directory used with --viewer-run.",
     )
     parser.add_argument(
+        "--viewer-semantic-run",
+        action="append",
+        default=[],
+        metavar="MOUSE=SEMANTIC_DIR",
+        help="Add semantic atlas textures to a viewer mouse.",
+    )
+    parser.add_argument(
         "--provisional-mouse",
         action="append",
         default=[],
@@ -94,10 +101,19 @@ def main(argv: list[str] | None = None) -> int:
                 parser.error("--viewer-run must use MOUSE=RUN_DIR")
             mouse, run_dir = item.split("=", 1)
             runs[mouse] = Path(run_dir)
+        semantic_runs: dict[str, Path] = {}
+        for item in args.viewer_semantic_run:
+            if "=" not in item:
+                parser.error("--viewer-semantic-run must use MOUSE=SEMANTIC_DIR")
+            mouse, semantic_dir = item.split("=", 1)
+            if mouse not in runs:
+                parser.error("--viewer-semantic-run mouse must also use --viewer-run")
+            semantic_runs[mouse] = Path(semantic_dir)
         index_path = build_section_viewer(
             runs,
             args.viewer_output_dir,
             provisional_mice=set(args.provisional_mouse),
+            semantic_runs=semantic_runs,
         )
         print(index_path)
         return 0

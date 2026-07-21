@@ -54,6 +54,30 @@ registration-repro = [
     "scipy==1.15.3",
     "tifffile==2025.5.10",
 ]
+semantic = [
+    "numpy>=1.26,<3",
+    "pillow>=10,<13",
+    "scikit-learn>=1.5,<2",
+    "scipy>=1.11,<2",
+]
+uni2h = [
+    "huggingface-hub>=0.34,<1",
+    "numpy>=1.26,<3",
+    "pillow>=10,<13",
+    "pyvips>=2.2,<4",
+    "scikit-learn>=1.5,<2",
+    "scipy>=1.11,<2",
+    "timm>=1.0.19,<2",
+    "tifffile>=2024.8",
+    "torch>=2.8,<3",
+    "torchvision>=0.23,<1",
+]
+semantic-repro = [
+    "numpy==2.2.6",
+    "pillow==12.3.0",
+    "scikit-learn==1.7.2",
+    "scipy==1.15.3",
+]
 dev = [
     "build>=1.2",
     "pytest>=8",
@@ -63,6 +87,7 @@ dev = [
 
 [project.scripts]
 histopia-register = "histopia.registration._cli:main"
+histopia-semantic = "histopia.semantic._cli:main"
 
 [project.urls]
 Homepage = "https://github.com/oncologylab/histopia"
@@ -77,6 +102,7 @@ pythonpath = ["src"]
 testpaths = ["tests"]
 markers = [
     "integration: local tests that require external image data or optional WSI dependencies",
+    "uni2h: local tests that require a gated UNI2-h checkpoint and GPU dependencies",
 ]
 
 [tool.ruff]

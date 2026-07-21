@@ -30,6 +30,19 @@ Whole-slide registration development:
 python -m pip install -e ".[registration,wsi]"
 ```
 
+Semantic atlas fitting from existing compact features:
+
+```bash
+python -m pip install -e ".[semantic]"
+```
+
+UNI2-h extraction from source whole-slide images:
+
+```bash
+python -m pip install -e ".[uni2h]" \
+    -c constraints/semantic-repro.txt
+```
+
 Reproducible KPF validation environment:
 
 ```bash
@@ -69,6 +82,8 @@ vips --version
 - Keep runtime dependencies in optional extras unless needed at import time.
 - Use lower and upper bounds for normal workflow extras.
 - Use `constraints/registration-repro.txt` for exact validation reruns.
+- Use `constraints/semantic-repro.txt` for the tested semantic analysis and
+  GPU extraction stack. Match the PyTorch wheel to the host CUDA runtime.
 - Do not commit virtual environments, raw slides, generated masks, warped
   images, or registration output directories.
 - Record `histopia-register` config files and `registration_result.json` files
