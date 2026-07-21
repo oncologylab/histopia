@@ -105,6 +105,13 @@ def test_viewer_builds_manifest_and_pinned_import_map(tmp_path: Path) -> None:
         "three/addons/controls/OrbitControls.js"
         in (index.parent / "viewer.js").read_text()
     )
+    styles = (index.parent / "styles.css").read_text()
+    viewer = (index.parent / "viewer.js").read_text()
+    assert "html,body" in styles
+    assert "overflow:hidden" in styles
+    assert "width:100%!important;height:100%!important" in styles
+    assert "renderer.setSize(box.width, box.height, true)" in viewer
+    assert "new THREE.Box3().setFromObject(group)" in viewer
 
 
 def test_order_review_builds_fixed_height_fingerprinted_grid(tmp_path: Path) -> None:

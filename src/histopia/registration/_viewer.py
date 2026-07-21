@@ -334,13 +334,25 @@ let current;
 
 function resize() {
   const box = viewport.getBoundingClientRect();
-  renderer.setSize(box.width, box.height, false);
+  renderer.setSize(box.width, box.height, true);
   camera.aspect = box.width / box.height;
   camera.updateProjectionMatrix();
 }
 function resetCamera() {
-  camera.position.set(0, -520, 390);
-  controls.target.set(0, 0, 0);
+  if (!group.children.length) return;
+  group.updateMatrixWorld(true);
+  const sphere = new THREE.Box3().setFromObject(group).getBoundingSphere(
+    new THREE.Sphere());
+  const verticalFov = THREE.MathUtils.degToRad(camera.fov);
+  const horizontalFov = 2 * Math.atan(Math.tan(verticalFov / 2) * camera.aspect);
+  const limitingFov = Math.min(verticalFov, horizontalFov);
+  const distance = sphere.radius / Math.sin(limitingFov / 2) * 1.12;
+  const direction = new THREE.Vector3(0, -4, 3).normalize();
+  camera.position.copy(sphere.center).addScaledVector(direction, distance);
+  controls.target.copy(sphere.center);
+  camera.near = Math.max(0.1, distance - sphere.radius * 2);
+  camera.far = distance + sphere.radius * 4;
+  camera.updateProjectionMatrix();
   controls.update();
 }
 function orderedSlides() {
@@ -410,4 +422,4 @@ function animate() { requestAnimationFrame(animate); controls.update(); renderer
 await loadMouse(manifest.mice[0]); animate();
 """
 
-_STYLES_CSS = """*{box-sizing:border-box}body{margin:0;font-family:Arial,sans-serif;color:#202426;background:#f4f5f3}main{display:grid;grid-template-columns:300px 1fr;height:100vh}aside{padding:18px;border-right:1px solid #c9ceca;background:#fff;overflow:auto}h1{font-size:22px;margin:0 0 18px}label{display:grid;gap:6px;font-size:13px;margin:14px 0}select,input{width:100%}.commands{display:flex;gap:8px;margin:16px 0}button{border:1px solid #88918b;background:#fff;padding:7px 10px;border-radius:4px;cursor:pointer}#order-status{font-size:12px;color:#8a4f12}ol{padding:0;list-style:none}li{display:grid;grid-template-columns:20px 1fr;align-items:center;min-height:32px;border-bottom:1px solid #eceeec;font-size:12px;cursor:grab}li input{width:14px}#viewport{min-width:0;min-height:0}canvas{display:block}@media(max-width:720px){main{grid-template-columns:1fr;grid-template-rows:250px 1fr}aside{border-right:0;border-bottom:1px solid #c9ceca}#sections{display:none}}"""
+_STYLES_CSS = """*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden}body{font-family:Arial,sans-serif;color:#202426;background:#f4f5f3}main{display:grid;grid-template-columns:300px minmax(0,1fr);width:100%;height:100%;overflow:hidden}aside{min-width:0;min-height:0;padding:18px;border-right:1px solid #c9ceca;background:#fff;overflow-y:auto;overflow-x:hidden}h1{font-size:22px;margin:0 0 18px}label{display:grid;gap:6px;font-size:13px;margin:14px 0}select,input{width:100%}.commands{display:flex;gap:8px;margin:16px 0}button{border:1px solid #88918b;background:#fff;padding:7px 10px;border-radius:4px;cursor:pointer}#order-status{font-size:12px;color:#8a4f12}ol{padding:0;list-style:none}li{display:grid;grid-template-columns:20px minmax(0,1fr);align-items:center;min-height:32px;border-bottom:1px solid #eceeec;font-size:12px;cursor:grab}li span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}li input{width:14px}#viewport{position:relative;min-width:0;min-height:0;width:100%;height:100%;overflow:hidden}canvas{display:block;width:100%!important;height:100%!important}@media(max-width:720px){main{grid-template-columns:1fr;grid-template-rows:250px minmax(0,1fr)}aside{border-right:0;border-bottom:1px solid #c9ceca}#sections{display:none}}"""
