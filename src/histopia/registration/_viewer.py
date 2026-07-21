@@ -350,8 +350,10 @@ function resetCamera() {
   const direction = new THREE.Vector3(0, -4, 3).normalize();
   camera.position.copy(sphere.center).addScaledVector(direction, distance);
   controls.target.copy(sphere.center);
-  camera.near = Math.max(0.1, distance - sphere.radius * 2);
-  camera.far = distance + sphere.radius * 4;
+  camera.near = Math.max(0.01, sphere.radius / 10000);
+  camera.far = distance + sphere.radius * 20;
+  controls.minDistance = Math.max(sphere.radius * 0.12, camera.near * 10);
+  controls.maxDistance = distance * 8;
   camera.updateProjectionMatrix();
   controls.update();
 }
