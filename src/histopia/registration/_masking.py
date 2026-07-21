@@ -951,13 +951,42 @@ def _carve_large_blank_regions(rgb: np.ndarray, mask: np.ndarray) -> np.ndarray:
     local_std = np.sqrt(np.maximum(local_square_mean - local_mean * local_mean, 0))
     background = _estimate_background_rgb(rgb)
     color_delta = np.linalg.norm(rgb - background, axis=2)
-    labels, count = ndi.label((local_std < 0.025) & (color_delta < 0.15))
+    low_texture = local_std < 0.025
+    neutral_plate_proposal = (
+        low_texture
+        & (_saturation(rgb) < 0.025)
+        & (brightness > 0.65)
+        & (brightness < 0.96)
+    )
+    neutral_plate_labels, _ = ndi.label(neutral_plate_proposal)
+    neutral_plate_sizes = np.bincount(neutral_plate_labels.ravel())
+    fragmented_plate_ids = np.flatnonzero(neutral_plate_sizes >= mask.size * 0.005)
+    fragmented_plate_ids = fragmented_plate_ids[fragmented_plate_ids != 0]
+    white = np.all(rgb > 0.995, axis=2)
+    separating_rows = np.mean(white, axis=1) > 0.95
+    separating_cols = np.mean(white, axis=0) > 0.95
+    fragmented_canvas = (
+        np.mean(separating_rows) >= 0.08 or np.mean(separating_cols) >= 0.08
+    )
+    neutral_plate = (
+        np.isin(neutral_plate_labels, fragmented_plate_ids)
+        if fragmented_canvas and fragmented_plate_ids.size >= 3
+        else np.zeros_like(mask, dtype=bool)
+    )
+    labels, count = ndi.label(
+        (low_texture & (color_delta < 0.15)) | neutral_plate
+    )
     if count == 0:
         return mask
     sizes = np.bincount(labels.ravel())
     large = sizes >= mask.size * 0.01
     large[0] = False
     blank = ndi.binary_closing(large[labels], iterations=6)
+    neutral_labels = np.unique(labels[neutral_plate])
+    neutral_labels = neutral_labels[large[neutral_labels]]
+    if neutral_labels.size:
+        neutral_blank = np.isin(labels, neutral_labels)
+        blank |= ndi.binary_dilation(neutral_blank, iterations=12)
     removed = mask & blank
     if np.count_nonzero(removed) < np.count_nonzero(mask) * 0.05:
         return mask

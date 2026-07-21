@@ -637,6 +637,33 @@ def test_blank_carving_is_noop_when_overlap_is_small() -> None:
     assert np.array_equal(carved, mask)
 
 
+def test_blank_carving_removes_neutral_scanner_plate_attached_to_tissue() -> None:
+    image = np.ones((200, 300, 3), dtype=np.float32)
+    image[45:155, 35:165] = [0.76, 0.45, 0.40]
+    image[45:155:3, 35:165:3] = [0.32, 0.14, 0.12]
+    image[70:140, 165:260] = [0.865, 0.860, 0.870]
+    image[10:35, 170:240] = [0.865, 0.860, 0.870]
+    image[165:190, 55:125] = [0.865, 0.860, 0.870]
+    mask = np.zeros((200, 300), dtype=bool)
+    mask[40:160, 30:260] = True
+
+    carved = _carve_large_blank_regions(image, mask)
+
+    assert carved[65:145, 45:150].mean() > 0.8
+    assert carved[80:130, 185:245].mean() < 0.1
+
+
+def test_blank_carving_preserves_pale_chromatic_tissue() -> None:
+    image = np.ones((200, 300, 3), dtype=np.float32)
+    image[45:155, 40:250] = [0.90, 0.76, 0.72]
+    mask = np.zeros((200, 300), dtype=bool)
+    mask[45:155, 40:250] = True
+
+    carved = _carve_large_blank_regions(image, mask)
+
+    assert np.array_equal(carved, mask)
+
+
 def test_create_tissue_mask_rejects_blank_slide_by_default() -> None:
     image = np.full((64, 64, 3), 255, dtype=np.uint8)
 
