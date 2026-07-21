@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import numpy as np
 
+from histopia.semantic._correspondence import AdjacentSectionCorrespondence
 from histopia.semantic._graph import (
+    EdgeKind,
     GraphEdges,
     build_serial_graph,
     diffuse_labels,
@@ -38,6 +40,53 @@ def test_serial_graph_has_grid_and_reciprocal_adjacent_section_edges() -> None:
     assert (2, 5) not in pairs
     np.testing.assert_array_equal(graph.section_offsets, [0, 3, 6])
     assert np.all((graph.weight > 0) & (graph.weight <= 1))
+    assert set(graph.edge_kind.tolist()) == {
+        EdgeKind.WITHIN_SECTION_SPATIAL,
+        EdgeKind.CROSS_SECTION_SPATIAL,
+    }
+
+
+def test_edge_kinds_are_typed_and_preserve_legacy_integer_values() -> None:
+    assert EdgeKind.WITHIN_SECTION_SPATIAL == 0
+    assert EdgeKind.CROSS_SECTION_SPATIAL == 1
+    assert EdgeKind.CROSS_SECTION_MORPHOLOGY == 2
+    assert EdgeKind.CROSS_SECTION_CONSENSUS == 3
+
+
+def test_accepted_correspondence_drives_adjacent_consensus_edges() -> None:
+    grids = tuple(np.array([[0, 0]], dtype=np.int32) for _ in range(3))
+    points = tuple(np.array([[section * 1_000.0, 0.0]]) for section in range(3))
+    features = tuple(np.array([[1.0, 0.0]]) for _ in range(3))
+    correspondence = AdjacentSectionCorrespondence(
+        source_section=1,
+        target_section=2,
+        source_indices=np.array([0], dtype=np.int64),
+        target_indices=np.array([0], dtype=np.int64),
+        confidence=np.array([0.8], dtype=np.float32),
+        feature_similarity=np.array([0.9], dtype=np.float32),
+        reciprocal_margin=np.array([0.2], dtype=np.float32),
+        field_residual_um=np.array([5.0], dtype=np.float32),
+        neighborhood_consistency=np.array([0.9], dtype=np.float32),
+        estimated_displacement_um_xy=np.array([[1_000.0, 0.0]], dtype=np.float32),
+        unmatched_source_indices=np.empty(0, dtype=np.int64),
+        unmatched_target_indices=np.empty(0, dtype=np.int64),
+    )
+
+    graph = build_serial_graph(
+        grids,
+        points,
+        features,
+        max_cross_section_distance_um=1.0,
+        correspondences=(correspondence,),
+    )
+
+    np.testing.assert_array_equal(graph.source, [1, 2])
+    np.testing.assert_array_equal(graph.target, [2, 1])
+    np.testing.assert_allclose(graph.weight, [0.8, 0.8])
+    np.testing.assert_array_equal(
+        graph.edge_kind,
+        [EdgeKind.CROSS_SECTION_CONSENSUS, EdgeKind.CROSS_SECTION_CONSENSUS],
+    )
 
 
 def test_diffusion_is_deterministic_and_preserves_confident_local_structure() -> None:
@@ -71,6 +120,40 @@ def test_diffusion_can_correct_a_patch_surrounded_by_another_region() -> None:
     result = diffuse_labels(labels, graph, n_clusters=2, alpha=0.35)
 
     assert result.labels.tolist() == [0, 0, 0, 0]
+
+
+def test_diffusion_uses_only_within_section_and_consensus_edges_by_default() -> None:
+    source = np.array([0, 0, 0], dtype=np.int64)
+    target = np.array([1, 2, 3], dtype=np.int64)
+    labels = np.array([1, 0, 0, 0], dtype=np.int32)
+
+    morphology_graph = GraphEdges(
+        source=source,
+        target=target,
+        weight=np.ones(3, dtype=np.float32),
+        section_offsets=np.array([0, 1, 4], dtype=np.int64),
+        edge_kind=np.full(3, EdgeKind.CROSS_SECTION_MORPHOLOGY, dtype=np.uint8),
+    )
+    consensus_graph = GraphEdges(
+        source=source,
+        target=target,
+        weight=np.ones(3, dtype=np.float32),
+        section_offsets=np.array([0, 1, 4], dtype=np.int64),
+        edge_kind=np.full(3, EdgeKind.CROSS_SECTION_CONSENSUS, dtype=np.uint8),
+    )
+
+    ignored = diffuse_labels(labels, morphology_graph, n_clusters=2)
+    explicit = diffuse_labels(
+        labels,
+        morphology_graph,
+        n_clusters=2,
+        edge_kinds=(EdgeKind.CROSS_SECTION_MORPHOLOGY,),
+    )
+    consensus = diffuse_labels(labels, consensus_graph, n_clusters=2)
+
+    np.testing.assert_array_equal(ignored.labels, labels)
+    assert explicit.labels.tolist() == [0, 0, 0, 0]
+    assert consensus.labels.tolist() == [0, 0, 0, 0]
 
 
 def test_diffusion_guard_rejects_excessive_label_changes() -> None:
