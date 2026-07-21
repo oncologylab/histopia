@@ -104,6 +104,7 @@ class RegistrationConfig:
     section_order_path: Path | None = None
     section_order_strategy: SectionOrderStrategy = "natural"
     section_order_review_path: Path | None = None
+    section_orientation_path: Path | None = None
     require_approved_order: bool = False
     mask_review_path: Path | None = None
     mask_override_dir: Path | None = None
@@ -138,6 +139,8 @@ class RegistrationConfig:
             self.section_order_path = Path(self.section_order_path)
         if self.section_order_review_path is not None:
             self.section_order_review_path = Path(self.section_order_review_path)
+        if self.section_orientation_path is not None:
+            self.section_orientation_path = Path(self.section_orientation_path)
         if self.mask_review_path is not None:
             self.mask_review_path = Path(self.mask_review_path)
         if self.mask_override_dir is not None:

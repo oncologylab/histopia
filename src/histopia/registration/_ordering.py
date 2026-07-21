@@ -22,6 +22,7 @@ class SectionOrderProposal:
     adjacent_distances: tuple[float, ...] = ()
     physical_areas_um2: dict[str, float | None] | None = None
     input_fingerprints: dict[str, str] | None = None
+    orientation_quarter_turns: dict[str, int] | None = None
 
     def to_json_dict(self, *, approved: bool = False) -> dict[str, object]:
         return {
@@ -38,9 +39,8 @@ class SectionOrderProposal:
             ),
             "fixed_positions": self.fixed_positions,
             "input_fingerprints": self.input_fingerprints or {},
-            "physically_calibrated": bool(self.physical_areas_um2) and all(
-                area is not None for area in self.physical_areas_um2.values()
-            ),
+            "physically_calibrated": bool(self.physical_areas_um2)
+            and all(area is not None for area in self.physical_areas_um2.values()),
             "slides": [
                 {
                     "order": index + 1,
@@ -53,6 +53,9 @@ class SectionOrderProposal:
                         self.physical_areas_um2.get(slide)
                         if self.physical_areas_um2 is not None
                         else None
+                    ),
+                    "quarter_turns_ccw": (self.orientation_quarter_turns or {}).get(
+                        slide, 0
                     ),
                 }
                 for index, slide in enumerate(self.slides)
@@ -68,6 +71,7 @@ def propose_anchored_order(
     beam_width: int = 4096,
     physical_areas_um2: dict[str, float | None] | None = None,
     input_fingerprints: dict[str, str] | None = None,
+    orientation_quarter_turns: dict[str, int] | None = None,
 ) -> SectionOrderProposal:
     """Optimize morphology continuity without moving fixed sequence slots."""
 
@@ -154,6 +158,7 @@ def propose_anchored_order(
         matrix,
         physical_areas_um2=physical_areas_um2,
         input_fingerprints=input_fingerprints,
+        orientation_quarter_turns=orientation_quarter_turns,
     )
     adjacent_distances = tuple(
         float(matrix[index[first], index[second]])
@@ -168,6 +173,9 @@ def propose_anchored_order(
         adjacent_distances,
         dict(physical_areas_um2) if physical_areas_um2 is not None else None,
         dict(input_fingerprints) if input_fingerprints is not None else None,
+        dict(orientation_quarter_turns)
+        if orientation_quarter_turns is not None
+        else None,
     )
 
 
@@ -213,6 +221,7 @@ def _fingerprint(
     *,
     physical_areas_um2: dict[str, float | None] | None,
     input_fingerprints: dict[str, str] | None,
+    orientation_quarter_turns: dict[str, int] | None,
 ) -> str:
     payload = {
         "algorithm": "anchored-morphology-v2",
@@ -225,6 +234,7 @@ def _fingerprint(
         "input_fingerprints": (
             sorted(input_fingerprints.items()) if input_fingerprints else []
         ),
+        "orientation_quarter_turns": sorted((orientation_quarter_turns or {}).items()),
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()

@@ -126,6 +126,9 @@ def build_section_order_review(
         stem = Path(slide_name).stem
         image = _read_rgb(processed_dir / f"{stem}.thumbnail.png")
         mask = _read_mask(processed_dir / f"{stem}.mask.png")
+        turns = int(row.get("quarter_turns_ccw", 0)) % 4
+        image = np.rot90(image, turns).copy()
+        mask = np.rot90(mask, turns).copy()
         rgba = _tissue_review_crop(image, mask)
         filename = f"{int(row['order']):03d}-{_safe_name(stem)}.webp"
         Image.fromarray(rgba).save(
@@ -176,9 +179,7 @@ def _tissue_review_crop(image: np.ndarray, mask: np.ndarray) -> np.ndarray:
     right = min(width, int(cols.max()) + padding + 1)
     cropped_image = image[top:bottom, left:right]
     cropped_mask = mask[top:bottom, left:right]
-    return np.dstack(
-        [cropped_image, np.where(cropped_mask, 255, 32).astype(np.uint8)]
-    )
+    return np.dstack([cropped_image, np.where(cropped_mask, 255, 32).astype(np.uint8)])
 
 
 def _read_rgb(path: Path) -> np.ndarray:

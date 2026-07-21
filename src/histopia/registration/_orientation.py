@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TypeVar
 
 import numpy as np
@@ -115,6 +116,50 @@ def apply_quarter_turn(array: np.ndarray, quarter_turns_ccw: int) -> np.ndarray:
     """Return an array rotated counterclockwise by a multiple of 90 degrees."""
 
     return np.rot90(np.asarray(array), int(quarter_turns_ccw) % 4).copy()
+
+
+def load_orientation_overrides(
+    path: Path | None,
+    slide_names: tuple[str, ...],
+) -> dict[str, int]:
+    """Load explicit quarter-turns, rejecting stale or unknown slide names."""
+
+    turns = dict.fromkeys(slide_names, 0)
+    if path is None:
+        return turns
+    payload = json.loads(path.read_text())
+    rows = payload.get("slides")
+    if not isinstance(rows, list):
+        raise ValueError("section orientation file must contain a slides list")
+    seen: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict) or "slide" not in row:
+            raise ValueError("each section orientation row must identify a slide")
+        name = str(row["slide"])
+        if name not in turns:
+            raise ValueError(f"section orientation contains unknown slide: {name}")
+        if name in seen:
+            raise ValueError(f"duplicate section orientation slide: {name}")
+        value = int(row.get("quarter_turns_ccw", 0))
+        if value not in range(4):
+            raise ValueError("quarter_turns_ccw must be one of 0, 1, 2, or 3")
+        turns[name] = value
+        seen.add(name)
+    return turns
+
+
+def quarter_turn_matrix(shape: tuple[int, int], quarter_turns_ccw: int) -> np.ndarray:
+    """Map original XY coordinates into an ``np.rot90`` result."""
+
+    height, width = shape
+    turn = int(quarter_turns_ccw) % 4
+    matrices = (
+        np.eye(3, dtype=float),
+        np.array([[0, 1, 0], [-1, 0, width - 1], [0, 0, 1]], dtype=float),
+        np.array([[-1, 0, width - 1], [0, -1, height - 1], [0, 0, 1]], dtype=float),
+        np.array([[0, -1, height - 1], [1, 0, 0], [0, 0, 1]], dtype=float),
+    )
+    return matrices[turn].copy()
 
 
 def _main_topology_log_aspect(mask: np.ndarray) -> float:

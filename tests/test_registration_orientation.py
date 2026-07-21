@@ -1,7 +1,15 @@
+import json
+
 import numpy as np
 import pytest
 
 from histopia.registration import apply_quarter_turn, orient_section_group
+from histopia.registration._orientation import (
+    load_orientation_overrides,
+    quarter_turn_matrix,
+)
+from histopia.registration._pipeline import _transform_from_oriented_coordinates
+from histopia.registration._rigid import RigidTransformResult
 
 
 def _asymmetric_mask() -> np.ndarray:
@@ -106,3 +114,52 @@ def test_apply_quarter_turn_preserves_channels() -> None:
 def test_orientation_rejects_unknown_anchor() -> None:
     with pytest.raises(ValueError, match="unknown orientation anchor"):
         orient_section_group({"a": _asymmetric_mask()}, anchor="missing")
+
+
+@pytest.mark.parametrize("turns", range(4))
+def test_quarter_turn_matrix_matches_array_coordinates(turns: int) -> None:
+    image = np.zeros((3, 5), dtype=np.uint8)
+    image[1, 4] = 1
+
+    rotated = apply_quarter_turn(image, turns)
+    row, col = np.argwhere(rotated == 1)[0]
+    mapped = quarter_turn_matrix(image.shape, turns) @ np.array([4, 1, 1])
+
+    assert np.array_equal(mapped[:2], [col, row])
+
+
+def test_orientation_override_rejects_unknown_slide(tmp_path) -> None:
+    path = tmp_path / "orientation.json"
+    path.write_text(
+        json.dumps({"slides": [{"slide": "stale.ndpi", "quarter_turns_ccw": 2}]})
+    )
+
+    with pytest.raises(ValueError, match="unknown slide"):
+        load_orientation_overrides(path, ("current.ndpi",))
+
+
+def test_orientation_override_defaults_unspecified_slides_to_zero(tmp_path) -> None:
+    path = tmp_path / "orientation.json"
+    path.write_text(
+        json.dumps({"slides": [{"slide": "b.ndpi", "quarter_turns_ccw": 2}]})
+    )
+
+    assert load_orientation_overrides(path, ("a.ndpi", "b.ndpi")) == {
+        "a.ndpi": 0,
+        "b.ndpi": 2,
+    }
+
+
+def test_oriented_transform_maps_original_slide_coordinates() -> None:
+    working = RigidTransformResult(np.eye(3), "identity", 0, 0, [])
+
+    result = _transform_from_oriented_coordinates(
+        working,
+        moving_shape=(3, 5),
+        moving_turns=2,
+        reference_shape=(3, 5),
+        reference_turns=0,
+    )
+
+    assert np.array_equal(result.matrix @ np.array([4, 1, 1]), [0, 1, 1])
+    assert result.method == "oriented:identity"

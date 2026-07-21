@@ -40,6 +40,11 @@ from histopia.registration._ordering import (
     propose_anchored_order,
     write_order_proposal,
 )
+from histopia.registration._orientation import (
+    apply_quarter_turn,
+    load_orientation_overrides,
+    quarter_turn_matrix,
+)
 from histopia.registration._qc import write_labeled_review_panel
 from histopia.registration._review import (
     MaskReviewEntry,
@@ -240,10 +245,28 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
         msg = "registration requires approved masks: " + ", ".join(unapproved_masks)
         raise ValueError(msg)
 
+    orientation_turns = load_orientation_overrides(
+        config.section_orientation_path,
+        tuple(path.name for path in slide_paths),
+    )
+    if any(orientation_turns.values()) and config.non_rigid_refinement.enabled:
+        raise ValueError(
+            "section orientation overrides cannot currently be combined with "
+            "non-rigid refinement"
+        )
+    working_thumbnails = {
+        path: apply_quarter_turn(thumbnails[path], orientation_turns[path.name])
+        for path in slide_paths
+    }
+    working_masks = {
+        path: apply_quarter_turn(masks[path].mask, orientation_turns[path.name])
+        for path in slide_paths
+    }
+
     crops = {
         path: _crop_to_mask(
-            thumbnails[path],
-            masks[path].mask,
+            working_thumbnails[path],
+            working_masks[path],
             config.max_processed_image_dim_px,
         )
         for path in slide_paths
@@ -252,7 +275,7 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
         slide_paths = _similarity_section_order(slide_paths, crops, config)
     elif config.section_order_strategy == "anchored_similarity":
         physical_areas = {
-            path: _physical_mask_area(masks[path].mask, geometries[path])
+            path: _physical_mask_area(working_masks[path], geometries[path])
             for path in slide_paths
         }
         distances = _section_distance_matrix(
@@ -268,11 +291,13 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
             },
             input_fingerprints={
                 path.name: _ordering_input_fingerprint(
-                    masks[path].mask,
+                    working_masks[path],
                     geometries[path],
+                    orientation_turns[path.name],
                 )
                 for path in slide_paths
             },
+            orientation_quarter_turns=orientation_turns,
         )
         order_review_path = (
             config.section_order_review_path
@@ -292,7 +317,7 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
         reference_path = _select_reference(slide_paths, config.reference_slide)
     else:
         reference_path = _select_best_connected_reference(slide_paths, crops, config)
-    reference_image = thumbnails[reference_path]
+    reference_image = working_thumbnails[reference_path]
     reference_crop = crops[reference_path]
     transforms_to_reference, aligned_to = _estimate_transforms_to_reference(
         slide_paths,
@@ -312,7 +337,7 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
     slides: list[SlideRegistration] = []
     for path in slide_paths:
         if path == reference_path:
-            transform = RigidTransformResult(
+            working_transform = RigidTransformResult(
                 matrix=np.eye(3, dtype=float),
                 method="identity",
                 match_count=0,
@@ -320,15 +345,17 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
                 warnings=[],
             )
         else:
-            transform = transforms_to_reference[path]
-            warnings.extend(f"{path.name}: {warning}" for warning in transform.warnings)
+            working_transform = transforms_to_reference[path]
+            warnings.extend(
+                f"{path.name}: {warning}" for warning in working_transform.warnings
+            )
             if config.write_processed_images:
                 _write_alignment_qc(
                     alignment_dir,
                     path,
                     reference_image,
-                    thumbnails[path],
-                    transform,
+                    working_thumbnails[path],
+                    working_transform,
                 )
                 _write_alignment_qc(
                     alignment_dir / "crops",
@@ -336,7 +363,7 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
                     reference_crop.image,
                     crops[path].image,
                     _full_transform_to_crop_transform(
-                        transform.matrix,
+                        working_transform.matrix,
                         reference_crop,
                         crops[path],
                     ),
@@ -344,20 +371,20 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
         non_rigid_transform = None
         if path != reference_path and config.non_rigid_refinement.enabled:
             rigid_moving = warp_rgb_thumbnail(
-                thumbnails[path],
-                transform.matrix,
+                working_thumbnails[path],
+                working_transform.matrix,
                 reference_image.shape[:2],
             )
             rigid_moving_mask = warp_mask_thumbnail(
-                masks[path].mask,
-                transform.matrix,
+                working_masks[path],
+                working_transform.matrix,
                 reference_image.shape[:2],
             )
             settings = config.non_rigid_refinement
             non_rigid_transform = estimate_non_rigid_transform(
                 reference_image,
                 rigid_moving,
-                fixed_mask=masks[reference_path].mask,
+                fixed_mask=working_masks[reference_path],
                 rigid_moving_mask=rigid_moving_mask,
                 max_displacement_fraction=settings.max_displacement_fraction,
                 smoothing_sigma_px=settings.smoothing_sigma_px,
@@ -388,6 +415,13 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
                     rigid_moving,
                     non_rigid_transform,
                 )
+        transform = _transform_from_oriented_coordinates(
+            working_transform,
+            thumbnails[path].shape[:2],
+            orientation_turns[path.name],
+            thumbnails[reference_path].shape[:2],
+            orientation_turns[reference_path.name],
+        )
         slides.append(
             SlideRegistration(
                 path=path,
@@ -400,7 +434,7 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
                     else _alignment_metrics(
                         reference_crop,
                         crops[path],
-                        transform.matrix,
+                        working_transform.matrix,
                     )
                 ),
                 geometry=geometries[path],
@@ -1236,16 +1270,47 @@ def _physical_mask_area(mask: np.ndarray, geometry: SlideGeometry) -> float | No
     return float(np.count_nonzero(mask) * abs(np.linalg.det(linear)))
 
 
-def _ordering_input_fingerprint(mask: np.ndarray, geometry: SlideGeometry) -> str:
+def _ordering_input_fingerprint(
+    mask: np.ndarray,
+    geometry: SlideGeometry,
+    quarter_turns_ccw: int = 0,
+) -> str:
     """Fingerprint the accepted mask and physical geometry used for ordering."""
 
     import hashlib
 
     digest = hashlib.sha256()
-    digest.update(b"histopia-ordering-input-v1")
+    digest.update(b"histopia-ordering-input-v2")
+    digest.update(bytes([quarter_turns_ccw % 4]))
     digest.update(np.ascontiguousarray(mask, dtype=np.uint8).tobytes())
     digest.update(json.dumps(geometry.to_json_dict(), sort_keys=True).encode())
     return digest.hexdigest()
+
+
+def _transform_from_oriented_coordinates(
+    transform: RigidTransformResult,
+    moving_shape: tuple[int, int],
+    moving_turns: int,
+    reference_shape: tuple[int, int],
+    reference_turns: int,
+) -> RigidTransformResult:
+    """Convert an oriented working transform back to source slide coordinates."""
+
+    moving_orientation = quarter_turn_matrix(moving_shape, moving_turns)
+    reference_orientation = quarter_turn_matrix(reference_shape, reference_turns)
+    matrix = (
+        np.linalg.inv(reference_orientation) @ transform.matrix @ moving_orientation
+    )
+    method = transform.method
+    if moving_turns or reference_turns:
+        method = f"oriented:{method}"
+    return RigidTransformResult(
+        matrix=matrix,
+        method=method,
+        match_count=transform.match_count,
+        inlier_count=transform.inlier_count,
+        warnings=list(transform.warnings),
+    )
 
 
 def _load_automatic_mask_snapshot(
@@ -1379,9 +1444,7 @@ def _read_fixed_positions(
         if name in {None, ""} or order in {None, "", "0", 0}:
             continue
         requested = str(name)
-        resolved = path_by_name.get(requested) or path_by_stem.get(
-            Path(requested).stem
-        )
+        resolved = path_by_name.get(requested) or path_by_stem.get(Path(requested).stem)
         if resolved is None:
             unresolved.append(requested)
             continue
