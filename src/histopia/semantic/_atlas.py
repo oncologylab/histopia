@@ -77,9 +77,8 @@ def fit_joint_atlas(
     if len(feature_dims) != 1:
         raise ValueError("all sections must use the same feature dimension")
     raw = np.concatenate([section.features.astype(np.float32) for section in sections])
-    norms = np.linalg.norm(raw, axis=1, keepdims=True)
-    normalized = raw / np.maximum(norms, np.finfo(np.float32).eps)
     sizes = tuple(len(section.features) for section in sections)
+    normalized = _normalize_section_features(raw, sizes)
     sample = balanced_sample_indices(sizes, per_slide_cap=balanced_patch_cap, seed=seed)
     component_count = min(pca_components, normalized.shape[1], len(sample))
     if component_count <= 0:
@@ -152,6 +151,28 @@ def fit_joint_atlas(
         pca_basis=np.asarray(pca.components_, dtype=np.float32),
         clusterings=clusterings,
     )
+
+
+def _normalize_section_features(
+    features: np.ndarray,
+    section_sizes: tuple[int, ...],
+) -> np.ndarray:
+    """Remove slide-level embedding shifts, then L2-normalize each patch."""
+
+    features = np.asarray(features, dtype=np.float32)
+    if sum(section_sizes) != len(features) or any(size <= 0 for size in section_sizes):
+        raise ValueError("section sizes must partition all feature rows")
+    normalized = np.empty_like(features)
+    offset = 0
+    for size in section_sizes:
+        section = features[offset : offset + size]
+        centered = section - section.mean(axis=0, keepdims=True)
+        norms = np.linalg.norm(centered, axis=1, keepdims=True)
+        normalized[offset : offset + size] = centered / np.maximum(
+            norms, np.finfo(np.float32).eps
+        )
+        offset += size
+    return normalized
 
 
 def _sklearn_estimators():

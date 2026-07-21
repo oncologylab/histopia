@@ -58,6 +58,21 @@ def test_diffusion_is_deterministic_and_preserves_confident_local_structure() ->
     assert first.iterations <= 20
 
 
+def test_diffusion_can_correct_a_patch_surrounded_by_another_region() -> None:
+    graph = GraphEdges(
+        source=np.array([0, 1, 1, 2, 1, 3, 0, 2, 2, 3, 3, 0], dtype=np.int64),
+        target=np.array([1, 0, 2, 1, 3, 1, 2, 0, 3, 2, 0, 3], dtype=np.int64),
+        weight=np.ones(12, dtype=np.float32),
+        section_offsets=np.array([0, 4], dtype=np.int64),
+        edge_kind=np.zeros(12, dtype=np.uint8),
+    )
+    labels = np.array([0, 1, 0, 0], dtype=np.int32)
+
+    result = diffuse_labels(labels, graph, n_clusters=2, alpha=0.35)
+
+    assert result.labels.tolist() == [0, 0, 0, 0]
+
+
 def test_diffusion_guard_rejects_excessive_label_changes() -> None:
     initial = np.array([0, 0, 1, 1], dtype=np.int32)
     proposed = np.array([1, 1, 0, 1], dtype=np.int32)

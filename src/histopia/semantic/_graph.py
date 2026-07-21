@@ -120,11 +120,11 @@ def diffuse_labels(
     max_iterations: int = 20,
     tolerance: float = 1e-5,
 ) -> DiffusionResult:
-    """Diffuse one-hot cluster evidence while retaining the joint-atlas prior."""
+    """Diffuse labels with ``alpha`` as the joint-atlas prior weight."""
 
     labels = np.asarray(labels, dtype=np.int32)
-    if not 0 <= alpha < 1:
-        raise ValueError("alpha must be in [0, 1)")
+    if not 0 < alpha <= 1:
+        raise ValueError("alpha must be in (0, 1]")
     prior = np.eye(n_clusters, dtype=np.float32)[labels]
     probability = prior.copy()
     degree = np.zeros(len(labels), dtype=np.float32)
@@ -140,7 +140,7 @@ def diffuse_labels(
             graph.source,
             graph.weight[:, None] * probability[graph.target],
         )
-        updated = (1 - alpha) * prior + alpha * messages / degree[:, None]
+        updated = alpha * prior + (1 - alpha) * messages / degree[:, None]
         if float(np.max(np.abs(updated - probability))) <= tolerance:
             converged = True
             probability = updated

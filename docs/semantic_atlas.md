@@ -5,6 +5,10 @@ section stack. It does not independently cluster each slide and then attempt to
 rename the clusters. Every source slide contributes to one normalized PCA and
 MiniBatchKMeans space, which gives region labels a single global meaning.
 
+Before joint PCA, Histopia removes each slide's mean embedding and L2-normalizes
+the residual patch vectors. This limits stain- and scanner-level shifts while
+retaining within-slide morphology for global clustering.
+
 ## Data Model
 
 - Source WSI patches are sampled at 0.5 micrometres per pixel using 224 by 224

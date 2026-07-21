@@ -3,9 +3,22 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
+from importlib import import_module
 from pathlib import Path
 
 import numpy as np
+
+
+def _preload_wsi_backend(
+    importer: Callable[[str], object] = import_module,
+) -> None:
+    """Load libvips before Torchvision in mixed native-library environments."""
+
+    try:
+        importer("pyvips")
+    except ImportError as exc:
+        raise RuntimeError("UNI2-h WSI extraction requires the 'uni2h' extra") from exc
 
 
 class Uni2hEncoder:
@@ -26,6 +39,7 @@ class Uni2hEncoder:
     ) -> Uni2hEncoder:
         """Load gated weights from an external cache; never package model data."""
 
+        _preload_wsi_backend()
         cache_dir = Path(cache_dir).expanduser().resolve()
         cache_dir.mkdir(parents=True, exist_ok=True)
         os.environ["HF_HOME"] = str(cache_dir)
