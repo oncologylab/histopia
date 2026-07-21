@@ -393,9 +393,16 @@ def refine_group_tissue_masks(
                 <= 0.02 * float(np.hypot(*result.mask.shape))
                 and _component_center_fill_ratio(component) >= 0.45
             )
+            recurring_substantial_component = (
+                support >= min_group_support
+                and relative_area >= 0.10
+                and (relative_area >= 0.50 or direct_support >= 0.50)
+            )
             if (
-                support >= min_group_support and relative_area >= 0.10
-            ) or close_supported_fragment or close_native_fragment:
+                recurring_substantial_component
+                or close_supported_fragment
+                or close_native_fragment
+            ):
                 keep[label] = True
         if not np.any(keep):
             if not component_support:

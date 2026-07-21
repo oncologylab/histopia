@@ -352,6 +352,29 @@ def test_group_consensus_rejects_one_slide_artifact() -> None:
     assert refined["first"].metrics["group_foreground_fraction_ratio"] > 0
 
 
+def test_group_consensus_rejects_medium_component_without_direct_recurrence() -> None:
+    target = np.zeros((200, 300), dtype=bool)
+    target[60:160, 35:155] = True
+    target[65:115, 210:260] = True
+    shifted_peer = np.zeros_like(target)
+    shifted_peer[60:160, 75:195] = True
+
+    def result(mask: np.ndarray) -> TissueMaskResult:
+        return TissueMaskResult(mask, "synthetic", {}, True, [])
+
+    refined = refine_group_tissue_masks(
+        {
+            "target": result(target),
+            "peer-1": result(shifted_peer),
+            "peer-2": result(shifted_peer),
+            "peer-3": result(shifted_peer),
+        }
+    )
+
+    assert refined["target"].mask[80:140, 60:140].all()
+    assert not refined["target"].mask[75:105, 220:250].any()
+
+
 def test_group_consensus_rejects_small_repeated_debris() -> None:
     tissue = np.zeros((200, 300), dtype=bool)
     tissue[50:150, 60:180] = True
