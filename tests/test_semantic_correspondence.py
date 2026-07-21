@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import tracemalloc
+
 import numpy as np
 import pytest
 
@@ -145,6 +147,125 @@ def test_matching_does_not_force_an_unsupported_distant_candidate() -> None:
     assert result.target_indices.size == 0
     np.testing.assert_array_equal(result.unmatched_source_indices, [0])
     np.testing.assert_array_equal(result.unmatched_target_indices, [0])
+
+
+def test_matching_rejects_an_isolated_near_decoy_without_runner_up() -> None:
+    grid = np.array([[0, 0]], dtype=np.int32)
+    features = np.array([[1.0, 0.0]], dtype=np.float32)
+
+    result = match_adjacent_sections(
+        grid,
+        np.array([[0.0, 0.0]]),
+        features,
+        grid,
+        np.array([[100.0, 0.0]]),
+        features,
+        source_section=0,
+        target_section=1,
+        config=CorrespondenceConfig(patch_width_um=100.0),
+    )
+
+    assert result.source_indices.size == 0
+    np.testing.assert_array_equal(result.unmatched_source_indices, [0])
+    np.testing.assert_array_equal(result.unmatched_target_indices, [0])
+
+
+def test_returned_confidence_uses_the_final_refitted_field_residual() -> None:
+    displacement = np.array(
+        [
+            112.347575,
+            131.783295,
+            -23.126909,
+            23.122097,
+            32.869060,
+            0.947780,
+            -134.870319,
+            15.018651,
+            2.112959,
+            -7.248097,
+            -30.651049,
+            38.208470,
+        ]
+    )
+    grid = np.column_stack(
+        [
+            np.zeros(len(displacement), dtype=np.int32),
+            np.arange(len(displacement), dtype=np.int32),
+        ]
+    )
+    source_xy = np.column_stack(
+        [np.arange(len(displacement), dtype=float) * 100.0, np.zeros(len(grid))]
+    )
+    target_xy = source_xy + np.column_stack([displacement, np.zeros(len(displacement))])
+    features = np.eye(len(displacement), dtype=np.float32)
+    config = CorrespondenceConfig(
+        patch_width_um=100.0,
+        max_field_residual_patch_widths=0.8,
+        min_neighborhood_consistency=0.30,
+    )
+
+    result = match_adjacent_sections(
+        grid,
+        source_xy,
+        features,
+        grid,
+        target_xy,
+        features,
+        source_section=0,
+        target_section=1,
+        config=config,
+    )
+
+    expected = np.power(
+        np.clip(result.feature_similarity, 0.0, 1.0)
+        * np.clip(result.reciprocal_margin / 0.2, 0.0, 1.0)
+        * np.exp(-0.5 * (result.field_residual_um / config.patch_width_um) ** 2)
+        * result.neighborhood_consistency,
+        0.25,
+    )
+    np.testing.assert_allclose(result.confidence, expected, rtol=1e-7, atol=1e-7)
+    assert np.all(result.confidence >= config.min_confidence)
+    assert np.all(
+        result.field_residual_um
+        <= config.max_field_residual_patch_widths * config.patch_width_um
+    )
+
+
+def test_sparse_matching_does_not_allocate_a_dense_pairwise_matrix() -> None:
+    count = 3_000
+    index = np.arange(count, dtype=np.float32)
+    grid = np.column_stack(
+        [np.zeros(count, dtype=np.int32), np.arange(count, dtype=np.int32)]
+    )
+    source_xy = np.column_stack([index * 500.0, np.zeros(count, dtype=np.float32)])
+    target_xy = source_xy + np.array([50.0, 0.0], dtype=np.float32)
+    features = np.column_stack(
+        [
+            np.sin(index * 0.013),
+            np.cos(index * 0.013),
+            np.sin(index * 0.031),
+            np.cos(index * 0.031),
+        ]
+    )
+
+    tracemalloc.start()
+    result = match_adjacent_sections(
+        grid,
+        source_xy,
+        features,
+        grid,
+        target_xy,
+        features,
+        source_section=0,
+        target_section=1,
+        config=CorrespondenceConfig(patch_width_um=100.0),
+    )
+    _, peak_bytes = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+
+    assert peak_bytes < 32_000_000
+    assert result.source_indices.size == 0
+    assert result.unmatched_source_indices.size == count
 
 
 def _nonlinear_fixture() -> tuple[np.ndarray, ...]:

@@ -88,6 +88,7 @@ def build_serial_graph(
                         EdgeKind.WITHIN_SECTION_SPATIAL,
                     )
 
+    spatial_evidence: dict[tuple[int, int, int], float] = {}
     for section in range(count - 1):
         left = np.asarray(reference_um_xy_by_section[section], dtype=float)
         right = np.asarray(reference_um_xy_by_section[section + 1], dtype=float)
@@ -100,29 +101,37 @@ def build_serial_graph(
             if distance > max_cross_section_distance_um:
                 continue
             spatial = np.exp(-((distance / max_cross_section_distance_um) ** 2))
-            feature = _feature_weight(
-                features_by_section[section][left_index],
-                features_by_section[section + 1][right_index],
-            )
-            _append_undirected(
-                sources,
-                targets,
-                weights,
-                kinds,
-                int(offsets[section] + left_index),
-                int(offsets[section + 1] + right_index),
-                float(spatial * feature),
-                EdgeKind.CROSS_SECTION_SPATIAL,
+            spatial_evidence[section, left_index, int(right_index)] = float(spatial)
+
+    morphology_evidence: dict[tuple[int, int, int], float] = {}
+    for correspondence in correspondences or ():
+        for key, confidence in _correspondence_evidence(correspondence, offsets):
+            morphology_evidence[key] = max(
+                morphology_evidence.get(key, 0.0), confidence
             )
 
-    for correspondence in correspondences or ():
-        _append_correspondence_edges(
-            correspondence,
-            offsets,
+    for section, source_index, target_index in sorted(
+        spatial_evidence.keys() | morphology_evidence.keys()
+    ):
+        key = (section, source_index, target_index)
+        if key in spatial_evidence and key in morphology_evidence:
+            kind = EdgeKind.CROSS_SECTION_CONSENSUS
+            weight = float(np.sqrt(spatial_evidence[key] * morphology_evidence[key]))
+        elif key in spatial_evidence:
+            kind = EdgeKind.CROSS_SECTION_SPATIAL
+            weight = spatial_evidence[key]
+        else:
+            kind = EdgeKind.CROSS_SECTION_MORPHOLOGY
+            weight = morphology_evidence[key]
+        _append_undirected(
             sources,
             targets,
             weights,
             kinds,
+            int(offsets[section] + source_index),
+            int(offsets[section + 1] + target_index),
+            weight,
+            kind,
         )
 
     return GraphEdges(
@@ -142,10 +151,7 @@ def diffuse_labels(
     alpha: float = 0.35,
     max_iterations: int = 20,
     tolerance: float = 1e-5,
-    edge_kinds: tuple[EdgeKind, ...] = (
-        EdgeKind.WITHIN_SECTION_SPATIAL,
-        EdgeKind.CROSS_SECTION_CONSENSUS,
-    ),
+    edge_kinds: tuple[EdgeKind, ...] = (EdgeKind.CROSS_SECTION_CONSENSUS,),
 ) -> DiffusionResult:
     """Diffuse labels over selected evidence with ``alpha`` as prior weight."""
 
@@ -250,14 +256,10 @@ def _append_undirected(
     kinds.extend((kind, kind))
 
 
-def _append_correspondence_edges(
+def _correspondence_evidence(
     correspondence: AdjacentSectionCorrespondence,
     offsets: np.ndarray,
-    sources: list[int],
-    targets: list[int],
-    weights: list[float],
-    kinds: list[int],
-) -> None:
+) -> list[tuple[tuple[int, int, int], float]]:
     source_section = correspondence.source_section
     target_section = correspondence.target_section
     if target_section != source_section + 1:
@@ -288,14 +290,10 @@ def _append_correspondence_edges(
         (correspondence.confidence <= 0) | (correspondence.confidence > 1)
     ):
         raise ValueError("correspondence confidence must be in (0, 1]")
-    for source_index, target_index, confidence in zip(*arrays, strict=True):
-        _append_undirected(
-            sources,
-            targets,
-            weights,
-            kinds,
-            int(offsets[source_section] + source_index),
-            int(offsets[target_section] + target_index),
+    return [
+        (
+            (source_section, int(source_index), int(target_index)),
             float(confidence),
-            EdgeKind.CROSS_SECTION_CONSENSUS,
         )
+        for source_index, target_index, confidence in zip(*arrays, strict=True)
+    ]

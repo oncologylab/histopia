@@ -6,9 +6,14 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from histopia.semantic._correspondence import (
+    CorrespondenceConfig,
+    match_adjacent_sections,
+)
 from histopia.semantic._features import PatchFeatures
 from histopia.semantic._graph import (
     DiffusionGuard,
+    EdgeKind,
     build_serial_graph,
     diffuse_labels,
     evaluate_diffusion_guard,
@@ -93,11 +98,33 @@ def fit_joint_atlas(
         split_features = tuple(
             projected[offsets[i] : offsets[i + 1]] for i in range(len(sections))
         )
+        correspondences = tuple(
+            match_adjacent_sections(
+                sections[index].grid_rc,
+                sections[index].reference_um_xy,
+                split_features[index],
+                sections[index + 1].grid_rc,
+                sections[index + 1].reference_um_xy,
+                split_features[index + 1],
+                source_section=index,
+                target_section=index + 1,
+                config=CorrespondenceConfig(
+                    patch_width_um=0.5
+                    * (
+                        sections[index].patch_size_px * sections[index].analysis_mpp
+                        + sections[index + 1].patch_size_px
+                        * sections[index + 1].analysis_mpp
+                    )
+                ),
+            )
+            for index in range(len(sections) - 1)
+        )
         graph = build_serial_graph(
             tuple(section.grid_rc for section in sections),
             tuple(section.reference_um_xy for section in sections),
             split_features,
             max_cross_section_distance_um=max_cross_section_distance_um,
+            correspondences=correspondences,
         )
 
     clusterings: dict[int, AtlasClustering] = {}
@@ -196,7 +223,7 @@ def _canonicalize(
 
 
 def _cross_edge_consistency(labels, graph) -> float:
-    selected = graph.edge_kind == 1
+    selected = graph.edge_kind == EdgeKind.CROSS_SECTION_CONSENSUS
     if not np.any(selected):
         return 1.0
     matches = labels[graph.source[selected]] == labels[graph.target[selected]]
@@ -204,7 +231,9 @@ def _cross_edge_consistency(labels, graph) -> float:
 
 
 def _same_label_cross_distance(labels, graph, sections) -> float:
-    selected = (graph.edge_kind == 1) & (graph.source < graph.target)
+    selected = (graph.edge_kind == EdgeKind.CROSS_SECTION_CONSENSUS) & (
+        graph.source < graph.target
+    )
     same = selected & (labels[graph.source] == labels[graph.target])
     if not np.any(same):
         return float("inf")

@@ -140,24 +140,14 @@ def match_adjacent_sections(
         source_um_xy[matched_source], observed, config.patch_width_um
     )
     confidence = _confidence(similarity, margin, field_residual, consistency, config)
-    accepted = (
-        (similarity >= config.min_feature_similarity)
-        & (margin >= config.min_reciprocal_margin)
-        & (
-            field_residual
-            <= config.max_field_residual_patch_widths * config.patch_width_um
-        )
-        & (consistency >= config.min_neighborhood_consistency)
-        & (confidence >= config.min_confidence)
+    accepted = _accepted_matches(
+        similarity, margin, field_residual, consistency, confidence, config
     )
     matched_source = matched_source[accepted]
     matched_target = matched_target[accepted]
     similarity = similarity[accepted]
     margin = margin[accepted]
-    field_residual = field_residual[accepted]
-    consistency = consistency[accepted]
-    confidence = confidence[accepted]
-    if len(matched_source):
+    while len(matched_source):
         observed = target_um_xy[matched_target] - source_um_xy[matched_source]
         field = _smooth_displacement_field(
             source_um_xy,
@@ -168,6 +158,26 @@ def match_adjacent_sections(
         field_residual = np.linalg.norm(
             observed - field[matched_source], axis=1
         ).astype(np.float32)
+        consistency = _neighborhood_consistency(
+            source_um_xy[matched_source], observed, config.patch_width_um
+        )
+        confidence = _confidence(
+            similarity, margin, field_residual, consistency, config
+        )
+        accepted = _accepted_matches(
+            similarity, margin, field_residual, consistency, confidence, config
+        )
+        if np.all(accepted):
+            break
+        matched_source = matched_source[accepted]
+        matched_target = matched_target[accepted]
+        similarity = similarity[accepted]
+        margin = margin[accepted]
+    if not len(matched_source):
+        field = np.zeros_like(source_um_xy, dtype=np.float64)
+        field_residual = np.empty(0, dtype=np.float32)
+        consistency = np.empty(0, dtype=np.float32)
+        confidence = np.empty(0, dtype=np.float32)
 
     return _result_from_matches(
         source_section,
@@ -268,8 +278,11 @@ def _reciprocal_matches(
         best = int(order[0])
         source_best[source_index] = indices[best]
         best_similarity[source_index] = similarities[best]
-        second = float(similarities[order[1]]) if len(order) > 1 else -1.0
-        source_margin[source_index] = float(similarities[best]) - second
+        source_margin[source_index] = (
+            float(similarities[best] - similarities[order[1]])
+            if len(order) > 1
+            else 0.0
+        )
         for target_index, score in zip(indices, similarities, strict=True):
             target_index = int(target_index)
             current_score = float(target_best_score[target_index])
@@ -283,8 +296,10 @@ def _reciprocal_matches(
             elif score > target_second_score[target_index]:
                 target_second_score[target_index] = score
 
-    target_margin = target_best_score - np.where(
-        np.isfinite(target_second_score), target_second_score, -1.0
+    has_runner_up = np.isfinite(target_second_score)
+    target_margin = np.zeros(len(target_xy), dtype=np.float32)
+    target_margin[has_runner_up] = (
+        target_best_score[has_runner_up] - target_second_score[has_runner_up]
     )
 
     valid = source_best >= 0
@@ -337,9 +352,12 @@ def _neighborhood_consistency(
     )
     consistency = np.empty(len(matched_xy), dtype=np.float32)
     for index, neighbors in enumerate(neighborhoods):
-        delta = np.linalg.norm(
-            displacement[np.asarray(neighbors)] - displacement[index], axis=1
-        )
+        neighbors = np.asarray(neighbors, dtype=np.int64)
+        neighbors = neighbors[neighbors != index]
+        if not len(neighbors):
+            consistency[index] = 0.0
+            continue
+        delta = np.linalg.norm(displacement[neighbors] - displacement[index], axis=1)
         consistency[index] = float(
             np.mean(np.exp(-0.5 * (delta / patch_width_um) ** 2))
         )
@@ -359,6 +377,26 @@ def _confidence(
     return np.power(
         feature_score * margin_score * field_score * consistency, 0.25
     ).astype(np.float32)
+
+
+def _accepted_matches(
+    similarity: np.ndarray,
+    margin: np.ndarray,
+    field_residual: np.ndarray,
+    consistency: np.ndarray,
+    confidence: np.ndarray,
+    config: CorrespondenceConfig,
+) -> np.ndarray:
+    return (
+        (similarity >= config.min_feature_similarity)
+        & (margin >= config.min_reciprocal_margin)
+        & (
+            field_residual
+            <= config.max_field_residual_patch_widths * config.patch_width_um
+        )
+        & (consistency >= config.min_neighborhood_consistency)
+        & (confidence >= config.min_confidence)
+    )
 
 
 def _empty_result(

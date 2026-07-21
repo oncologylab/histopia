@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from histopia.semantic import PatchFeatures
+from histopia.semantic import _atlas as atlas_module
 from histopia.semantic._atlas import (
+    _cross_edge_consistency,
     _normalize_section_features,
+    _same_label_cross_distance,
     balanced_sample_indices,
     fit_joint_atlas,
 )
+from histopia.semantic._graph import EdgeKind, GraphEdges
 
 
 def _section(slide_id: str, shift: float) -> PatchFeatures:
@@ -79,3 +84,55 @@ def test_joint_atlas_is_deterministic_and_returns_each_sensitivity() -> None:
     assert first.section_offsets.tolist() == [0, 12, 24]
     assert first.pca_components == 2
     assert first.clusterings[2].labels.shape == (24,)
+
+
+def test_regularized_atlas_builds_and_passes_adjacent_correspondences(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sections = (_section("a", 0), _section("b", 2), _section("c", 4))
+    real_builder = atlas_module.build_serial_graph
+    captured: list[object] = []
+
+    def capture_builder(*args: object, **kwargs: object) -> GraphEdges:
+        captured.append(kwargs.get("correspondences"))
+        return real_builder(*args, **kwargs)
+
+    monkeypatch.setattr(atlas_module, "build_serial_graph", capture_builder)
+
+    result = fit_joint_atlas(
+        sections,
+        cluster_counts=(2,),
+        pca_components=2,
+        balanced_patch_cap=12,
+        seed=8,
+        regularize=True,
+    )
+
+    assert len(captured) == 1
+    correspondences = captured[0]
+    assert isinstance(correspondences, tuple)
+    assert [(item.source_section, item.target_section) for item in correspondences] == [
+        (0, 1),
+        (1, 2),
+    ]
+    assert all(item.source_indices.size > 0 for item in correspondences)
+    assert result.clusterings[2].diffusion_guard is not None
+
+
+def test_atlas_guard_metrics_use_the_consensus_edges_used_by_diffusion() -> None:
+    sections = (_section("a", 0), _section("b", 2))
+    labels = np.zeros(24, dtype=np.int32)
+    labels[12] = 1
+    graph = GraphEdges(
+        source=np.array([0, 0], dtype=np.int64),
+        target=np.array([12, 13], dtype=np.int64),
+        weight=np.ones(2, dtype=np.float32),
+        section_offsets=np.array([0, 12, 24], dtype=np.int64),
+        edge_kind=np.array(
+            [EdgeKind.CROSS_SECTION_SPATIAL, EdgeKind.CROSS_SECTION_CONSENSUS],
+            dtype=np.uint8,
+        ),
+    )
+
+    assert _cross_edge_consistency(labels, graph) == 1.0
+    assert _same_label_cross_distance(labels, graph, sections) == 114.0
