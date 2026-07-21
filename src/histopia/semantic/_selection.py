@@ -5,8 +5,12 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from itertools import combinations
+from typing import TYPE_CHECKING
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from scipy.sparse import csr_matrix
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,7 +69,7 @@ def select_cluster_count(
         raise RuntimeError("cluster selection requires the 'semantic' extra") from exc
 
     evaluation_indices = _sample_indices(len(features), max_evaluation_samples, seed)
-    required_size = _required_cluster_size(len(evaluation_indices))
+    required_size = _required_cluster_size(len(features))
     labels_by_k: dict[int, np.ndarray] = {}
     raw_evaluations: list[ClusterSelectionMetrics] = []
     for k in values:
@@ -84,8 +88,7 @@ def select_cluster_count(
         primary = seed_labels[0]
         labels_by_k[k] = primary
 
-        evaluated_labels = primary[evaluation_indices]
-        counts = np.bincount(evaluated_labels, minlength=k)
+        counts = np.bincount(primary, minlength=k)
         minimum_size = int(np.min(counts))
         rejected = minimum_size < required_size
         silhouette_indices = evaluation_indices[
@@ -177,8 +180,15 @@ def assign_lineage_display_ids(
 
     if not labels_by_k:
         raise ValueError("labels_by_k must not be empty")
-    ordered = sorted(labels_by_k)
-    labels = {k: np.asarray(labels_by_k[k], dtype=np.int64) for k in ordered}
+    raw_keys = tuple(labels_by_k)
+    converted_keys = _as_integer_array(np.asarray(raw_keys), "K")
+    if len(np.unique(converted_keys)) != len(converted_keys):
+        raise ValueError("K values must be unique integers")
+    labels = {
+        int(k): _as_integer_array(labels_by_k[raw_k], f"labels for K={k}")
+        for raw_k, k in zip(raw_keys, converted_keys, strict=True)
+    }
+    ordered = sorted(labels)
     lengths = {len(value) for value in labels.values()}
     if len(lengths) != 1 or next(iter(lengths)) == 0:
         raise ValueError("lineage label arrays must be non-empty and aligned")
@@ -188,11 +198,6 @@ def assign_lineage_display_ids(
     mappings[first_k] = np.arange(first_k, dtype=np.int32)
     next_display_id = first_k
 
-    try:
-        from scipy.optimize import linear_sum_assignment
-    except ImportError as exc:
-        raise RuntimeError("cluster lineage assignment requires scipy") from exc
-
     for previous_k, current_k in zip(ordered[:-1], ordered[1:], strict=True):
         previous_labels = labels[previous_k]
         current_labels = labels[current_k]
@@ -200,21 +205,60 @@ def assign_lineage_display_ids(
         current_count = current_k
         previous_display = mappings[previous_k][previous_labels]
         old_ids = np.unique(previous_display)
-        overlap = np.zeros((len(old_ids), current_count), dtype=np.int64)
-        for row, display_id in enumerate(old_ids):
-            overlap[row] = np.bincount(
-                current_labels[previous_display == display_id], minlength=current_count
-            )
-        row_indices, columns = linear_sum_assignment(-overlap)
+        overlap = _sparse_overlap_matrix(
+            previous_display, current_labels, old_ids, current_count
+        )
+        row_indices, columns = _maximum_overlap_assignment(overlap)
         mapping = np.full(current_count, -1, dtype=np.int32)
         for row, column in zip(row_indices, columns, strict=True):
-            if overlap[row, column] > 0:
+            if column < current_count:
                 mapping[column] = int(old_ids[row])
         for cluster in np.flatnonzero(mapping < 0):
             mapping[cluster] = next_display_id
             next_display_id += 1
         mappings[current_k] = mapping
     return mappings
+
+
+def _sparse_overlap_matrix(
+    previous_display: np.ndarray,
+    current_labels: np.ndarray,
+    old_ids: np.ndarray,
+    current_count: int,
+) -> csr_matrix:
+    """Store only lineage label pairs observed in the fitted population."""
+
+    try:
+        from scipy.sparse import coo_matrix
+    except ImportError as exc:
+        raise RuntimeError("cluster lineage assignment requires scipy") from exc
+
+    rows = np.searchsorted(old_ids, previous_display)
+    observed = np.column_stack([rows, current_labels])
+    pairs, counts = np.unique(observed, axis=0, return_counts=True)
+    return coo_matrix(
+        (counts, (pairs[:, 0], pairs[:, 1])),
+        shape=(len(old_ids), current_count),
+        dtype=np.int64,
+    ).tocsr()
+
+
+def _maximum_overlap_assignment(overlap: csr_matrix) -> tuple[np.ndarray, np.ndarray]:
+    try:
+        from scipy.sparse import csr_matrix, hstack
+        from scipy.sparse.csgraph import min_weight_full_bipartite_matching
+    except ImportError as exc:
+        raise RuntimeError("cluster lineage assignment requires scipy") from exc
+
+    row_count = overlap.shape[0]
+    rows = np.arange(row_count, dtype=np.int64)
+    dummy = csr_matrix(
+        (np.full(row_count, np.nextafter(0.0, 1.0)), (rows, rows)),
+        shape=(row_count, row_count),
+    )
+    costs = overlap.astype(np.float64)
+    costs.data *= -1.0
+    return min_weight_full_bipartite_matching(hstack([costs, dummy], format="csr"))
 
 
 def _validated_inputs(
@@ -227,10 +271,12 @@ def _validated_inputs(
     max_silhouette_samples: int,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, tuple[int, ...]]:
     features = np.asarray(projected_features, dtype=np.float64)
-    offsets = np.asarray(section_offsets, dtype=np.int64)
-    within_edges = np.asarray(within_section_edges, dtype=np.int64)
-    cross_edges = np.asarray(accepted_cross_section_edges, dtype=np.int64)
-    values = tuple(sorted(set(int(value) for value in k_values)))
+    offsets = _as_integer_array(section_offsets, "section_offsets")
+    within_edges = _as_integer_array(within_section_edges, "within-section edges")
+    cross_edges = _as_integer_array(accepted_cross_section_edges, "cross-section edges")
+    raw_values = np.asarray(tuple(k_values))
+    converted_values = _as_integer_array(raw_values, "K values")
+    values = tuple(sorted(set(int(value) for value in converted_values)))
     if features.ndim != 2 or not len(features) or not np.all(np.isfinite(features)):
         raise ValueError("projected_features must be a finite non-empty matrix")
     if (
@@ -267,6 +313,24 @@ def _validated_inputs(
     return features, offsets, within_edges, cross_edges, values
 
 
+def _as_integer_array(values: np.ndarray, name: str) -> np.ndarray:
+    raw = np.asarray(values)
+    if raw.dtype.kind not in "iuf" or raw.dtype.kind == "b":
+        raise ValueError(f"{name} must contain integer values")
+    if raw.dtype.kind == "f":
+        bounds = np.iinfo(np.int64)
+        if (
+            not np.all(np.isfinite(raw))
+            or np.any(raw != np.floor(raw))
+            or np.any(raw < bounds.min)
+            or np.any(raw > bounds.max)
+        ):
+            raise ValueError(f"{name} must contain integer values")
+    elif raw.dtype.kind == "u" and np.any(raw > np.iinfo(np.int64).max):
+        raise ValueError(f"{name} must contain integer values")
+    return raw.astype(np.int64)
+
+
 def _sample_indices(count: int, cap: int, seed: int) -> np.ndarray:
     if count <= cap:
         return np.arange(count, dtype=np.int64)
@@ -291,7 +355,7 @@ def _adjusted_edge_agreement(labels: np.ndarray, edges: np.ndarray) -> float:
     target_frequency = np.bincount(target, minlength=count) / len(target)
     chance = float(source_frequency @ target_frequency)
     if chance >= 1.0 - np.finfo(float).eps:
-        return 1.0 if observed >= 1.0 - np.finfo(float).eps else 0.0
+        return 0.0
     return float(np.clip((observed - chance) / (1.0 - chance), -1.0, 1.0))
 
 

@@ -142,8 +142,8 @@ def _validated_inputs(
     anchor_weights: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     features = np.asarray(projected_features, dtype=np.float64)
-    offsets = np.asarray(section_offsets, dtype=np.int64)
-    pairs = np.asarray(anchor_pairs, dtype=np.int64)
+    offsets = _as_integer_array(section_offsets, "section_offsets")
+    pairs = _as_integer_array(anchor_pairs, "anchor_pairs")
     weights = np.asarray(anchor_weights, dtype=np.float64)
     if features.ndim != 2 or not len(features) or not np.all(np.isfinite(features)):
         raise ValueError("projected_features must be a finite non-empty matrix")
@@ -171,6 +171,24 @@ def _validated_inputs(
     if np.any(patch_sections[:, 0] == patch_sections[:, 1]):
         raise ValueError("anchors must connect different sections")
     return features, offsets, pairs, weights
+
+
+def _as_integer_array(values: np.ndarray, name: str) -> np.ndarray:
+    raw = np.asarray(values)
+    if raw.dtype.kind not in "iuf" or raw.dtype.kind == "b":
+        raise ValueError(f"{name} must contain integer values")
+    if raw.dtype.kind == "f":
+        bounds = np.iinfo(np.int64)
+        if (
+            not np.all(np.isfinite(raw))
+            or np.any(raw != np.floor(raw))
+            or np.any(raw < bounds.min)
+            or np.any(raw > bounds.max)
+        ):
+            raise ValueError(f"{name} must contain integer values")
+    elif raw.dtype.kind == "u" and np.any(raw > np.iinfo(np.int64).max):
+        raise ValueError(f"{name} must contain integer values")
+    return raw.astype(np.int64)
 
 
 def _solve_section_corrections(
@@ -344,29 +362,32 @@ def _median_anchor_cosine_distance(
 def _within_slide_knn_preservation(
     raw: np.ndarray, values: np.ndarray, offsets: np.ndarray
 ) -> float:
-    try:
-        from sklearn.neighbors import NearestNeighbors
-    except ImportError as exc:
-        raise RuntimeError("batch diagnostics require the 'semantic' extra") from exc
-
     preserved = 0.0
     comparisons = 0
     for start, stop in zip(offsets[:-1], offsets[1:], strict=True):
         count = int(stop - start)
         if count <= 1:
             continue
-        neighbors = min(10, count - 1)
-        raw_indices = (
-            NearestNeighbors(n_neighbors=neighbors + 1)
-            .fit(raw[start:stop])
-            .kneighbors(return_distance=False)
-        )
-        corrected_indices = (
-            NearestNeighbors(n_neighbors=neighbors + 1)
-            .fit(values[start:stop])
-            .kneighbors(return_distance=False)
-        )
+        raw_indices = _nonself_knn_indices(raw[start:stop])
+        corrected_indices = _nonself_knn_indices(values[start:stop])
+        neighbors = raw_indices.shape[1]
         for left, right in zip(raw_indices, corrected_indices, strict=True):
-            preserved += len(set(left) & set(right)) / (neighbors + 1)
+            preserved += len(set(left) & set(right)) / neighbors
             comparisons += 1
     return preserved / comparisons if comparisons else 1.0
+
+
+def _nonself_knn_indices(values: np.ndarray) -> np.ndarray:
+    try:
+        from sklearn.neighbors import NearestNeighbors
+    except ImportError as exc:
+        raise RuntimeError("batch diagnostics require the 'semantic' extra") from exc
+
+    neighbors = min(10, len(values) - 1)
+    if neighbors <= 0:
+        return np.empty((len(values), 0), dtype=np.int64)
+    return (
+        NearestNeighbors(n_neighbors=neighbors)
+        .fit(values)
+        .kneighbors(return_distance=False)
+    )
