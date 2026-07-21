@@ -11,6 +11,7 @@ import numpy as np
 
 from histopia.registration._errors import OptionalDependencyError
 from histopia.registration._io import warp_mask_thumbnail, warp_rgb_thumbnail
+from histopia.registration._slides import SlideGeometry, load_slide_thumbnail
 
 THREE_VERSION = "0.170.0"
 
@@ -20,6 +21,7 @@ def build_section_viewer(
     output_dir: Path | str,
     *,
     provisional_mice: set[str] | None = None,
+    detail_max_dim_px: int | None = None,
 ) -> Path:
     """Build a browser viewer from completed registration run directories."""
 
@@ -29,6 +31,8 @@ def build_section_viewer(
         raise OptionalDependencyError("pillow", "wsi") from exc
 
     output_dir = Path(output_dir)
+    if detail_max_dim_px is not None and detail_max_dim_px <= 0:
+        raise ValueError("detail_max_dim_px must be positive")
     assets_dir = output_dir / "assets"
     assets_dir.mkdir(parents=True, exist_ok=True)
     provisional_mice = provisional_mice or set()
@@ -38,9 +42,21 @@ def build_section_viewer(
         run_dir = Path(run_value)
         payload = json.loads((run_dir / "registration_result.json").read_text())
         reference_path = Path(payload["reference_slide"])
+        reference_slide = next(
+            slide for slide in payload["slides"] if slide["is_reference"]
+        )
+        reference_preview_to_native = np.asarray(
+            reference_slide["geometry"]["thumbnail_to_native"], dtype=float
+        )
         reference_image = _read_rgb(
             run_dir / "processed" / f"{reference_path.stem}.thumbnail.png"
         )
+        reference_detail = None
+        reference_detail_geometry = None
+        if detail_max_dim_px is not None:
+            reference_detail, reference_detail_geometry = load_slide_thumbnail(
+                reference_path, detail_max_dim_px
+            )
         mouse_assets = assets_dir / _safe_name(mouse_id)
         mouse_assets.mkdir(parents=True, exist_ok=True)
         slides: list[dict[str, object]] = []
@@ -66,12 +82,31 @@ def build_section_viewer(
                 quality=88,
                 method=6,
             )
+            detail_texture = None
+            if reference_detail is not None and reference_detail_geometry is not None:
+                detail_texture = _write_detail_texture(
+                    source_path,
+                    mask,
+                    matrix,
+                    slide,
+                    reference_preview_to_native,
+                    reference_detail,
+                    reference_detail_geometry,
+                    mouse_assets,
+                    filename,
+                    detail_max_dim_px,
+                )
             slides.append(
                 {
                     "id": source_path.name,
                     "label": _marker_label(source_path.stem),
                     "order": order,
                     "texture": f"assets/{_safe_name(mouse_id)}/{filename}",
+                    "detail_texture": (
+                        f"assets/{_safe_name(mouse_id)}/{detail_texture}"
+                        if detail_texture is not None
+                        else None
+                    ),
                     "reference": bool(slide["is_reference"]),
                 }
             )
@@ -96,6 +131,57 @@ def build_section_viewer(
     )
     (output_dir / "styles.css").write_text(_STYLES_CSS)
     return output_dir / "index.html"
+
+
+def _write_detail_texture(
+    source_path: Path,
+    preview_mask: np.ndarray,
+    preview_transform: np.ndarray,
+    slide: dict[str, object],
+    reference_preview_to_native: np.ndarray,
+    reference_detail: np.ndarray,
+    reference_detail_geometry: SlideGeometry,
+    output_dir: Path,
+    preview_filename: str,
+    detail_max_dim_px: int | None,
+) -> str:
+    """Write a WSI-derived detail texture in reference coordinates."""
+
+    if detail_max_dim_px is None:
+        raise ValueError("detail_max_dim_px is required for detail textures")
+    detail, detail_geometry = load_slide_thumbnail(source_path, detail_max_dim_px)
+    preview_geometry = np.asarray(slide["geometry"]["thumbnail_to_native"], dtype=float)
+    detail_transform = (
+        reference_detail_geometry.native_to_thumbnail
+        @ reference_preview_to_native
+        @ preview_transform
+        @ np.linalg.inv(preview_geometry)
+        @ detail_geometry.thumbnail_to_native
+    )
+    from PIL import Image
+
+    detail_mask = np.asarray(
+        Image.fromarray(np.asarray(preview_mask, dtype=np.uint8)).resize(
+            (detail.shape[1], detail.shape[0]), Image.Resampling.NEAREST
+        ),
+        dtype=bool,
+    )
+    registered = warp_rgb_thumbnail(
+        detail, detail_transform, reference_detail.shape[:2]
+    )
+    registered_mask = warp_mask_thumbnail(
+        detail_mask, detail_transform, reference_detail.shape[:2]
+    )
+    rgba = np.dstack([registered, (registered_mask * 255).astype(np.uint8)])
+    filename = preview_filename.replace(".webp", ".detail.webp")
+    Image.fromarray(rgba).save(
+        output_dir / filename,
+        "WEBP",
+        lossless=False,
+        quality=92,
+        method=6,
+    )
+    return filename
 
 
 def build_section_order_review(
@@ -331,6 +417,8 @@ const group = new THREE.Group();
 scene.add(group);
 const loader = new THREE.TextureLoader();
 let current;
+let selectedSlide;
+let selectedDetailTexture;
 
 function resize() {
   const box = viewport.getBoundingClientRect();
@@ -382,6 +470,10 @@ function buildList() {
     const text = document.createElement('span');
     text.textContent = `${slide.label}${slide.reference ? ' (reference)' : ''}`;
     item.append(toggle, text);
+    item.title = slide.detail_texture ? 'Select high-resolution section' : slide.label;
+    item.addEventListener('click', event => {
+      if (event.target !== toggle) selectSlide(slide, item);
+    });
     item.addEventListener('dragstart', event => event.dataTransfer.setData('text/plain', slide.id));
     item.addEventListener('dragover', event => event.preventDefault());
     item.addEventListener('drop', event => {
@@ -396,8 +488,24 @@ function buildList() {
   const saved = JSON.parse(localStorage.getItem(`histopia-order-${current.id}`) || '[]');
   saved.forEach(id => { const item = list.querySelector(`[data-id="${CSS.escape(id)}"]`); if (item) list.append(item); });
 }
+async function selectSlide(slide, item) {
+  document.querySelectorAll('#sections li').forEach(row => row.classList.remove('selected'));
+  item.classList.add('selected');
+  if (selectedSlide) selectedSlide.mesh.material.map = selectedSlide.previewTexture;
+  if (selectedDetailTexture) selectedDetailTexture.dispose();
+  selectedSlide = slide; selectedDetailTexture = undefined;
+  if (!slide.detail_texture) return;
+  const detail = await loader.loadAsync(slide.detail_texture);
+  if (selectedSlide !== slide) { detail.dispose(); return; }
+  detail.colorSpace = THREE.SRGBColorSpace;
+  selectedDetailTexture = detail;
+  slide.mesh.material.map = detail;
+  slide.mesh.material.needsUpdate = true;
+}
 async function loadMouse(mouse) {
-  group.clear(); current = mouse;
+  group.clear(); current = mouse; selectedSlide = undefined;
+  if (selectedDetailTexture) selectedDetailTexture.dispose();
+  selectedDetailTexture = undefined;
   document.querySelector('#order-status').textContent = mouse.provisional_order ? 'Provisional section order' : 'Confirmed section order';
   const scale = 320 / Math.max(mouse.width, mouse.height);
   await Promise.all(mouse.slides.map(async slide => {
@@ -405,6 +513,7 @@ async function loadMouse(mouse) {
     texture.colorSpace = THREE.SRGBColorSpace;
     const material = new THREE.MeshBasicMaterial({map: texture, transparent: true, side: THREE.DoubleSide, depthWrite: false});
     slide.mesh = new THREE.Mesh(new THREE.PlaneGeometry(mouse.width * scale, mouse.height * scale), material);
+    slide.previewTexture = texture;
     group.add(slide.mesh);
   }));
   buildList(); layout(); resetCamera();
@@ -424,4 +533,4 @@ function animate() { requestAnimationFrame(animate); controls.update(); renderer
 await loadMouse(manifest.mice[0]); animate();
 """
 
-_STYLES_CSS = """*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden}body{font-family:Arial,sans-serif;color:#202426;background:#f4f5f3}main{display:grid;grid-template-columns:300px minmax(0,1fr);width:100%;height:100%;overflow:hidden}aside{min-width:0;min-height:0;padding:18px;border-right:1px solid #c9ceca;background:#fff;overflow-y:auto;overflow-x:hidden}h1{font-size:22px;margin:0 0 18px}label{display:grid;gap:6px;font-size:13px;margin:14px 0}select,input{width:100%}.commands{display:flex;gap:8px;margin:16px 0}button{border:1px solid #88918b;background:#fff;padding:7px 10px;border-radius:4px;cursor:pointer}#order-status{font-size:12px;color:#8a4f12}ol{padding:0;list-style:none}li{display:grid;grid-template-columns:20px minmax(0,1fr);align-items:center;min-height:32px;border-bottom:1px solid #eceeec;font-size:12px;cursor:grab}li span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}li input{width:14px}#viewport{position:relative;min-width:0;min-height:0;width:100%;height:100%;overflow:hidden}canvas{display:block;width:100%!important;height:100%!important}@media(max-width:720px){main{grid-template-columns:1fr;grid-template-rows:250px minmax(0,1fr)}aside{border-right:0;border-bottom:1px solid #c9ceca}#sections{display:none}}"""
+_STYLES_CSS = """*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden}body{font-family:Arial,sans-serif;color:#202426;background:#f4f5f3}main{display:grid;grid-template-columns:300px minmax(0,1fr);width:100%;height:100%;overflow:hidden}aside{min-width:0;min-height:0;padding:18px;border-right:1px solid #c9ceca;background:#fff;overflow-y:auto;overflow-x:hidden}h1{font-size:22px;margin:0 0 18px}label{display:grid;gap:6px;font-size:13px;margin:14px 0}select,input{width:100%}.commands{display:flex;gap:8px;margin:16px 0}button{border:1px solid #88918b;background:#fff;padding:7px 10px;border-radius:4px;cursor:pointer}#order-status{font-size:12px;color:#8a4f12}ol{padding:0;list-style:none}li{display:grid;grid-template-columns:20px minmax(0,1fr);align-items:center;min-height:32px;border-bottom:1px solid #eceeec;font-size:12px;cursor:grab}li.selected{background:#e6eef2;box-shadow:inset 3px 0 #30647a}li span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}li input{width:14px}#viewport{position:relative;min-width:0;min-height:0;width:100%;height:100%;overflow:hidden}canvas{display:block;width:100%!important;height:100%!important}@media(max-width:720px){main{grid-template-columns:1fr;grid-template-rows:250px minmax(0,1fr)}aside{border-right:0;border-bottom:1px solid #c9ceca}#sections{display:none}}"""

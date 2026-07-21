@@ -81,22 +81,29 @@ def test_viewer_builds_manifest_and_pinned_import_map(tmp_path: Path) -> None:
     mask[5:20, 7:24] = 255
     Image.fromarray(image).save(processed / "section.thumbnail.png")
     Image.fromarray(mask).save(processed / "section.mask.png")
+    source_path = tmp_path / "section.png"
+    Image.fromarray(image).save(source_path)
     (run_dir / "registration_result.json").write_text(
         json.dumps(
             {
-                "reference_slide": str(tmp_path / "section.ndpi"),
+                "reference_slide": str(source_path),
                 "slides": [
                     {
-                        "path": str(tmp_path / "section.ndpi"),
+                        "path": str(source_path),
                         "is_reference": True,
                         "transform": {"matrix": np.eye(3).tolist()},
+                        "geometry": {
+                            "thumbnail_to_native": np.eye(3).tolist(),
+                        },
                     }
                 ],
             }
         )
     )
 
-    index = build_section_viewer({"mouse": run_dir}, tmp_path / "viewer")
+    index = build_section_viewer(
+        {"mouse": run_dir}, tmp_path / "viewer", detail_max_dim_px=60
+    )
 
     manifest = json.loads((index.parent / "manifest.json").read_text())
     assert len(manifest["mice"][0]["slides"]) == 1
@@ -114,6 +121,9 @@ def test_viewer_builds_manifest_and_pinned_import_map(tmp_path: Path) -> None:
     assert "new THREE.Box3().setFromObject(group)" in viewer
     assert "sphere.radius / 10000" in viewer
     assert "controls.minDistance" in viewer
+    assert manifest["mice"][0]["slides"][0]["detail_texture"] is not None
+    detail_path = index.parent / manifest["mice"][0]["slides"][0]["detail_texture"]
+    assert detail_path.exists()
 
 
 def test_order_review_builds_fixed_height_fingerprinted_grid(tmp_path: Path) -> None:
