@@ -76,11 +76,6 @@ def main(argv: list[str] | None = None) -> int:
         help="Output directory used with --viewer-run.",
     )
     parser.add_argument(
-        "--viewer-detail-max-dim-px",
-        type=int,
-        help="Generate lazy inspection textures up to this WSI dimension.",
-    )
-    parser.add_argument(
         "--provisional-mouse",
         action="append",
         default=[],
@@ -103,7 +98,6 @@ def main(argv: list[str] | None = None) -> int:
             runs,
             args.viewer_output_dir,
             provisional_mice=set(args.provisional_mouse),
-            detail_max_dim_px=args.viewer_detail_max_dim_px,
         )
         print(index_path)
         return 0
