@@ -42,6 +42,9 @@ def test_write_atlas_result_is_review_gated_and_keeps_per_slide_grids(
     payload = json.loads(result_path.read_text())
     review = json.loads((tmp_path / "semantic_review.json").read_text())
     assert payload["primary_clusters"] == 2
+    assert payload["selected_k"] == 2
+    assert payload["schema_version"] == 2
+    assert payload["topology_pairs"] == []
     assert payload["slides"][0]["labels"]["2"].endswith("001.npz")
     assert not review["approved"]
     assert review["fingerprint"] == payload["fingerprint"]

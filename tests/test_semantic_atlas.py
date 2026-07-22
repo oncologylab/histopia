@@ -108,8 +108,8 @@ def test_regularized_atlas_builds_and_passes_adjacent_correspondences(
         regularize=True,
     )
 
-    assert len(captured) == 1
-    correspondences = captured[0]
+    assert len(captured) == 2
+    correspondences = captured[-1]
     assert isinstance(correspondences, tuple)
     assert [(item.source_section, item.target_section) for item in correspondences] == [
         (0, 1),
@@ -117,6 +117,29 @@ def test_regularized_atlas_builds_and_passes_adjacent_correspondences(
     ]
     assert all(item.source_indices.size > 0 for item in correspondences)
     assert result.clusterings[2].diffusion_guard is not None
+    assert len(result.correspondences) == 2
+    assert result.graph is not None
+    assert result.batch_correction is not None
+    assert result.cluster_selection is not None
+    assert result.selected_k == 2
+
+
+def test_joint_atlas_automatically_selects_k_from_requested_range() -> None:
+    sections = (_section("a", 0), _section("b", 2), _section("c", 4))
+
+    result = fit_joint_atlas(
+        sections,
+        cluster_counts=range(2, 5),
+        pca_components=2,
+        balanced_patch_cap=12,
+        seed=8,
+        regularize=True,
+    )
+
+    assert result.selected_k in {2, 3, 4}
+    assert set(result.clusterings) == {2, 3, 4}
+    assert not result.batch_correction.guard.accepted
+    assert result.batch_correction.guard.reasons
 
 
 def test_atlas_guard_metrics_use_the_consensus_edges_used_by_diffusion() -> None:

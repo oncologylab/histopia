@@ -6,7 +6,9 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from histopia.semantic._batch import BatchCorrectionResult, correct_batch_offsets
 from histopia.semantic._correspondence import (
+    AdjacentSectionCorrespondence,
     CorrespondenceConfig,
     match_adjacent_sections,
 )
@@ -14,10 +16,12 @@ from histopia.semantic._features import PatchFeatures
 from histopia.semantic._graph import (
     DiffusionGuard,
     EdgeKind,
+    GraphEdges,
     build_serial_graph,
     diffuse_labels,
     evaluate_diffusion_guard,
 )
+from histopia.semantic._selection import ClusterSelectionResult, select_cluster_count
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +41,11 @@ class JointAtlas:
     pca_mean: np.ndarray
     pca_basis: np.ndarray
     clusterings: dict[int, AtlasClustering]
+    selected_k: int | None = None
+    graph: GraphEdges | None = None
+    correspondences: tuple[AdjacentSectionCorrespondence, ...] = ()
+    batch_correction: BatchCorrectionResult | None = None
+    cluster_selection: ClusterSelectionResult | None = None
 
 
 def balanced_sample_indices(
@@ -88,36 +97,22 @@ def fit_joint_atlas(
     component_count = min(pca_components, normalized.shape[1], len(sample))
     if component_count <= 0:
         raise ValueError("PCA requires non-empty patch features")
-    PCA, MiniBatchKMeans = _sklearn_estimators()
+    PCA, _ = _sklearn_estimators()
     pca = PCA(n_components=component_count, svd_solver="auto", random_state=seed)
     pca.fit(normalized[sample])
     projected = pca.transform(normalized).astype(np.float32)
     offsets = np.concatenate([[0], np.cumsum(sizes)]).astype(np.int64)
     graph = None
+    correspondences: tuple[AdjacentSectionCorrespondence, ...] = ()
+    batch_correction = None
+    selection = None
     if regularize:
         split_features = tuple(
             projected[offsets[i] : offsets[i + 1]] for i in range(len(sections))
         )
-        correspondences = tuple(
-            match_adjacent_sections(
-                sections[index].grid_rc,
-                sections[index].reference_um_xy,
-                split_features[index],
-                sections[index + 1].grid_rc,
-                sections[index + 1].reference_um_xy,
-                split_features[index + 1],
-                source_section=index,
-                target_section=index + 1,
-                config=CorrespondenceConfig(
-                    patch_width_um=0.5
-                    * (
-                        sections[index].patch_size_px * sections[index].analysis_mpp
-                        + sections[index + 1].patch_size_px
-                        * sections[index + 1].analysis_mpp
-                    )
-                ),
-            )
-            for index in range(len(sections) - 1)
+        correspondences = _match_correspondences(
+            sections,
+            split_features,
         )
         graph = build_serial_graph(
             tuple(section.grid_rc for section in sections),
@@ -127,20 +122,62 @@ def fit_joint_atlas(
             correspondences=correspondences,
         )
 
-    clusterings: dict[int, AtlasClustering] = {}
-    for cluster_count in cluster_counts:
-        if cluster_count <= 1 or cluster_count > len(sample):
-            raise ValueError("cluster count must be between 2 and sample size")
-        model = MiniBatchKMeans(
-            n_clusters=cluster_count,
-            random_state=seed,
-            batch_size=min(4096, max(256, len(sample))),
-            n_init=10,
-            reassignment_ratio=0.0,
+        consensus = (graph.edge_kind == EdgeKind.CROSS_SECTION_CONSENSUS) & (
+            graph.source < graph.target
         )
-        model.fit(projected[sample])
-        joint = model.predict(projected).astype(np.int32)
-        joint, centroids = _canonicalize(joint, model.cluster_centers_)
+        anchor_pairs = np.column_stack(
+            [graph.source[consensus], graph.target[consensus]]
+        ).astype(np.int64)
+        if len(anchor_pairs):
+            batch_correction = correct_batch_offsets(
+                projected,
+                offsets,
+                anchor_pairs,
+                graph.weight[consensus],
+                seed=seed,
+            )
+            projected = batch_correction.corrected_features.astype(np.float32)
+            split_features = tuple(
+                projected[offsets[i] : offsets[i + 1]] for i in range(len(sections))
+            )
+            correspondences = _match_correspondences(sections, split_features)
+            graph = build_serial_graph(
+                tuple(section.grid_rc for section in sections),
+                tuple(section.reference_um_xy for section in sections),
+                split_features,
+                max_cross_section_distance_um=max_cross_section_distance_um,
+                correspondences=correspondences,
+            )
+
+    counts = tuple(dict.fromkeys(int(value) for value in cluster_counts))
+    if any(count <= 1 or count > len(sample) for count in counts):
+        raise ValueError("cluster count must be between 2 and sample size")
+    within_edges = np.empty((0, 2), dtype=np.int64)
+    cross_edges = np.empty((0, 2), dtype=np.int64)
+    if graph is not None:
+        within = (graph.edge_kind == EdgeKind.WITHIN_SECTION_SPATIAL) & (
+            graph.source < graph.target
+        )
+        cross = (graph.edge_kind == EdgeKind.CROSS_SECTION_CONSENSUS) & (
+            graph.source < graph.target
+        )
+        within_edges = np.column_stack([graph.source[within], graph.target[within]])
+        cross_edges = np.column_stack([graph.source[cross], graph.target[cross]])
+    selection = select_cluster_count(
+        projected,
+        offsets,
+        within_edges,
+        cross_edges,
+        k_values=counts,
+        seed=seed,
+    )
+
+    clusterings: dict[int, AtlasClustering] = {}
+    for cluster_count in counts:
+        joint = selection.labels_by_k[cluster_count]
+        centroids = np.stack(
+            [projected[joint == label].mean(axis=0) for label in range(cluster_count)]
+        )
         selected = joint
         guard = None
         if graph is not None:
@@ -177,6 +214,38 @@ def fit_joint_atlas(
         pca_mean=np.asarray(pca.mean_, dtype=np.float32),
         pca_basis=np.asarray(pca.components_, dtype=np.float32),
         clusterings=clusterings,
+        selected_k=selection.selected_k,
+        graph=graph,
+        correspondences=correspondences,
+        batch_correction=batch_correction,
+        cluster_selection=selection,
+    )
+
+
+def _match_correspondences(
+    sections: tuple[PatchFeatures, ...],
+    features: tuple[np.ndarray, ...],
+) -> tuple[AdjacentSectionCorrespondence, ...]:
+    return tuple(
+        match_adjacent_sections(
+            sections[index].grid_rc,
+            sections[index].reference_um_xy,
+            features[index],
+            sections[index + 1].grid_rc,
+            sections[index + 1].reference_um_xy,
+            features[index + 1],
+            source_section=index,
+            target_section=index + 1,
+            config=CorrespondenceConfig(
+                patch_width_um=0.5
+                * (
+                    sections[index].patch_size_px * sections[index].analysis_mpp
+                    + sections[index + 1].patch_size_px
+                    * sections[index + 1].analysis_mpp
+                )
+            ),
+        )
+        for index in range(len(sections) - 1)
     )
 
 
