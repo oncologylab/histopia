@@ -14,7 +14,7 @@ def main(argv: list[str] | None = None) -> int:
         description="Extract UNI2-h features and fit a global serial-section atlas."
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
-    for command in ("extract", "fit", "run"):
+    for command in ("preflight", "extract", "fit", "run"):
         child = subparsers.add_parser(command)
         child.add_argument("--config", type=Path, required=True)
         if command in {"extract", "run"}:
@@ -35,6 +35,19 @@ def main(argv: list[str] | None = None) -> int:
         return _cache_model(args.cache_dir)
 
     config = load_semantic_config(args.config)
+    if args.command == "preflight":
+        from histopia.semantic._preflight import (
+            preflight_registration,
+            write_preflight,
+        )
+
+        preflight = preflight_registration(config.registration_run)
+        output = write_preflight(preflight, config.output_dir / "preflight.json")
+        print(
+            f"{output}: {preflight.slide_count} slides, "
+            f"fingerprint={preflight.fingerprint}"
+        )
+        return 0
     if args.command == "fit":
         from histopia.semantic._pipeline import fit_saved_features
 
