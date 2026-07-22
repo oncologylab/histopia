@@ -93,7 +93,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.viewer_run:
         if args.viewer_output_dir is None:
             parser.error("--viewer-output-dir is required with --viewer-run")
-        from histopia.registration._viewer import build_section_viewer
+        from histopia.visualization import build_section_viewer
 
         runs: dict[str, Path] = {}
         for item in args.viewer_run:

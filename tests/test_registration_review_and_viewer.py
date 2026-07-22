@@ -10,7 +10,7 @@ from PIL import Image
 from histopia.registration._masking import TissueMaskResult
 from histopia.registration._review import MaskReviewEntry, resolve_reviewed_mask
 from histopia.registration._slides import SlideGeometry, discover_slides
-from histopia.registration._viewer import (
+from histopia.visualization._viewer import (
     _tissue_review_crop,
     build_section_order_review,
     build_section_viewer,
@@ -182,11 +182,22 @@ def test_viewer_adds_lazy_semantic_and_blend_modes(tmp_path: Path) -> None:
     slide = manifest["mice"][0]["slides"][0]
     assert slide["semantic_texture"].endswith("-semantic.webp")
     assert slide["blend_texture"].endswith("-blend.webp")
+    assert slide["semantic_textures"]["2"].endswith("-k2-semantic.webp")
+    assert manifest["mice"][0]["semantic"]["selected_k"] == 2
     assert manifest["mice"][0]["semantic"]["cluster_count"] == 2
     assert 'id="mode"' in index.read_text()
     viewer = (index.parent / "viewer.js").read_text()
     assert "texture.dispose()" in viewer
     assert "semantic_texture" in viewer
+
+    assert "semantic_textures" in viewer
+    assert "new THREE.LineSegments" in viewer
+    assert 'id="show-links"' in index.read_text()
+    assert 'id="qc"' in index.read_text()
+    assert "localStorage" not in viewer
+    assert "slide_variance_fraction" in viewer
+    assert "clusters" in viewer
+    assert 'id="clusters"' in index.read_text()
 
 
 def test_order_review_builds_fixed_height_fingerprinted_grid(tmp_path: Path) -> None:
