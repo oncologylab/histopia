@@ -419,9 +419,7 @@ def refine_group_tissue_masks(
             best_supported_label = support_order[0]
             best_support = component_support[best_supported_label]
             second_support = (
-                component_support[support_order[1]]
-                if len(support_order) > 1
-                else 0.0
+                component_support[support_order[1]] if len(support_order) > 1 else 0.0
             )
             if best_support < 0.02 or best_support - second_support < 0.05:
                 refined[key] = result
@@ -783,8 +781,7 @@ def _augment_with_group_components(
             small_fragment_support if is_small_fragment else minimum_support
         )
         if (
-            support >= required_support
-            and (not is_small_fragment or close_to_trusted)
+            support >= required_support and (not is_small_fragment or close_to_trusted)
         ) or native_continuation:
             augmented |= component
     return augmented
@@ -980,9 +977,7 @@ def _carve_large_blank_regions(rgb: np.ndarray, mask: np.ndarray) -> np.ndarray:
         if fragmented_canvas and fragmented_plate_ids.size >= 3
         else np.zeros_like(mask, dtype=bool)
     )
-    labels, count = ndi.label(
-        (low_texture & (color_delta < 0.15)) | neutral_plate
-    )
+    labels, count = ndi.label((low_texture & (color_delta < 0.15)) | neutral_plate)
     if count == 0:
         return mask
     sizes = np.bincount(labels.ravel())
