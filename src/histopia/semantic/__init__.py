@@ -8,6 +8,7 @@ from histopia.semantic._preflight import (
     preflight_registration,
     write_preflight,
 )
+from histopia.semantic._qc import summarize_semantic_run, write_cohort_qc
 
 __all__ = [
     "PatchFeatures",
@@ -16,5 +17,7 @@ __all__ = [
     "fit_saved_features",
     "preflight_registration",
     "run_semantic_atlas",
+    "summarize_semantic_run",
+    "write_cohort_qc",
     "write_preflight",
 ]
