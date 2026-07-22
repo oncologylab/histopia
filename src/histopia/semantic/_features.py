@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,6 +38,8 @@ class PatchFeatures:
     grid_shape: tuple[int, int]
     patch_size_px: int
     analysis_mpp: float
+    provenance: dict[str, object] | None = None
+    fingerprint: str | None = None
 
     def __post_init__(self) -> None:
         arrays = (
@@ -61,25 +66,40 @@ class PatchFeatures:
             raise ValueError("grid and patch dimensions must be positive")
         if self.analysis_mpp <= 0:
             raise ValueError("analysis_mpp must be positive")
+        expected = _provenance_fingerprint(self.provenance)
+        if self.fingerprint is not None and self.fingerprint != expected:
+            raise ValueError("feature provenance fingerprint does not match")
+        object.__setattr__(self, "fingerprint", expected)
 
     def save(self, path: Path | str) -> Path:
         """Write a compressed, portable artifact without repeated tile vectors."""
 
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        np.savez_compressed(
-            path,
-            schema_version=np.int16(1),
-            slide_id=np.asarray(self.slide_id),
-            features=np.asarray(self.features, dtype=np.float16),
-            grid_rc=np.asarray(self.grid_rc, dtype=np.int32),
-            native_xy=np.asarray(self.native_xy, dtype=np.float64),
-            reference_um_xy=np.asarray(self.reference_um_xy, dtype=np.float64),
-            tissue_fraction=np.asarray(self.tissue_fraction, dtype=np.float32),
-            grid_shape=np.asarray(self.grid_shape, dtype=np.int32),
-            patch_size_px=np.int32(self.patch_size_px),
-            analysis_mpp=np.float64(self.analysis_mpp),
-        )
+        with tempfile.NamedTemporaryFile(
+            dir=path.parent, prefix=f".{path.name}.", suffix=".tmp.npz", delete=False
+        ) as stream:
+            temporary = Path(stream.name)
+        try:
+            np.savez_compressed(
+                temporary,
+                schema_version=np.int16(2),
+                slide_id=np.asarray(self.slide_id),
+                features=np.asarray(self.features, dtype=np.float16),
+                grid_rc=np.asarray(self.grid_rc, dtype=np.int32),
+                native_xy=np.asarray(self.native_xy, dtype=np.float64),
+                reference_um_xy=np.asarray(self.reference_um_xy, dtype=np.float64),
+                tissue_fraction=np.asarray(self.tissue_fraction, dtype=np.float32),
+                grid_shape=np.asarray(self.grid_shape, dtype=np.int32),
+                patch_size_px=np.int32(self.patch_size_px),
+                analysis_mpp=np.float64(self.analysis_mpp),
+                provenance_json=np.asarray(_canonical_json(self.provenance)),
+                fingerprint=np.asarray(self.fingerprint or ""),
+            )
+            self.load(temporary)
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
         return path
 
     @classmethod
@@ -87,8 +107,14 @@ class PatchFeatures:
         """Load and validate a compact feature artifact."""
 
         with np.load(Path(path), allow_pickle=False) as data:
-            if int(data["schema_version"]) != 1:
+            schema_version = int(data["schema_version"])
+            if schema_version not in {1, 2}:
                 raise ValueError("unsupported patch feature schema")
+            provenance = (
+                json.loads(str(data["provenance_json"]))
+                if schema_version == 2
+                else None
+            )
             return cls(
                 slide_id=str(data["slide_id"]),
                 features=data["features"],
@@ -99,7 +125,21 @@ class PatchFeatures:
                 grid_shape=tuple(int(value) for value in data["grid_shape"]),
                 patch_size_px=int(data["patch_size_px"]),
                 analysis_mpp=float(data["analysis_mpp"]),
+                provenance=provenance,
+                fingerprint=(str(data["fingerprint"]) or None)
+                if schema_version == 2
+                else None,
             )
+
+
+def _canonical_json(value: object) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def _provenance_fingerprint(provenance: dict[str, object] | None) -> str | None:
+    if provenance is None:
+        return None
+    return hashlib.sha256(_canonical_json(provenance).encode()).hexdigest()
 
 
 def map_native_to_reference_um(
@@ -139,6 +179,7 @@ def extract_patch_features(
     patch_size_px: int = 224,
     min_tissue_fraction: float = 0.5,
     batch_size: int = 64,
+    provenance: dict[str, object] | None = None,
 ) -> PatchFeatures:
     """Read and encode tissue patches on a calibrated, non-overlapping grid."""
 
@@ -212,6 +253,7 @@ def extract_patch_features(
         grid_shape=(rows, cols),
         patch_size_px=patch_size_px,
         analysis_mpp=analysis_mpp,
+        provenance=provenance,
     )
 
 

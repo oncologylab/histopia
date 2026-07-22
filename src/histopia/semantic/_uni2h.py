@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 from collections.abc import Callable
 from importlib import import_module
@@ -24,10 +25,13 @@ def _preload_wsi_backend(
 class Uni2hEncoder:
     """Batch encoder matching the published UNI2-h timm model contract."""
 
-    def __init__(self, model, transform, *, device: str) -> None:
+    def __init__(
+        self, model, transform, *, device: str, model_fingerprint: str
+    ) -> None:
         self.model = model
         self.transform = transform
         self.device = device
+        self.model_fingerprint = model_fingerprint
 
     @classmethod
     def from_cache(
@@ -42,6 +46,7 @@ class Uni2hEncoder:
         _preload_wsi_backend()
         cache_dir = Path(cache_dir).expanduser().resolve()
         cache_dir.mkdir(parents=True, exist_ok=True)
+        revision = _cached_model_revision(cache_dir)
         os.environ["HF_HOME"] = str(cache_dir)
         if local_only:
             os.environ["HF_HUB_OFFLINE"] = "1"
@@ -84,7 +89,13 @@ class Uni2hEncoder:
         transform = create_transform(
             **resolve_data_config(model.pretrained_cfg, model=model)
         )
-        return cls(model, transform, device=device)
+        identity = f"MahmoodLab/UNI2-h@{revision}".encode()
+        return cls(
+            model,
+            transform,
+            device=device,
+            model_fingerprint=hashlib.sha256(identity).hexdigest(),
+        )
 
     def encode(self, images: np.ndarray) -> np.ndarray:
         try:
@@ -115,3 +126,14 @@ class Uni2hEncoder:
                 [self.encode(images[:midpoint]), self.encode(images[midpoint:])]
             )
         return output.float().cpu().numpy()
+
+
+def _cached_model_revision(cache_dir: Path) -> str:
+    model_root = cache_dir / "models--MahmoodLab--UNI2-h"
+    reference = model_root / "refs" / "main"
+    if not reference.is_file():
+        raise RuntimeError("UNI2-h cache has no pinned main revision")
+    revision = reference.read_text().strip()
+    if not revision or not (model_root / "snapshots" / revision).is_dir():
+        raise RuntimeError("UNI2-h cache revision has no local snapshot")
+    return revision
