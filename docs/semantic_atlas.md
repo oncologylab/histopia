@@ -5,9 +5,12 @@ section stack. It does not independently cluster each slide and then attempt to
 rename the clusters. Every source slide contributes to one normalized PCA and
 MiniBatchKMeans space, which gives region labels a single global meaning.
 
-Before joint PCA, Histopia removes each slide's mean embedding and L2-normalizes
-the residual patch vectors. This limits stain- and scanner-level shifts while
-retaining within-slide morphology for global clustering.
+Histopia uses a section-centered PCA to bootstrap deformation-aware
+correspondences between adjacent sections. Those reciprocal links estimate a
+smooth local displacement field without warping accepted image pixels. A
+confidence-weighted additive batch correction is proposed from the links, but
+is accepted only when anchor distance and slide-attributable variance improve
+while within-slide neighbourhoods are preserved.
 
 ## Data Model
 
@@ -34,12 +37,14 @@ histopia-semantic fit --config semantic-atlas.toml
 authenticated Hugging Face access. Subsequent extraction defaults to local-only
 model loading. `histopia-semantic run` combines extraction and fitting.
 
-The primary atlas uses seven regions. Five- and ten-region fits are emitted as
-sensitivity analyses. Four-neighbour patch edges and reciprocal nearest
-neighbours between adjacent registered sections provide conservative graph
-regularization. The regularized labels are accepted only when adjacency does
-not worsen, at most 25 percent of labels change, and registered centroid
-distance does not worsen by more than 10 percent.
+By default, independent five-seed fits are evaluated for K=5 through K=15.
+Selection balances silhouette, seed stability, within-section coherence, and
+accepted cross-section continuity, rejects tiny clusters, and prefers smaller
+K when scores are effectively tied. Four-neighbour patch edges and accepted
+adjacent-section correspondences provide conservative topology regularization.
+Regularized labels are accepted only when adjacency does not worsen, at most 25
+percent of labels change, and registered centroid distance does not worsen by
+more than 10 percent.
 
 ## Review And Viewer
 
@@ -57,5 +62,8 @@ histopia-register \
   --viewer-output-dir /path/to/viewer
 ```
 
-The viewer exposes Histology, Blend, and Semantic modes and loads only the
-active texture set.
+The canonical `histopia.visualization` viewer exposes Histology, Blend, and
+Semantic modes, selectable K, quantitative batch and K diagnostics, and one
+selected adjacent-pair topology overlay. It loads only the active texture set,
+disposes replaced GPU textures, and displays at most the 500 highest-confidence
+links while preserving complete correspondences in result artifacts.

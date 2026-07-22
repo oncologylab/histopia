@@ -66,6 +66,23 @@ semantic atlas across the section stack. Install the light analysis layer with
 Model weights remain external and subject to their own access and license
 terms. See `docs/semantic_atlas.md` for the staged, review-gated workflow.
 
+## Visualization
+
+Interactive review generation and serving are available from the canonical
+`histopia.visualization` module and the `histopia-visualize` command. A viewer
+root always exposes its current build at the stable `/histopia/` endpoint:
+
+```bash
+histopia-visualize build /path/to/viewer-root \
+    --run sample=/path/to/registration-run \
+    --semantic-run sample=/path/to/semantic-run
+histopia-visualize serve /path/to/viewer-root --port 8765
+```
+
+The semantic topology overlay displays at most 500 high-confidence links for
+one adjacent pair. Complete correspondence arrays remain in semantic result
+artifacts.
+
 ## License
 
 The license is pending. See `LICENSE` for the current placeholder.

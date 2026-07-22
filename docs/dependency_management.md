@@ -83,7 +83,9 @@ vips --version
 - Use lower and upper bounds for normal workflow extras.
 - Use `constraints/registration-repro.txt` for exact validation reruns.
 - Use `constraints/semantic-repro.txt` for the tested semantic analysis and
-  GPU extraction stack. Match the PyTorch wheel to the host CUDA runtime.
+  GPU extraction stack. Validation used Python 3.10, an NVIDIA A100, and the
+  PyTorch CUDA 13.0 wheel; use the equivalent platform wheel when CUDA 13.0 is
+  unavailable.
 - Do not commit virtual environments, raw slides, generated masks, warped
   images, or registration output directories.
 - Record `histopia-register` config files and `registration_result.json` files
