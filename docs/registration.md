@@ -23,6 +23,7 @@ Implemented now:
 - fail-closed mask review manifests and exact-shape binary overrides
 - strict WSI discovery that excludes label photos and generated artifacts
 - scanner-content geometry for SCN thumbnails and native-coordinate warping
+- content-scale-aware pyramid fallback when a WSI thumbnail level is corrupt
 - explicit full-mask mode for legacy reproduction only
 - feature and mask-moment rigid thumbnail registration
 - conservative affine tissue-mask refinement with transform plausibility gates
