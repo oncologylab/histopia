@@ -66,8 +66,8 @@ are coverage limitations rather than transform failures.
 ## Full-Resolution Validation
 
 All 105 affine results were applied to the original NDPI/SCN files and read
-back from the dedicated registration output tree under
-`/media/volume/data/histopia`. The source data tree was not modified.
+back from a dedicated external output tree. The source data tree was not
+modified.
 
 | Mouse | Files | Reference canvas (H x W) | Pyramid levels | Native/thumb mask Dice | Native/thumb MAE |
 |---|---:|---:|---:|---:|---:|
@@ -90,9 +90,9 @@ Reproduce this audit with:
 
 ```bash
 python scripts/validate_kpf_full_resolution.py \
-    --registration-root /media/volume/data/histopia/registration/KPF/runs \
-    --full-resolution-root /media/volume/data/histopia/registration/KPF/registered \
-    --output /media/volume/data/histopia/registration/KPF/registered/audit.json
+    --registration-root /path/to/registration-runs \
+    --full-resolution-root /path/to/registered-slides \
+    --output /path/to/audit.json
 ```
 
 ## Non-Rigid Validation

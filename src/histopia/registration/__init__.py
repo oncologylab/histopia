@@ -37,10 +37,6 @@ from histopia.registration._rigid import (
     refine_rigid_transform,
 )
 from histopia.registration._slides import SlideGeometry, SlideRecord, discover_slides
-from histopia.registration._viewer import (
-    build_section_order_review,
-    build_section_viewer,
-)
 from histopia.registration._wsi import (
     WsiWarpResult,
     calculate_thumbnail_overlap_bbox,
@@ -48,6 +44,15 @@ from histopia.registration._wsi import (
     warp_saved_registration,
     warp_slide_to_reference,
 )
+
+
+def __getattr__(name: str):
+    if name in {"build_section_order_review", "build_section_viewer"}:
+        from histopia import visualization
+
+        return getattr(visualization, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     "BrightfieldMaskConfig",

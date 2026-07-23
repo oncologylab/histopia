@@ -78,6 +78,10 @@ semantic-repro = [
     "scikit-learn==1.7.2",
     "scipy==1.15.3",
 ]
+browser-test = [
+    "playwright>=1.50,<2",
+    "pytest>=8",
+]
 dev = [
     "build>=1.2",
     "pytest>=8",
@@ -88,6 +92,7 @@ dev = [
 [project.scripts]
 histopia-register = "histopia.registration._cli:main"
 histopia-semantic = "histopia.semantic._cli:main"
+histopia-visualize = "histopia.visualization._cli:main"
 
 [project.urls]
 Homepage = "https://github.com/oncologylab/histopia"
@@ -101,6 +106,7 @@ packages = ["src/histopia"]
 pythonpath = ["src"]
 testpaths = ["tests"]
 markers = [
+    "browser: headless browser checks requiring Playwright Chromium",
     "integration: local tests that require external image data or optional WSI dependencies",
     "uni2h: local tests that require a gated UNI2-h checkpoint and GPU dependencies",
 ]

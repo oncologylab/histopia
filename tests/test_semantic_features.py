@@ -23,6 +23,7 @@ def test_patch_features_round_trip_compact_npz(tmp_path: Path) -> None:
         grid_shape=(2, 2),
         patch_size_px=224,
         analysis_mpp=0.5,
+        provenance={"model_fingerprint": "model-a", "preflight": "run-a"},
     )
 
     path = artifact.save(tmp_path / "features.npz")
@@ -34,6 +35,33 @@ def test_patch_features_round_trip_compact_npz(tmp_path: Path) -> None:
     np.testing.assert_allclose(loaded.features, artifact.features)
     np.testing.assert_array_equal(loaded.grid_rc, artifact.grid_rc)
     np.testing.assert_allclose(loaded.reference_um_xy, artifact.reference_um_xy)
+    assert loaded.provenance == artifact.provenance
+    assert loaded.fingerprint == artifact.fingerprint
+    assert not tuple(tmp_path.glob("*.tmp*"))
+
+
+def test_patch_features_loads_legacy_schema_without_campaign_fingerprint(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "legacy.npz"
+    np.savez_compressed(
+        path,
+        schema_version=np.int16(1),
+        slide_id=np.asarray("legacy.ndpi"),
+        features=np.zeros((1, 2), dtype=np.float16),
+        grid_rc=np.zeros((1, 2), dtype=np.int32),
+        native_xy=np.zeros((1, 2), dtype=np.float64),
+        reference_um_xy=np.zeros((1, 2), dtype=np.float64),
+        tissue_fraction=np.ones(1, dtype=np.float32),
+        grid_shape=np.ones(2, dtype=np.int32),
+        patch_size_px=np.int32(224),
+        analysis_mpp=np.float64(0.5),
+    )
+
+    artifact = PatchFeatures.load(path)
+
+    assert artifact.provenance is None
+    assert artifact.fingerprint is None
 
 
 def test_native_centers_map_through_thumbnail_registration_to_reference_um() -> None:

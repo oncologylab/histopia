@@ -85,9 +85,7 @@ def test_anchored_order_only_assigns_unfixed_slots() -> None:
 
 def test_order_fingerprint_changes_with_anchor_or_morphology() -> None:
     names = ("HE", "A", "B")
-    distances = np.array(
-        [[0.0, 0.2, 0.8], [0.2, 0.0, 0.3], [0.8, 0.3, 0.0]]
-    )
+    distances = np.array([[0.0, 0.2, 0.8], [0.2, 0.0, 0.3], [0.8, 0.3, 0.0]])
 
     baseline = propose_anchored_order(names, distances, {"HE": 1})
     changed_anchor = propose_anchored_order(names, distances, {"HE": 1, "B": 3})

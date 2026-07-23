@@ -175,7 +175,17 @@ def _load_wsi_thumbnail(
         height=max_dim_px,
         no_rotate=True,
     )
-    thumbnail = _vips_to_rgb(thumbnail)
+    try:
+        thumbnail = _vips_to_rgb(thumbnail)
+    except pyvips.Error as primary_error:
+        thumbnail = _retry_wsi_thumbnail_levels(
+            pyvips,
+            path,
+            native,
+            max_dim_px,
+            content_bbox_xywh=bbox if bounds_source == "openslide.bounds" else None,
+            primary_error=primary_error,
+        )
     geometry = SlideGeometry(
         native_shape=native_shape,
         content_bbox_xywh=bbox,
@@ -185,6 +195,70 @@ def _load_wsi_thumbnail(
         mpp_source=mpp_source,
     )
     return thumbnail, geometry
+
+
+def _retry_wsi_thumbnail_levels(
+    pyvips: Any,
+    path: Path,
+    native: Any,
+    max_dim_px: int,
+    *,
+    content_bbox_xywh: tuple[int, int, int, int] | None,
+    primary_error: Exception,
+) -> np.ndarray:
+    """Decode explicit pyramid levels when automatic thumbnail selection fails."""
+
+    for level in _suitable_pyramid_levels(
+        native,
+        max_dim_px,
+        content_bbox_xywh=content_bbox_xywh,
+    ):
+        options: dict[str, object] = {"access": "sequential", "level": level}
+        if content_bbox_xywh is not None:
+            options["autocrop"] = True
+        try:
+            image = pyvips.Image.new_from_file(str(path), **options)
+            image = image.thumbnail_image(
+                max_dim_px,
+                height=max_dim_px,
+                size="down",
+                no_rotate=True,
+            )
+            return _vips_to_rgb(image)
+        except pyvips.Error:
+            continue
+    raise primary_error
+
+
+def _suitable_pyramid_levels(
+    native: Any,
+    max_dim_px: int,
+    *,
+    content_bbox_xywh: tuple[int, int, int, int] | None = None,
+) -> tuple[int, ...]:
+    fields = set(native.get_fields())
+    if "openslide.level-count" not in fields:
+        return (0,)
+    level_count = int(native.get("openslide.level-count"))
+    suitable = []
+    for level in range(level_count - 1, -1, -1):
+        width_key = f"openslide.level[{level}].width"
+        height_key = f"openslide.level[{level}].height"
+        if width_key not in fields or height_key not in fields:
+            continue
+        width = int(native.get(width_key))
+        height = int(native.get(height_key))
+        if content_bbox_xywh is None:
+            effective_max_dim = max(width, height)
+        else:
+            _, _, content_width, content_height = content_bbox_xywh
+            effective_max_dim = max(
+                content_width * width / native.width,
+                content_height * height / native.height,
+            )
+        if effective_max_dim >= max_dim_px:
+            suitable.append(level)
+    return tuple(suitable) or (0,)
 
 
 def _load_standard_thumbnail(

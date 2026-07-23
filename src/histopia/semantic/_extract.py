@@ -15,6 +15,7 @@ from histopia.semantic._features import (
     PatchFeatures,
     extract_patch_features,
 )
+from histopia.semantic._preflight import preflight_registration, write_preflight
 
 
 def extract_registration_features(
@@ -28,6 +29,12 @@ def extract_registration_features(
     registration_path = config.registration_run / "registration_result.json"
     payload = json.loads(registration_path.read_text())
     slides = payload["slides"]
+    preflight = preflight_registration(config.registration_run)
+    write_preflight(preflight, config.output_dir / "preflight.json")
+    preflight_slides = {slide.slide_name: slide for slide in preflight.slides}
+    model_fingerprint = getattr(encoder, "model_fingerprint", None)
+    if not model_fingerprint:
+        raise ValueError("encoder must expose a model_fingerprint")
     reference = next(slide for slide in slides if slide["is_reference"])
     reference_geometry = _geometry_from_json(reference["geometry"])
     feature_dir = config.output_dir / "features"
@@ -37,8 +44,23 @@ def extract_registration_features(
         slide_path = Path(slide["path"])
         output = feature_dir / f"{order:03d}-{_safe_stem(slide_path.stem)}.npz"
         output_paths.append(output)
-        if output.exists() and not overwrite:
-            PatchFeatures.load(output)
+        source = preflight_slides[slide_path.name]
+        provenance = {
+            "preflight_fingerprint": preflight.fingerprint,
+            "slide_name": source.slide_name,
+            "source_sha256": source.source_sha256,
+            "mask_sha256": source.mask_sha256,
+            "transform_sha256": source.transform_sha256,
+            "model_fingerprint": str(model_fingerprint),
+            "analysis_mpp": config.analysis_mpp,
+            "patch_size_px": config.patch_size_px,
+            "min_tissue_fraction": config.min_tissue_fraction,
+        }
+        if (
+            output.exists()
+            and not overwrite
+            and feature_cache_matches(output, provenance)
+        ):
             continue
         geometry = _geometry_from_json(slide["geometry"])
         mask = _read_mask(
@@ -59,9 +81,24 @@ def extract_registration_features(
             patch_size_px=config.patch_size_px,
             min_tissue_fraction=config.min_tissue_fraction,
             batch_size=config.batch_size,
+            provenance=provenance,
         )
         artifact.save(output)
     return tuple(output_paths)
+
+
+def feature_cache_matches(
+    path: Path | str, expected_provenance: dict[str, object]
+) -> bool:
+    """Return whether an artifact is a valid cache for exact campaign inputs."""
+
+    try:
+        artifact = PatchFeatures.load(path)
+    except (KeyError, OSError, ValueError):
+        return False
+    return (
+        artifact.fingerprint is not None and artifact.provenance == expected_provenance
+    )
 
 
 def _geometry_from_json(data: dict[str, Any]) -> SlideGeometry:

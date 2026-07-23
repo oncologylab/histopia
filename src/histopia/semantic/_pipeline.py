@@ -31,7 +31,7 @@ def fit_saved_features(config: SemanticAtlasConfig) -> tuple[JointAtlas, Path]:
         atlas,
         sections,
         config.output_dir,
-        primary_clusters=config.primary_clusters,
+        primary_clusters=config.selected_clusters or atlas.selected_k,
     )
     return atlas, result
 

@@ -1,0 +1,63 @@
+name: Deploy interactive 3D showcase
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - ".github/workflows/pages.yml"
+      - "README.md"
+      - "docs/github_pages_showcase.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: github-pages
+  cancel-in-progress: false
+
+env:
+  SHOWCASE_ARCHIVE: histopia-pages-5997-v1.tar.gz
+  SHOWCASE_SHA256: 4ef2cf03db6a7a378fd194507d3dc404255efccfbb9ed803acad82af7026b127
+  SHOWCASE_URL: https://github.com/oncologylab/histopia/releases/download/pages-demo-5997-v1/histopia-pages-5997-v1.tar.gz
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Download fingerprinted showcase
+        run: curl --fail --location --output "$SHOWCASE_ARCHIVE" "$SHOWCASE_URL"
+
+      - name: Verify and unpack showcase
+        run: |
+          echo "$SHOWCASE_SHA256  $SHOWCASE_ARCHIVE" | sha256sum --check -
+          mkdir _site
+          tar --extract --gzip --file "$SHOWCASE_ARCHIVE" --directory _site
+          test -f _site/index.html
+          test -f _site/manifest.json
+          test -f _site/showcase.json
+          test -z "$(find _site -type l -print -quit)"
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Deploy Pages artifact
+        id: deployment
+        uses: actions/deploy-pages@v4
