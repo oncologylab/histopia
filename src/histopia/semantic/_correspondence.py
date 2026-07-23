@@ -231,6 +231,8 @@ def _validate_section(
         raise ValueError(f"{name} section arrays must have aligned rows")
     if not np.all(np.isfinite(um_xy)) or not np.all(np.isfinite(features)):
         raise ValueError(f"{name} coordinates and features must be finite")
+    if len(np.unique(grid_rc, axis=0)) != len(grid_rc):
+        raise ValueError(f"{name} grid_rc coordinates must be unique")
     return grid_rc.astype(np.int64, copy=False), um_xy, features
 
 
@@ -240,24 +242,40 @@ def _context_descriptors(
     radii: tuple[int, ...],
 ) -> np.ndarray:
     normalized = _normalize_rows(features)
-    lookup = {tuple(rc): index for index, rc in enumerate(grid_rc.tolist())}
+    minimum = np.min(grid_rc, axis=0)
+    shifted = grid_rc - minimum
+    column_span = int(np.max(shifted[:, 1])) + 1
+    keys = shifted[:, 0] * column_span + shifted[:, 1]
+    key_order = np.argsort(keys, kind="stable")
+    sorted_keys = keys[key_order]
     parts = [normalized]
     for radius in radii:
         directional = np.zeros((len(grid_rc), 8, normalized.shape[1]), np.float32)
         counts = np.zeros((len(grid_rc), 8), dtype=np.int16)
-        for index, (row, column) in enumerate(grid_rc):
-            for row_offset in range(-radius, radius + 1):
-                for column_offset in range(-radius, radius + 1):
-                    if max(abs(row_offset), abs(column_offset)) != radius:
-                        continue
-                    neighbor = lookup.get(
-                        (int(row + row_offset), int(column + column_offset))
-                    )
-                    if neighbor is None:
-                        continue
-                    direction = _direction_bin(row_offset, column_offset)
-                    directional[index, direction] += normalized[neighbor]
-                    counts[index, direction] += 1
+        for row_offset in range(-radius, radius + 1):
+            for column_offset in range(-radius, radius + 1):
+                if max(abs(row_offset), abs(column_offset)) != radius:
+                    continue
+                query_rows = shifted[:, 0] + row_offset
+                query_columns = shifted[:, 1] + column_offset
+                in_bounds = (
+                    (query_rows >= 0)
+                    & (query_columns >= 0)
+                    & (query_columns < column_span)
+                )
+                query_keys = query_rows * column_span + query_columns
+                positions = np.searchsorted(sorted_keys, query_keys)
+                valid = in_bounds & (positions < len(sorted_keys))
+                valid_indices = np.flatnonzero(valid)
+                if not len(valid_indices):
+                    continue
+                positions = positions[valid_indices]
+                present = sorted_keys[positions] == query_keys[valid_indices]
+                valid_indices = valid_indices[present]
+                neighbors = key_order[positions[present]]
+                direction = _direction_bin(row_offset, column_offset)
+                directional[valid_indices, direction] += normalized[neighbors]
+                counts[valid_indices, direction] += 1
         directional /= np.maximum(counts[..., None], 1)
         parts.append(directional.reshape(len(grid_rc), -1))
         parts.append((counts > 0).astype(np.float32))
@@ -374,21 +392,26 @@ def _neighborhood_consistency(
     displacement: np.ndarray,
     patch_width_um: float,
 ) -> np.ndarray:
-    neighborhoods = _ckdtree(matched_xy).query_ball_point(
-        matched_xy, 3.0 * patch_width_um
+    consistency_sum = np.zeros(len(matched_xy), dtype=np.float64)
+    counts = np.zeros(len(matched_xy), dtype=np.int64)
+    pairs = _ckdtree(matched_xy).query_pairs(
+        3.0 * patch_width_um, output_type="ndarray"
     )
-    consistency = np.empty(len(matched_xy), dtype=np.float32)
-    for index, neighbors in enumerate(neighborhoods):
-        neighbors = np.asarray(neighbors, dtype=np.int64)
-        neighbors = neighbors[neighbors != index]
-        if not len(neighbors):
-            consistency[index] = 0.0
-            continue
-        delta = np.linalg.norm(displacement[neighbors] - displacement[index], axis=1)
-        consistency[index] = float(
-            np.mean(np.exp(-0.5 * (delta / patch_width_um) ** 2))
+    if len(pairs):
+        delta = np.linalg.norm(
+            displacement[pairs[:, 1]] - displacement[pairs[:, 0]], axis=1
         )
-    return consistency
+        score = np.exp(-0.5 * (delta / patch_width_um) ** 2)
+        np.add.at(consistency_sum, pairs[:, 0], score)
+        np.add.at(consistency_sum, pairs[:, 1], score)
+        np.add.at(counts, pairs[:, 0], 1)
+        np.add.at(counts, pairs[:, 1], 1)
+    return np.divide(
+        consistency_sum,
+        counts,
+        out=np.zeros_like(consistency_sum),
+        where=counts > 0,
+    ).astype(np.float32)
 
 
 def _confidence(

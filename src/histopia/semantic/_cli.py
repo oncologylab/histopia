@@ -9,6 +9,15 @@ from pathlib import Path
 from histopia.semantic._config import load_semantic_config
 
 
+def _named_path(value: str) -> tuple[str, Path]:
+    if "=" not in value:
+        raise argparse.ArgumentTypeError("expected NAME=PATH")
+    name, raw_path = value.split("=", 1)
+    if not name or not raw_path:
+        raise argparse.ArgumentTypeError("expected non-empty NAME=PATH")
+    return name, Path(raw_path)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Extract UNI2-h features and fit a global serial-section atlas."
@@ -29,10 +38,19 @@ def main(argv: list[str] | None = None) -> int:
             )
     cache = subparsers.add_parser("cache-model")
     cache.add_argument("--cache-dir", type=Path, required=True)
+    cohort = subparsers.add_parser("cohort-qc")
+    cohort.add_argument("--run", type=_named_path, action="append", required=True)
+    cohort.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
 
     if args.command == "cache-model":
         return _cache_model(args.cache_dir)
+    if args.command == "cohort-qc":
+        from histopia.semantic._qc import write_cohort_qc
+
+        output = write_cohort_qc(dict(args.run), args.output)
+        print(output)
+        return 0
 
     config = load_semantic_config(args.config)
     if args.command == "preflight":

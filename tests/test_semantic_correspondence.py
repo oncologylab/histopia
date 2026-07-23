@@ -8,6 +8,9 @@ import pytest
 from histopia.semantic._correspondence import (
     AdjacentSectionCorrespondence,
     CorrespondenceConfig,
+    _context_descriptors,
+    _neighborhood_consistency,
+    _reciprocal_matches,
     match_adjacent_sections,
 )
 
@@ -173,6 +176,78 @@ def test_matching_uses_registered_geometry_when_cross_stain_features_shift() -> 
     assert len(result.source_indices) >= 0.75 * len(grid)
     assert np.mean(result.source_indices == result.target_indices) >= 0.95
     assert np.median(result.field_residual_um) < 0.25 * 112.0
+
+
+def test_vectorized_neighborhood_consistency_matches_reference_definition() -> None:
+    rng = np.random.default_rng(82)
+    xy = rng.uniform(0, 500, size=(40, 2))
+    displacement = rng.normal(0, 30, size=(40, 2))
+    patch_width = 100.0
+    expected = []
+    for index in range(len(xy)):
+        distance = np.linalg.norm(xy - xy[index], axis=1)
+        neighbors = np.flatnonzero(
+            (distance <= 3.0 * patch_width) & (np.arange(len(xy)) != index)
+        )
+        delta = np.linalg.norm(displacement[neighbors] - displacement[index], axis=1)
+        expected.append(np.mean(np.exp(-0.5 * (delta / patch_width) ** 2)))
+
+    observed = _neighborhood_consistency(xy, displacement, patch_width)
+
+    np.testing.assert_allclose(observed, expected, rtol=1e-6, atol=1e-6)
+
+
+def test_context_descriptors_retain_every_projected_component() -> None:
+    grid = np.array([[0, 0], [0, 1], [1, 0], [1, 1]], dtype=np.int32)
+    features = np.arange(1, 49, dtype=np.float32).reshape(4, 12)
+
+    descriptors = _context_descriptors(grid, features, (1,))
+
+    assert descriptors.shape == (4, 12 + 8 * 12 + 8)
+
+
+def test_matching_rejects_duplicate_grid_coordinates() -> None:
+    grid = np.array([[0, 0], [0, 0]], dtype=np.int32)
+    xy = np.array([[0.0, 0.0], [10.0, 0.0]])
+    features = np.eye(2, dtype=np.float32)
+
+    with pytest.raises(ValueError, match="unique"):
+        match_adjacent_sections(
+            grid,
+            xy,
+            features,
+            grid,
+            xy,
+            features,
+            source_section=0,
+            target_section=1,
+            config=CorrespondenceConfig(patch_width_um=10.0),
+        )
+
+
+def test_reciprocal_search_considers_every_candidate_inside_radius() -> None:
+    source_xy = np.array([[0.0, 0.0]])
+    target_xy = np.column_stack([np.linspace(1.0, 80.0, 80), np.zeros(80)])
+    source_descriptor = np.array([[1.0, 0.0]], dtype=np.float32)
+    target_descriptor = np.tile(
+        np.array([[-1.0, 0.0]], dtype=np.float32),
+        (80, 1),
+    )
+    target_descriptor[-1] = source_descriptor[0]
+    config = CorrespondenceConfig(patch_width_um=10.0)
+
+    source, target, _, _ = _reciprocal_matches(
+        source_xy,
+        target_xy,
+        source_descriptor,
+        target_descriptor,
+        np.zeros_like(source_xy),
+        radius_um=100.0,
+        config=config,
+    )
+
+    np.testing.assert_array_equal(source, [0])
+    np.testing.assert_array_equal(target, [79])
 
 
 def test_matching_rejects_an_isolated_near_decoy_without_runner_up() -> None:

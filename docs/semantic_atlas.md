@@ -5,12 +5,14 @@ section stack. It does not independently cluster each slide and then attempt to
 rename the clusters. Every source slide contributes to one normalized PCA and
 MiniBatchKMeans space, which gives region labels a single global meaning.
 
-Histopia uses a section-centered PCA to bootstrap deformation-aware
-correspondences between adjacent sections. Those reciprocal links estimate a
-smooth local displacement field without warping accepted image pixels. A
-confidence-weighted additive batch correction is proposed from the links, but
-is accepted only when anchor distance and slide-attributable variance improve
-while within-slide neighbourhoods are preserved.
+Histopia L2-normalizes each patch embedding and fits one section-balanced PCA
+to bootstrap deformation-aware correspondences between adjacent sections.
+Those reciprocal links estimate a smooth local displacement field without
+warping accepted image pixels. A confidence-weighted additive batch correction
+is proposed from the links, but is accepted only when anchor distance and
+slide-attributable variance improve while within-slide neighbourhoods are
+preserved. Section offsets are not removed before this guarded correction, so
+the reported raw and corrected batch diagnostics remain meaningful.
 
 ## Data Model
 
@@ -50,8 +52,11 @@ more than 10 percent.
 
 Every fit writes `semantic_result.json`, per-slide label grids,
 `atlas_model.npz`, and `semantic_review.json`. A new result is unapproved and
-fingerprinted. Scientific interpretation should wait until semantic overlays
-and sensitivity fits have been reviewed.
+fingerprinted. The fingerprint binds the model, every label grid, every
+topology artifact, and the exact preflight slide order; stale or incomplete
+artifacts are rejected before QC or viewer generation. Scientific
+interpretation should wait until semantic overlays and sensitivity fits have
+been reviewed.
 
 Add an atlas to the section viewer with:
 
@@ -62,8 +67,29 @@ histopia-register \
   --viewer-output-dir /path/to/viewer
 ```
 
+For a multi-sample review, write one portable cohort report and pass it to the
+stable viewer build:
+
+```bash
+histopia-semantic cohort-qc \
+  --run sample-a=/path/to/semantic-a \
+  --run sample-b=/path/to/semantic-b \
+  --output /path/to/cohort-qc.json
+
+histopia-visualize build /path/to/viewer-root \
+  --run sample-a=/path/to/registration-a \
+  --run sample-b=/path/to/registration-b \
+  --semantic-run sample-a=/path/to/semantic-a \
+  --semantic-run sample-b=/path/to/semantic-b \
+  --cohort-qc /path/to/cohort-qc.json
+```
+
 The canonical `histopia.visualization` viewer exposes Histology, Blend, and
 Semantic modes, selectable K, quantitative batch and K diagnostics, and one
-selected adjacent-pair topology overlay. It loads only the active texture set,
-disposes replaced GPU textures, and displays at most the 500 highest-confidence
-links while preserving complete correspondences in result artifacts.
+selected adjacent-pair topology overlay. Cohort builds also expose compact QC
+flags and exact-fingerprint review status. The viewer loads only the active
+texture set, disposes replaced GPU textures, and displays at most the 500
+highest-confidence links while preserving complete correspondences in result
+artifacts. Browser checks are available through the `browser-test` optional
+dependency and verify desktop layout, WebGL output, assets, and rapid sample
+switching.

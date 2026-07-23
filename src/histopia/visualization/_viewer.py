@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from pathlib import Path
 
@@ -11,9 +12,34 @@ import numpy as np
 
 from histopia.registration._errors import OptionalDependencyError
 from histopia.registration._io import warp_mask_thumbnail, warp_rgb_thumbnail
+from histopia.semantic._result import validate_semantic_result
 
 THREE_VERSION = "0.170.0"
 MAX_DISPLAY_LINKS = 500
+_VIEWER_QC_FIELDS = frozenset(
+    {
+        "fingerprint",
+        "selected_k",
+        "slide_count",
+        "patch_count",
+        "median_tissue_fraction",
+        "accepted_topology_links",
+        "median_topology_confidence",
+        "topology_coverage",
+        "zero_link_pairs",
+        "selected_k_stability",
+        "selected_k_score",
+        "minimum_cluster_fraction",
+        "batch_correction_accepted",
+        "raw_slide_variance_fraction",
+        "corrected_slide_variance_fraction",
+        "raw_slide_prediction_accuracy",
+        "corrected_slide_prediction_accuracy",
+        "unsupported_sections",
+        "review_approved",
+        "flags",
+    }
+)
 
 
 def build_section_viewer(
@@ -22,6 +48,7 @@ def build_section_viewer(
     *,
     provisional_mice: set[str] | None = None,
     semantic_runs: dict[str, Path | str] | None = None,
+    cohort_qc: Path | str | None = None,
 ) -> Path:
     """Build a browser viewer from completed registration run directories."""
 
@@ -35,6 +62,7 @@ def build_section_viewer(
     assets_dir.mkdir(parents=True, exist_ok=True)
     provisional_mice = provisional_mice or set()
     semantic_runs = semantic_runs or {}
+    cohort_rows = _load_cohort_rows(cohort_qc)
     mouse_payloads: list[dict[str, object]] = []
 
     for mouse_id, run_value in sorted(runs.items()):
@@ -44,10 +72,23 @@ def build_section_viewer(
             Path(semantic_runs[mouse_id]) if mouse_id in semantic_runs else None
         )
         semantic_payload = (
-            json.loads((semantic_dir / "semantic_result.json").read_text())
-            if semantic_dir is not None
+            validate_semantic_result(semantic_dir) if semantic_dir is not None else None
+        )
+        semantic_review = (
+            _semantic_review_payload(semantic_dir, semantic_payload)
+            if semantic_dir is not None and semantic_payload is not None
             else None
         )
+        semantic_qc = cohort_rows.get(mouse_id)
+        if (
+            cohort_qc is not None
+            and semantic_payload is not None
+            and semantic_qc is None
+        ):
+            raise ValueError(f"cohort QC is missing mouse {mouse_id}")
+        if semantic_qc is not None and semantic_payload is not None:
+            if semantic_qc.get("fingerprint") != semantic_payload.get("fingerprint"):
+                raise ValueError(f"cohort QC fingerprint does not match {mouse_id}")
         semantic_slides = (
             {row["id"]: row for row in semantic_payload["slides"]}
             if semantic_payload is not None
@@ -176,6 +217,9 @@ def build_section_viewer(
                         "palette": palette,
                         "batch_correction": semantic_payload.get("batch_correction"),
                         "k_selection": semantic_payload.get("k_selection"),
+                        "fingerprint": semantic_payload.get("fingerprint"),
+                        "review": semantic_review,
+                        "qc": semantic_qc,
                         "links": topology_links,
                     }
                     if semantic_payload is not None
@@ -195,6 +239,97 @@ def build_section_viewer(
     )
     (output_dir / "styles.css").write_text(_STYLES_CSS)
     return output_dir / "index.html"
+
+
+def _load_cohort_rows(
+    cohort_qc: Path | str | None,
+) -> dict[str, dict[str, object]]:
+    if cohort_qc is None:
+        return {}
+    payload = json.loads(Path(cohort_qc).read_text())
+    rows: dict[str, dict[str, object]] = {}
+    for raw_row in payload.get("mice", []):
+        mouse_id = str(raw_row.get("mouse_id", ""))
+        if not mouse_id:
+            raise ValueError("cohort QC rows must contain a mouse ID")
+        if mouse_id in rows:
+            raise ValueError(f"cohort QC contains duplicate mouse {mouse_id}")
+        rows[mouse_id] = _public_qc_row(raw_row)
+    return rows
+
+
+def _public_qc_row(raw_row: dict[str, object]) -> dict[str, object]:
+    row = {key: raw_row[key] for key in _VIEWER_QC_FIELDS if key in raw_row}
+    fingerprint = row.get("fingerprint")
+    if (
+        not isinstance(fingerprint, str)
+        or re.fullmatch(r"[0-9a-f]{64}", fingerprint) is None
+    ):
+        raise ValueError("cohort QC fingerprint must be a SHA256 digest")
+    for key in (
+        "selected_k",
+        "slide_count",
+        "patch_count",
+        "accepted_topology_links",
+        "zero_link_pairs",
+    ):
+        value = row.get(key)
+        if value is not None and (
+            not isinstance(value, int) or isinstance(value, bool)
+        ):
+            raise ValueError(f"cohort QC {key} must be an integer")
+    numeric_fields = _VIEWER_QC_FIELDS - {
+        "fingerprint",
+        "selected_k",
+        "slide_count",
+        "patch_count",
+        "accepted_topology_links",
+        "zero_link_pairs",
+        "batch_correction_accepted",
+        "review_approved",
+        "unsupported_sections",
+        "flags",
+    }
+    for key in numeric_fields:
+        value = row.get(key)
+        if value is not None and (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+        ):
+            raise ValueError(f"cohort QC {key} must be finite numeric data")
+    for key in ("batch_correction_accepted", "review_approved"):
+        value = row.get(key)
+        if value is not None and not isinstance(value, bool):
+            raise ValueError(f"cohort QC {key} must be boolean")
+    unsupported = row.get("unsupported_sections", [])
+    if not isinstance(unsupported, (list, tuple)) or any(
+        not isinstance(value, int) or isinstance(value, bool) or value < 0
+        for value in unsupported
+    ):
+        raise ValueError("cohort QC unsupported_sections must be nonnegative integers")
+    row["unsupported_sections"] = list(unsupported)
+    flags = row.get("flags", [])
+    if not isinstance(flags, (list, tuple)) or any(
+        not isinstance(flag, str) or re.fullmatch(r"[a-z0-9_]+", flag) is None
+        for flag in flags
+    ):
+        raise ValueError("invalid cohort QC flag")
+    row["flags"] = list(flags)
+    return row
+
+
+def _semantic_review_payload(
+    semantic_dir: Path,
+    semantic_payload: dict[str, object],
+) -> dict[str, object]:
+    review_path = semantic_dir / "semantic_review.json"
+    review = json.loads(review_path.read_text()) if review_path.exists() else {}
+    matches = review.get("fingerprint") == semantic_payload.get("fingerprint")
+    return {
+        "approved": bool(review.get("approved")) and matches,
+        "fingerprint_matches": matches,
+    }
 
 
 def _semantic_rgba(
@@ -415,6 +550,7 @@ _INDEX_HTML = """<!doctype html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Histopia Section Stack</title>
+  <link rel="icon" href="data:">
   <link rel="stylesheet" href="styles.css">
   <script type="importmap">
     {"imports": {
@@ -544,6 +680,8 @@ let current;
 let currentMode = 'histology';
 let currentK = null;
 let linkObject = null;
+let loadGeneration = 0;
+let textureGeneration = 0;
 function disposeTexture(texture) { if (texture) texture.dispose(); }
 
 function resize() {
@@ -640,8 +778,8 @@ function buildList() {
     list.append(item);
   });
 }
-function textureUrl(slide, mode) {
-  if (mode === 'semantic') return slide.semantic_textures[String(currentK)];
+function textureUrl(slide, mode, clusterCount = currentK) {
+  if (mode === 'semantic') return slide.semantic_textures[String(clusterCount)];
   if (mode === 'blend') return slide.blend_texture;
   return slide.texture;
 }
@@ -661,36 +799,71 @@ function updateModeControls() {
     });
   }
   const qc = document.querySelector('#qc');
+  const review = current?.semantic?.review;
+  const cohort = current?.semantic?.qc;
   const batch = current?.semantic?.batch_correction;
   const metric = current?.semantic?.k_selection?.find(row => row.k === currentK);
-  if (!batch || !metric) {
-    qc.textContent = '';
-  } else {
+  const details = [];
+  if (review) {
+    details.push(review.approved
+      ? 'Approved'
+      : (review.fingerprint_matches ? 'Approval required' : 'Review fingerprint mismatch'));
+  }
+  if (cohort) {
+    const flags = cohort.flags || [];
+    details.push(flags.length ? `QC: ${flags.join(', ')}` : 'QC: pass');
+    details.push(`topology coverage ${(100 * Number(cohort.topology_coverage)).toFixed(1)}%`);
+  }
+  if (batch && metric) {
     const raw = Number(batch.raw.slide_variance_fraction).toFixed(4);
     const proposed = Number(batch.corrected.slide_variance_fraction).toFixed(4);
-    qc.textContent = `Batch ${batch.accepted ? 'accepted' : 'rejected'} | ` +
-      `slide variance ${raw} to ${proposed} | ` +
-      `K ${currentK} score ${Number(metric.composite_score).toFixed(3)}`;
+    details.push(`batch ${batch.accepted ? 'accepted' : 'rejected'}: ${raw} to ${proposed}`);
+    details.push(`K ${currentK} score ${Number(metric.composite_score).toFixed(3)}`);
   }
+  qc.textContent = details.join(' | ');
 }
 async function setMode(mode, force = false) {
   if (!current || (mode !== 'histology' && !current.semantic) || (!force && mode === currentMode)) return;
-  currentMode = mode;
-  await Promise.all(current.slides.map(async slide => {
+  const mouse = current;
+  const generation = ++textureGeneration;
+  const textures = await Promise.all(mouse.slides.map(async slide => {
     const texture = await loader.loadAsync(textureUrl(slide, mode));
     texture.colorSpace = THREE.SRGBColorSpace;
+    return texture;
+  }));
+  if (generation !== textureGeneration || current !== mouse) {
+    textures.forEach(disposeTexture);
+    return;
+  }
+  currentMode = mode;
+  mouse.slides.forEach((slide, index) => {
     const previous = slide.mesh.material.map;
-    slide.mesh.material.map = texture;
+    slide.mesh.material.map = textures[index];
     slide.mesh.material.needsUpdate = true;
     disposeTexture(previous);
-  }));
+  });
   updateModeControls();
 }
 async function loadMouse(mouse) {
+  const generation = ++loadGeneration;
+  ++textureGeneration;
+  const requestedMode =
+    mouse.semantic || currentMode === 'histology' ? currentMode : 'histology';
+  const requestedK = mouse.semantic?.selected_k ?? null;
+  const textures = await Promise.all(mouse.slides.map(async slide => {
+    const texture = await loader.loadAsync(
+      textureUrl(slide, requestedMode, requestedK));
+    texture.colorSpace = THREE.SRGBColorSpace;
+    return texture;
+  }));
+  if (generation !== loadGeneration) {
+    textures.forEach(disposeTexture);
+    return;
+  }
   group.children.forEach(mesh => {
     disposeTexture(mesh.material.map); mesh.material.dispose(); mesh.geometry.dispose();
   });
-  group.clear(); current = mouse;
+  group.clear(); current = mouse; currentMode = requestedMode;
   currentK = mouse.semantic?.selected_k ?? null;
   const clusterSelect = document.querySelector('#clusters');
   clusterSelect.replaceChildren();
@@ -709,13 +882,12 @@ async function loadMouse(mouse) {
   });
   pairSelect.disabled = !(mouse.semantic?.links || []).length;
   const scale = 320 / Math.max(mouse.width, mouse.height);
-  await Promise.all(mouse.slides.map(async slide => {
-    const texture = await loader.loadAsync(textureUrl(slide, currentMode));
-    texture.colorSpace = THREE.SRGBColorSpace;
+  mouse.slides.forEach((slide, index) => {
+    const texture = textures[index];
     const material = new THREE.MeshBasicMaterial({map: texture, transparent: true, side: THREE.DoubleSide, depthWrite: false});
     slide.mesh = new THREE.Mesh(new THREE.PlaneGeometry(mouse.width * scale, mouse.height * scale), material);
     group.add(slide.mesh);
-  }));
+  });
   buildList(); layout(); updateModeControls(); resetCamera();
 }
 const select = document.querySelector('#mouse');

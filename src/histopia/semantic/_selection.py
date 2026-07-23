@@ -68,24 +68,45 @@ def select_cluster_count(
     except ImportError as exc:
         raise RuntimeError("cluster selection requires the 'semantic' extra") from exc
 
-    evaluation_indices = _sample_indices(len(features), max_evaluation_samples, seed)
+    evaluation_indices = _balanced_section_sample_indices(
+        offsets,
+        cap=max_evaluation_samples,
+        seed=seed,
+    )
+    evaluation_features = features[evaluation_indices]
+    minimum_training_count = max(max(values) * 20, len(offsets) - 1)
+    training_indices = _balanced_section_sample_indices(
+        offsets,
+        cap=max(max_evaluation_samples, minimum_training_count),
+        seed=seed,
+    )
+    training_features = features[training_indices]
     required_size = _required_cluster_size(len(features))
     labels_by_k: dict[int, np.ndarray] = {}
     raw_evaluations: list[ClusterSelectionMetrics] = []
     for k in values:
-        seed_labels: list[np.ndarray] = []
+        evaluation_seed_labels: list[np.ndarray] = []
+        primary: np.ndarray | None = None
         for seed_offset in range(5):
             model = MiniBatchKMeans(
                 n_clusters=k,
                 random_state=seed + seed_offset * 9_973,
-                batch_size=min(4_096, max(256, len(features))),
+                batch_size=min(4_096, max(256, len(training_features))),
                 n_init=1,
                 reassignment_ratio=0.0,
             )
-            labels = model.fit_predict(features)
-            labels, _ = _canonicalize(labels, model.cluster_centers_)
-            seed_labels.append(labels)
-        primary = seed_labels[0]
+            model.fit(training_features)
+            if seed_offset == 0:
+                primary, _ = _canonicalize(
+                    model.predict(features), model.cluster_centers_
+                )
+                evaluation_seed_labels.append(primary[evaluation_indices])
+            else:
+                labels, _ = _canonicalize(
+                    model.predict(evaluation_features), model.cluster_centers_
+                )
+                evaluation_seed_labels.append(labels)
+        assert primary is not None
         labels_by_k[k] = primary
 
         counts = np.bincount(primary, minlength=k)
@@ -108,10 +129,8 @@ def select_cluster_count(
         stability = float(
             np.mean(
                 [
-                    adjusted_rand_score(
-                        left[evaluation_indices], right[evaluation_indices]
-                    )
-                    for left, right in combinations(seed_labels, 2)
+                    adjusted_rand_score(left, right)
+                    for left, right in combinations(evaluation_seed_labels, 2)
                 ]
             )
         )
@@ -335,6 +354,42 @@ def _sample_indices(count: int, cap: int, seed: int) -> np.ndarray:
     if count <= cap:
         return np.arange(count, dtype=np.int64)
     return np.sort(np.random.default_rng(seed).choice(count, cap, replace=False))
+
+
+def _balanced_section_sample_indices(
+    offsets: np.ndarray,
+    *,
+    cap: int,
+    seed: int,
+) -> np.ndarray:
+    """Sample no more than ``cap`` patches while balancing serial sections."""
+
+    sizes = np.diff(offsets).astype(np.int64)
+    target = min(int(cap), int(np.sum(sizes)))
+    allocations = np.zeros(len(sizes), dtype=np.int64)
+    remaining = target
+    while remaining:
+        active = np.flatnonzero(allocations < sizes)
+        share, extra = divmod(remaining, len(active))
+        requested = np.full(len(active), share, dtype=np.int64)
+        requested[:extra] += 1
+        granted = np.minimum(requested, sizes[active] - allocations[active])
+        allocations[active] += granted
+        remaining -= int(np.sum(granted))
+
+    rng = np.random.default_rng(seed)
+    selected: list[np.ndarray] = []
+    for start, stop, count in zip(
+        offsets[:-1],
+        offsets[1:],
+        allocations,
+        strict=True,
+    ):
+        indices = np.arange(start, stop, dtype=np.int64)
+        if count < len(indices):
+            indices = np.sort(rng.choice(indices, int(count), replace=False))
+        selected.append(indices)
+    return np.sort(np.concatenate(selected))
 
 
 def _required_cluster_size(evaluated_count: int) -> int:

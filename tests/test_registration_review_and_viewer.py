@@ -10,6 +10,7 @@ from PIL import Image
 from histopia.registration._masking import TissueMaskResult
 from histopia.registration._review import MaskReviewEntry, resolve_reviewed_mask
 from histopia.registration._slides import SlideGeometry, discover_slides
+from histopia.semantic._result import _seal_semantic_result
 from histopia.visualization._viewer import (
     _tissue_review_crop,
     build_section_order_review,
@@ -101,6 +102,7 @@ def test_viewer_builds_manifest_and_pinned_import_map(tmp_path: Path) -> None:
     manifest = json.loads((index.parent / "manifest.json").read_text())
     assert len(manifest["mice"][0]["slides"]) == 1
     assert "three@0.170.0" in index.read_text()
+    assert '<link rel="icon" href="data:">' in index.read_text()
     assert (
         "three/addons/controls/OrbitControls.js"
         in (index.parent / "viewer.js").read_text()
@@ -157,20 +159,26 @@ def test_viewer_adds_lazy_semantic_and_blend_modes(tmp_path: Path) -> None:
         patch_size_px=np.int32(100),
         analysis_mpp=np.float64(0.5),
     )
-    (semantic / "semantic_result.json").write_text(
-        json.dumps(
-            {
-                "primary_clusters": 2,
-                "palette": ["#d73027", "#1a9850"],
-                "slides": [
-                    {
-                        "id": "section.ndpi",
-                        "labels": {"2": "labels/k-2/001.npz"},
-                    }
-                ],
-            }
-        )
+    np.savez_compressed(semantic / "atlas_model.npz", pca_mean=np.zeros(2))
+    payload = _seal_semantic_result(
+        semantic,
+        {
+            "schema_version": 3,
+            "primary_clusters": 2,
+            "selected_k": 2,
+            "cluster_counts": [2],
+            "model": "atlas_model.npz",
+            "palette": ["#d73027", "#1a9850"],
+            "slides": [
+                {
+                    "id": "section.ndpi",
+                    "labels": {"2": "labels/k-2/001.npz"},
+                }
+            ],
+            "topology_pairs": [],
+        },
     )
+    (semantic / "semantic_result.json").write_text(json.dumps(payload))
 
     index = build_section_viewer(
         {"mouse": run_dir},
@@ -198,6 +206,8 @@ def test_viewer_adds_lazy_semantic_and_blend_modes(tmp_path: Path) -> None:
     assert "slide_variance_fraction" in viewer
     assert "clusters" in viewer
     assert 'id="clusters"' in index.read_text()
+    assert "const generation = ++loadGeneration" in viewer
+    assert "if (generation !== loadGeneration)" in viewer
 
 
 def test_order_review_builds_fixed_height_fingerprinted_grid(tmp_path: Path) -> None:

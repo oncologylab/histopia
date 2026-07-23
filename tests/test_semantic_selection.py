@@ -6,12 +6,27 @@ import pytest
 from histopia.semantic._selection import (
     ClusterSelectionResult,
     _adjusted_edge_agreement,
+    _balanced_section_sample_indices,
     _required_cluster_size,
     _sparse_overlap_matrix,
     assign_lineage_display_ids,
     choose_best_k,
     select_cluster_count,
 )
+
+
+def test_section_sample_is_capped_balanced_and_reproducible() -> None:
+    offsets = np.array([0, 100, 102, 110], dtype=np.int64)
+
+    first = _balanced_section_sample_indices(offsets, cap=9, seed=17)
+    second = _balanced_section_sample_indices(offsets, cap=9, seed=17)
+
+    np.testing.assert_array_equal(first, second)
+    assert len(first) == 9
+    assert len(np.unique(first)) == 9
+    assert np.all(np.diff(first) > 0)
+    section_ids = np.searchsorted(offsets[1:], first, side="right")
+    np.testing.assert_array_equal(np.bincount(section_ids, minlength=3), [4, 2, 3])
 
 
 def _cluster_fixture() -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -215,6 +230,31 @@ def test_cluster_size_guard_uses_full_fitted_population_not_metric_sample() -> N
     assert metric.minimum_cluster_size == 600
     assert metric.required_cluster_size == 50
     assert not metric.rejected
+
+
+def test_selection_supports_metric_sample_smaller_than_cluster_count() -> None:
+    rng = np.random.default_rng(91)
+    features = np.vstack(
+        [
+            rng.normal([-4.0, 0.0], 0.1, size=(20, 2)),
+            rng.normal([0.0, 4.0], 0.1, size=(20, 2)),
+            rng.normal([4.0, 0.0], 0.1, size=(20, 2)),
+        ]
+    )
+
+    result = select_cluster_count(
+        features,
+        np.array([0, 20, 40, 60]),
+        np.empty((0, 2), dtype=np.int64),
+        np.empty((0, 2), dtype=np.int64),
+        k_values=(3,),
+        seed=2,
+        max_evaluation_samples=2,
+        max_silhouette_samples=2,
+    )
+
+    assert result.selected_k == 3
+    assert len(result.labels_by_k[3]) == 60
 
 
 def test_cluster_size_threshold_only_scales_for_genuinely_tiny_populations() -> None:
