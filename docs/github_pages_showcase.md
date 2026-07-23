@@ -1,22 +1,29 @@
 # Static GitHub Pages Showcase
 
-Histopia can export one fingerprint-approved viewer mouse as a static site:
+Histopia can export one or more fingerprint-approved viewer mice as a static
+site:
 
 ```bash
 histopia-visualize showcase \
     /path/to/generated/viewer/histopia \
     /path/to/new/showcase \
-    --mouse sample
+    --mouse sample-a \
+    --mouse sample-b
 ```
 
-The exporter copies only the selected mouse, rejects local absolute paths,
-refuses unapproved semantic results, and writes:
+Repeat `--mouse` in the desired browser order. The exporter copies only the
+selected mice, rejects duplicate or local absolute paths, refuses unapproved
+semantic results, and writes:
 
 - the browser entry point, JavaScript, CSS, and selected static textures;
-- a single-mouse `manifest.json`;
+- a selected-cohort `manifest.json`;
 - `.nojekyll` for static hosting; and
-- `showcase.json`, which records the semantic fingerprint and SHA-256 digest
-  of every deployed file.
+- `showcase.json`, which records each semantic fingerprint and the SHA-256
+  digest of every inventoried file.
+
+The current public artifact contains seven approved mice and 180 serial
+sections. The viewer permits specimen switching, histology/semantic/blended
+rendering, K=5 through K=15 exploration, and adjacent-section topology links.
 
 Generated textures and manifests are not tracked in the source repository. The
 approved showcase is packaged as a versioned GitHub Release asset. The Pages
@@ -24,11 +31,11 @@ workflow downloads the exact release URL, verifies the archive SHA-256, checks
 that it contains no symbolic links, and deploys it through the GitHub Pages
 artifact workflow.
 
-To publish a new exact atlas:
+To publish a new exact cohort:
 
-1. Export and browser-test the approved mouse.
+1. Export and browser-test every approved mouse in the selected cohort.
 2. Create a deterministic compressed archive of the exported directory.
-3. Upload it under a new `pages-demo-<mouse>-v<version>` release tag.
+3. Upload it under a new `pages-demo-<cohort>-v<version>` release tag.
 4. Update the archive name, URL, and SHA-256 in
    `.github/workflows/pages.yml`.
 5. Run the test suite and deploy the workflow from the default branch.

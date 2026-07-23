@@ -34,11 +34,16 @@ def main(argv: list[str] | None = None) -> int:
     build.add_argument("--cohort-qc", type=Path)
     showcase = commands.add_parser(
         "showcase",
-        help="Export one viewer mouse as a static site.",
+        help="Export selected viewer mice as a static site.",
     )
     showcase.add_argument("source", type=Path, help="Generated Histopia site.")
     showcase.add_argument("output", type=Path, help="New static output directory.")
-    showcase.add_argument("--mouse", required=True, help="Exact viewer mouse ID.")
+    showcase.add_argument(
+        "--mouse",
+        action="append",
+        required=True,
+        help="Exact viewer mouse ID; repeat to export a cohort.",
+    )
     args = parser.parse_args(argv)
 
     if args.command == "build":
