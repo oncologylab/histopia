@@ -64,3 +64,20 @@ def test_build_command_targets_stable_histopia_directory(
             tmp_path / "cohort.json",
         )
     ]
+
+
+def test_showcase_command_exports_one_static_mouse(tmp_path: Path, monkeypatch) -> None:
+    calls: list[tuple[Path, Path, str]] = []
+
+    def capture(source: Path, output: Path, mouse: str) -> Path:
+        calls.append((source, output, mouse))
+        return output / "index.html"
+
+    monkeypatch.setattr(_cli, "export_static_showcase", capture)
+    source = tmp_path / "viewer" / "histopia"
+    output = tmp_path / "showcase"
+
+    result = _cli.main(["showcase", str(source), str(output), "--mouse", "5997"])
+
+    assert result == 0
+    assert calls == [(source, output, "5997")]

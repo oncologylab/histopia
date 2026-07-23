@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from histopia.visualization._server import serve_viewer
+from histopia.visualization._showcase import export_static_showcase
 from histopia.visualization._viewer import build_section_viewer
 
 
@@ -31,6 +32,13 @@ def main(argv: list[str] | None = None) -> int:
     build.add_argument("--run", type=_named_path, action="append", required=True)
     build.add_argument("--semantic-run", type=_named_path, action="append", default=[])
     build.add_argument("--cohort-qc", type=Path)
+    showcase = commands.add_parser(
+        "showcase",
+        help="Export one viewer mouse as a static site.",
+    )
+    showcase.add_argument("source", type=Path, help="Generated Histopia site.")
+    showcase.add_argument("output", type=Path, help="New static output directory.")
+    showcase.add_argument("--mouse", required=True, help="Exact viewer mouse ID.")
     args = parser.parse_args(argv)
 
     if args.command == "build":
@@ -40,6 +48,10 @@ def main(argv: list[str] | None = None) -> int:
             semantic_runs=dict(args.semantic_run),
             cohort_qc=args.cohort_qc,
         )
+        print(index)
+        return 0
+    if args.command == "showcase":
+        index = export_static_showcase(args.source, args.output, args.mouse)
         print(index)
         return 0
     if args.command == "serve":

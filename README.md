@@ -7,6 +7,9 @@ histology and proteomic image analysis. The long-term goal is to support
 inter-section image alignment, spatial topology reconstruction, protein and
 marker intensity profiling, and later 3D reconstruction across tissue sections.
 
+**[Launch the interactive 3D semantic atlas](https://oncologylab.github.io/histopia/)**
+| [PyPI](https://pypi.org/project/histopia/)
+
 ## Installation
 
 ```bash
@@ -82,6 +85,11 @@ histopia-visualize serve /path/to/viewer-root --port 8765
 The semantic topology overlay displays at most 500 high-confidence links for
 one adjacent pair. Complete correspondence arrays remain in semantic result
 artifacts.
+
+The public showcase is a static, fingerprint-approved mouse atlas with
+histology, semantic, and blended section textures, selectable K values, and
+adjacent-section topology links. See
+`docs/github_pages_showcase.md` for the artifact and deployment model.
 
 ## License
 
