@@ -21,6 +21,9 @@ class CorrespondenceConfig:
     min_neighborhood_consistency: float = 0.25
     min_confidence: float = 0.45
     field_neighbors: int = 12
+    geometry_score_weight: float = 0.65
+    max_geometry_seed_patch_widths: float = 0.75
+    min_geometry_consistency: float = 0.60
 
     def __post_init__(self) -> None:
         if self.patch_width_um <= 0:
@@ -33,6 +36,12 @@ class CorrespondenceConfig:
             raise ValueError("context radii must be positive")
         if self.field_neighbors <= 0:
             raise ValueError("field_neighbors must be positive")
+        if not 0 <= self.geometry_score_weight <= 1:
+            raise ValueError("geometry_score_weight must be between zero and one")
+        if self.max_geometry_seed_patch_widths <= 0:
+            raise ValueError("geometry seed distance must be positive")
+        if not 0 <= self.min_geometry_consistency <= 1:
+            raise ValueError("geometry consistency must be between zero and one")
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,10 +111,17 @@ def match_adjacent_sections(
             target_descriptor,
             field,
             radius_in_patches * config.patch_width_um,
+            config,
         )
-        seeds = (similarity >= config.min_feature_similarity) & (
-            margin >= config.min_reciprocal_margin
-        )
+        observed = target_um_xy[matched_target] - source_um_xy[matched_source]
+        seed_residual = np.linalg.norm(observed - field[matched_source], axis=1)
+        seeds = (
+            (similarity >= config.min_feature_similarity)
+            | (
+                seed_residual
+                <= config.max_geometry_seed_patch_widths * config.patch_width_um
+            )
+        ) & (margin >= config.min_reciprocal_margin)
         if np.count_nonzero(seeds) >= 2:
             displacement = (
                 target_um_xy[matched_target[seeds]]
@@ -260,6 +276,7 @@ def _reciprocal_matches(
     target_descriptor: np.ndarray,
     field: np.ndarray,
     radius_um: float,
+    config: CorrespondenceConfig,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     tree = _ckdtree(target_xy)
     candidates = tree.query_ball_point(source_xy + field, radius_um)
@@ -274,16 +291,26 @@ def _reciprocal_matches(
         if not len(indices):
             continue
         similarities = target_descriptor[indices] @ source_descriptor[source_index]
-        order = np.lexsort((indices, -similarities))
+        distances = np.linalg.norm(
+            target_xy[indices] - (source_xy[source_index] + field[source_index]),
+            axis=1,
+        )
+        geometry = np.exp(-0.5 * (distances / config.patch_width_um) ** 2)
+        feature_rank = np.clip((similarities + 1.0) / 2.0, 0.0, 1.0)
+        geometry_weight = (
+            min(0.20, config.geometry_score_weight)
+            if float(np.max(similarities)) >= config.min_feature_similarity
+            else config.geometry_score_weight
+        )
+        scores = (1.0 - geometry_weight) * feature_rank + geometry_weight * geometry
+        order = np.lexsort((indices, -scores))
         best = int(order[0])
         source_best[source_index] = indices[best]
         best_similarity[source_index] = similarities[best]
         source_margin[source_index] = (
-            float(similarities[best] - similarities[order[1]])
-            if len(order) > 1
-            else 0.0
+            float(scores[best] - scores[order[1]]) if len(order) > 1 else 0.0
         )
-        for target_index, score in zip(indices, similarities, strict=True):
+        for target_index, score in zip(indices, scores, strict=True):
             target_index = int(target_index)
             current_score = float(target_best_score[target_index])
             current_source = int(target_best[target_index])
@@ -374,8 +401,9 @@ def _confidence(
     feature_score = np.clip(similarity, 0.0, 1.0)
     margin_score = np.clip(margin / 0.2, 0.0, 1.0)
     field_score = np.exp(-0.5 * (field_residual / config.patch_width_um) ** 2)
+    evidence_score = np.maximum(feature_score, field_score * consistency)
     return np.power(
-        feature_score * margin_score * field_score * consistency, 0.25
+        evidence_score * margin_score * field_score * consistency, 0.25
     ).astype(np.float32)
 
 
@@ -387,8 +415,15 @@ def _accepted_matches(
     confidence: np.ndarray,
     config: CorrespondenceConfig,
 ) -> np.ndarray:
+    supported = (similarity >= config.min_feature_similarity) | (
+        (
+            field_residual
+            <= config.max_geometry_seed_patch_widths * config.patch_width_um
+        )
+        & (consistency >= config.min_geometry_consistency)
+    )
     return (
-        (similarity >= config.min_feature_similarity)
+        supported
         & (margin >= config.min_reciprocal_margin)
         & (
             field_residual

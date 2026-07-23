@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 
 from histopia.semantic._atlas import JointAtlas
+from histopia.semantic._correspondence import CorrespondenceConfig
 from histopia.semantic._features import PatchFeatures
 
 SEMANTIC_PALETTE = (
@@ -129,11 +130,23 @@ def write_atlas_result(
             }
         )
 
+    patch_widths = {
+        float(section.patch_size_px * section.analysis_mpp) for section in sections
+    }
+    if len(patch_widths) != 1:
+        raise ValueError("semantic sections must use one physical patch width")
+    correspondence = asdict(
+        CorrespondenceConfig(patch_width_um=next(iter(patch_widths)))
+    )
+    common_provenance = _common_feature_provenance(sections)
     core = {
-        "schema_version": 2,
+        "schema_version": 3,
         "primary_clusters": primary_clusters,
         "cluster_counts": list(atlas.clusterings),
         "pca_components": atlas.pca_components,
+        "feature_normalization": "patch_l2_v2",
+        "feature_provenance": common_provenance,
+        "correspondence": correspondence,
         "selected_k": selected_k,
         "batch_correction": batch,
         "k_selection": k_selection,
@@ -150,7 +163,7 @@ def write_atlas_result(
     result_path = output_dir / "semantic_result.json"
     result_path.write_text(json.dumps(payload, indent=2) + "\n")
     review = {
-        "schema_version": 2,
+        "schema_version": 3,
         "approved": False,
         "fingerprint": fingerprint,
         "reviewer": None,
@@ -160,3 +173,26 @@ def write_atlas_result(
         json.dumps(review, indent=2) + "\n"
     )
     return result_path
+
+
+def _common_feature_provenance(
+    sections: tuple[PatchFeatures, ...],
+) -> dict[str, object] | None:
+    if not sections or any(section.provenance is None for section in sections):
+        return None
+    keys = (
+        "preflight_fingerprint",
+        "model_fingerprint",
+        "analysis_mpp",
+        "patch_size_px",
+        "min_tissue_fraction",
+    )
+    common: dict[str, object] = {}
+    for key in keys:
+        values = {
+            json.dumps(section.provenance[key], sort_keys=True) for section in sections
+        }
+        if len(values) != 1:
+            raise ValueError(f"semantic feature provenance differs for {key}")
+        common[key] = sections[0].provenance[key]
+    return common

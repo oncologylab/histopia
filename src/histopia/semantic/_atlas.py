@@ -253,22 +253,13 @@ def _normalize_section_features(
     features: np.ndarray,
     section_sizes: tuple[int, ...],
 ) -> np.ndarray:
-    """Remove slide-level embedding shifts, then L2-normalize each patch."""
+    """L2-normalize patches while preserving shifts for guarded correction."""
 
     features = np.asarray(features, dtype=np.float32)
     if sum(section_sizes) != len(features) or any(size <= 0 for size in section_sizes):
         raise ValueError("section sizes must partition all feature rows")
-    normalized = np.empty_like(features)
-    offset = 0
-    for size in section_sizes:
-        section = features[offset : offset + size]
-        centered = section - section.mean(axis=0, keepdims=True)
-        norms = np.linalg.norm(centered, axis=1, keepdims=True)
-        normalized[offset : offset + size] = centered / np.maximum(
-            norms, np.finfo(np.float32).eps
-        )
-        offset += size
-    return normalized
+    norms = np.linalg.norm(features, axis=1, keepdims=True)
+    return features / np.maximum(norms, np.finfo(np.float32).eps)
 
 
 def _sklearn_estimators():

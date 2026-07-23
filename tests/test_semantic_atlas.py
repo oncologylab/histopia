@@ -46,14 +46,14 @@ def test_balanced_sample_caps_each_slide_deterministically() -> None:
     assert np.sum(first >= 10) == 3
 
 
-def test_section_normalization_removes_slide_level_feature_shift() -> None:
+def test_section_normalization_preserves_slide_shift_for_batch_guard() -> None:
     first = np.array([[2.0, 0.0], [0.0, 2.0], [1.0, 1.0]])
     second = first + np.array([20.0, -7.0])
 
     normalized = _normalize_section_features(np.vstack([first, second]), (3, 3))
 
-    np.testing.assert_allclose(normalized[:3], normalized[3:], atol=1e-6)
-    np.testing.assert_allclose(normalized.mean(axis=0), 0.0, atol=1e-6)
+    assert not np.allclose(normalized[:3], normalized[3:])
+    np.testing.assert_allclose(np.linalg.norm(normalized, axis=1), 1.0)
 
 
 def test_joint_atlas_is_deterministic_and_returns_each_sensitivity() -> None:

@@ -149,6 +149,32 @@ def test_matching_does_not_force_an_unsupported_distant_candidate() -> None:
     np.testing.assert_array_equal(result.unmatched_target_indices, [0])
 
 
+def test_matching_uses_registered_geometry_when_cross_stain_features_shift() -> None:
+    rows, columns = np.mgrid[:6, :7]
+    grid = np.column_stack([rows.ravel(), columns.ravel()]).astype(np.int32)
+    source_xy = grid[:, ::-1].astype(float) * 112.0
+    target_xy = source_xy + np.array([24.0, -16.0])
+    rng = np.random.default_rng(713)
+    source_features = rng.normal(size=(len(grid), 16)).astype(np.float32)
+    target_features = rng.normal(size=(len(grid), 16)).astype(np.float32)
+
+    result = match_adjacent_sections(
+        grid,
+        source_xy,
+        source_features,
+        grid,
+        target_xy,
+        target_features,
+        source_section=0,
+        target_section=1,
+        config=CorrespondenceConfig(patch_width_um=112.0),
+    )
+
+    assert len(result.source_indices) >= 0.75 * len(grid)
+    assert np.mean(result.source_indices == result.target_indices) >= 0.95
+    assert np.median(result.field_residual_um) < 0.25 * 112.0
+
+
 def test_matching_rejects_an_isolated_near_decoy_without_runner_up() -> None:
     grid = np.array([[0, 0]], dtype=np.int32)
     features = np.array([[1.0, 0.0]], dtype=np.float32)
@@ -216,10 +242,15 @@ def test_returned_confidence_uses_the_final_refitted_field_residual() -> None:
         config=config,
     )
 
+    feature_score = np.clip(result.feature_similarity, 0.0, 1.0)
+    field_score = np.exp(-0.5 * (result.field_residual_um / config.patch_width_um) ** 2)
+    evidence_score = np.maximum(
+        feature_score, field_score * result.neighborhood_consistency
+    )
     expected = np.power(
-        np.clip(result.feature_similarity, 0.0, 1.0)
+        evidence_score
         * np.clip(result.reciprocal_margin / 0.2, 0.0, 1.0)
-        * np.exp(-0.5 * (result.field_residual_um / config.patch_width_um) ** 2)
+        * field_score
         * result.neighborhood_consistency,
         0.25,
     )
