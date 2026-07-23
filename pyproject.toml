@@ -80,6 +80,7 @@ semantic-repro = [
 ]
 browser-test = [
     "playwright>=1.50,<2",
+    "pytest>=8",
 ]
 dev = [
     "build>=1.2",
