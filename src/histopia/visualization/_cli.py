@@ -6,6 +6,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from histopia.visualization._qc_showcase import export_registration_qc_showcase
 from histopia.visualization._server import serve_viewer
 from histopia.visualization._showcase import export_static_showcase
 from histopia.visualization._viewer import build_section_viewer
@@ -44,6 +45,18 @@ def main(argv: list[str] | None = None) -> int:
         required=True,
         help="Exact viewer mouse ID; repeat to export a cohort.",
     )
+    qc_showcase = commands.add_parser(
+        "qc-showcase",
+        help="Export registration workflow reviews as a static portal.",
+    )
+    qc_showcase.add_argument("source", type=Path, help="Generated Histopia site.")
+    qc_showcase.add_argument("output", type=Path, help="New static QC directory.")
+    qc_showcase.add_argument(
+        "--mouse",
+        action="append",
+        required=True,
+        help="Exact viewer mouse ID; repeat to export a cohort.",
+    )
     args = parser.parse_args(argv)
 
     if args.command == "build":
@@ -57,6 +70,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "showcase":
         index = export_static_showcase(args.source, args.output, args.mouse)
+        print(index)
+        return 0
+    if args.command == "qc-showcase":
+        index = export_registration_qc_showcase(args.source, args.output, args.mouse)
         print(index)
         return 0
     if args.command == "serve":

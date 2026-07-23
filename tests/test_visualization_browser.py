@@ -81,6 +81,21 @@ def test_viewer_fits_desktop_and_ignores_stale_mouse_loads(tmp_path: Path) -> No
                 """() => document.querySelector('#mouse').value === 'second'
                   && document.querySelectorAll('#sections li').length === 3"""
             )
+            page.locator("#next-slide").click()
+            assert page.locator("#slide-focus").inner_text() == "1 / 3"
+            assert page.locator("#sections input:checked").count() == 1
+            page.locator("#next-slide").click()
+            assert page.locator("#slide-focus").inner_text() == "2 / 3"
+            assert page.locator("#sections input:checked").count() == 1
+            page.locator("#select-all").click()
+            assert page.locator("#slide-focus").inner_text() == "3 selected"
+            assert page.locator("#sections input:checked").count() == 3
+            page.locator("#deselect-all").click()
+            assert page.locator("#slide-focus").inner_text() == "0 selected"
+            assert page.locator("#sections input:checked").count() == 0
+            page.locator("#sections li").nth(2).locator("span").click()
+            assert page.locator("#slide-focus").inner_text() == "3 / 3"
+            assert page.locator("#sections input:checked").count() == 1
             screenshot = page.locator("canvas").screenshot()
             pixels = np.asarray(Image.open(io.BytesIO(screenshot)).convert("RGB"))
             assert np.ptp(pixels.reshape(-1, 3), axis=0).max() > 20

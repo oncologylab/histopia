@@ -93,3 +93,30 @@ def test_showcase_command_exports_selected_static_mice(
 
     assert result == 0
     assert calls == [(source, output, ["5997", "4257"])]
+
+
+def test_qc_showcase_command_exports_selected_mice(tmp_path: Path, monkeypatch) -> None:
+    calls: list[tuple[Path, Path, list[str]]] = []
+
+    def capture(source: Path, output: Path, mice: list[str]) -> Path:
+        calls.append((source, output, mice))
+        return output / "index.html"
+
+    monkeypatch.setattr(_cli, "export_registration_qc_showcase", capture)
+    source = tmp_path / "viewer" / "histopia"
+    output = tmp_path / "qc"
+
+    result = _cli.main(
+        [
+            "qc-showcase",
+            str(source),
+            str(output),
+            "--mouse",
+            "4435",
+            "--mouse",
+            "4943",
+        ]
+    )
+
+    assert result == 0
+    assert calls == [(source, output, ["4435", "4943"])]
