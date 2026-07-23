@@ -810,8 +810,14 @@ def _remove_scanner_edges(candidate: np.ndarray) -> np.ndarray:
     candidate[-edge_rows:] = False
     candidate[:, :edge_cols] = False
     candidate[:, -edge_cols:] = False
-    dense_rows = np.mean(candidate, axis=1) > 0.65
-    dense_cols = np.mean(candidate, axis=0) > 0.65
+    row_positions = np.arange(height)
+    col_positions = np.arange(width)
+    dense_rows = (np.mean(candidate, axis=1) > 0.65) & (
+        (row_positions < height * 0.12) | (row_positions >= height * 0.88)
+    )
+    dense_cols = (np.mean(candidate, axis=0) > 0.65) & (
+        (col_positions < width * 0.06) | (col_positions >= width * 0.94)
+    )
     if np.any(dense_rows):
         dense_rows = ndi.binary_dilation(dense_rows, iterations=edge_rows)
         candidate[dense_rows] = False
@@ -829,12 +835,16 @@ def _remove_straight_border_rails(candidate: np.ndarray) -> np.ndarray:
     edge_rows = max(2, int(round(height * 0.005)))
     edge_cols = max(2, int(round(width * 0.005)))
     distance = ndi.distance_transform_edt(candidate)
-    thickness = max(edge_rows, edge_cols)
-    thin = distance <= thickness * 1.5
-    tissue_core = distance > thickness * 1.5
+    thickness = max(
+        edge_rows,
+        edge_cols,
+        int(round(min(height, width) * 0.035)),
+    )
+    thin = distance <= thickness
+    tissue_core = distance > thickness
     protected_perimeter = ndi.binary_dilation(
         tissue_core,
-        iterations=thickness * 3,
+        iterations=thickness * 2,
     )
     horizontal_zone = np.zeros_like(candidate)
     zone_rows = max(edge_rows, int(round(height * 0.12)))

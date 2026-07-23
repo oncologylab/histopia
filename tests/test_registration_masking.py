@@ -33,6 +33,29 @@ def test_scanner_edge_removal_disconnects_straight_rail_from_tissue() -> None:
     assert cleaned[60:95, 120:180].mean() > 0.8
 
 
+def test_scanner_edge_removal_disconnects_thick_rail_from_tissue() -> None:
+    candidate = np.zeros((400, 600), dtype=bool)
+    yy, xx = np.ogrid[:400, :600]
+    candidate |= ((yy - 190) / 125) ** 2 + ((xx - 380) / 155) ** 2 <= 1
+    candidate[20:42, :330] = True
+    candidate[35:90, 300:350] = True
+
+    cleaned = _remove_scanner_edges(candidate)
+
+    assert not cleaned[20:42, :180].any()
+    assert cleaned[120:260, 330:430].mean() > 0.75
+
+
+def test_scanner_edge_removal_preserves_dense_central_tissue_rows() -> None:
+    candidate = np.zeros((300, 400), dtype=bool)
+    candidate[90:210, 20:175] = True
+    candidate[90:210, 190:385] = True
+
+    cleaned = _remove_scanner_edges(candidate)
+
+    assert np.array_equal(cleaned, candidate)
+
+
 def test_hollow_detached_artifact_is_removed_but_solid_fragment_remains() -> None:
     mask = np.zeros((220, 300), dtype=bool)
     mask[70:190, 80:220] = True
