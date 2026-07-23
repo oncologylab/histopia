@@ -86,9 +86,9 @@ The semantic topology overlay displays at most 500 high-confidence links for
 one adjacent pair. Complete correspondence arrays remain in semantic result
 artifacts.
 
-The public showcase is a static, fingerprint-approved mouse atlas with
-histology, semantic, and blended section textures, selectable K values, and
-adjacent-section topology links. See
+The public showcase contains seven fingerprint-approved mouse atlases spanning
+180 serial sections. It supports specimen switching, histology, semantic, and
+blended textures, selectable K values, and adjacent-section topology links. See
 `docs/github_pages_showcase.md` for the artifact and deployment model.
 
 ## License

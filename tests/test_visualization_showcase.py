@@ -11,10 +11,12 @@ from histopia.visualization import export_static_showcase
 def _write_viewer(root: Path) -> None:
     (root / "assets" / "5997").mkdir(parents=True)
     (root / "assets" / "4257").mkdir()
+    (root / "assets" / "4943").mkdir()
     for name in ("index.html", "viewer.js", "styles.css"):
         (root / name).write_text(f"{name}\n")
     (root / "assets" / "5997" / "section.webp").write_bytes(b"5997")
     (root / "assets" / "4257" / "section.webp").write_bytes(b"4257")
+    (root / "assets" / "4943" / "section.webp").write_bytes(b"4943")
     (root / "manifest.json").write_text(
         json.dumps(
             {
@@ -45,33 +47,62 @@ def _write_viewer(root: Path) -> None:
                             },
                         },
                     },
+                    {
+                        "id": "4943",
+                        "slides": [
+                            {
+                                "id": "unapproved.ndpi",
+                                "texture": "assets/4943/section.webp",
+                            }
+                        ],
+                    },
                 ],
             }
         )
     )
 
 
-def test_export_static_showcase_copies_only_selected_mouse(tmp_path: Path) -> None:
+def test_export_static_showcase_copies_only_selected_mice(tmp_path: Path) -> None:
     source = tmp_path / "source"
     output = tmp_path / "showcase"
     _write_viewer(source)
 
-    index = export_static_showcase(source, output, "5997")
+    index = export_static_showcase(source, output, ("5997", "4257"))
 
     assert index == output / "index.html"
     manifest = json.loads((output / "manifest.json").read_text())
-    assert [mouse["id"] for mouse in manifest["mice"]] == ["5997"]
+    assert [mouse["id"] for mouse in manifest["mice"]] == ["5997", "4257"]
     assert (output / "assets" / "5997" / "section.webp").read_bytes() == b"5997"
-    assert not (output / "assets" / "4257").exists()
+    assert (output / "assets" / "4257" / "section.webp").read_bytes() == b"4257"
+    assert not (output / "assets" / "4943").exists()
     assert (output / ".nojekyll").exists()
     inventory = json.loads((output / "showcase.json").read_text())
-    assert inventory["mouse_id"] == "5997"
-    assert inventory["semantic_fingerprint"] == "approved-fingerprint"
-    assert inventory["semantic_approved"] is True
+    assert inventory["mouse_ids"] == ["5997", "4257"]
+    assert inventory["semantic_results"] == {
+        "5997": {
+            "fingerprint": "approved-fingerprint",
+            "approved": True,
+        },
+        "4257": {
+            "fingerprint": None,
+            "approved": False,
+        },
+    }
     assert "manifest.json" in inventory["files"]
     assert all(
         len(metadata["sha256"]) == 64 for metadata in inventory["files"].values()
     )
+
+
+def test_export_static_showcase_accepts_one_mouse_as_a_string(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    output = tmp_path / "showcase"
+    _write_viewer(source)
+
+    export_static_showcase(source, output, "5997")
+
+    inventory = json.loads((output / "showcase.json").read_text())
+    assert inventory["mouse_ids"] == ["5997"]
 
 
 def test_export_static_showcase_rejects_unknown_mouse(tmp_path: Path) -> None:
@@ -80,6 +111,22 @@ def test_export_static_showcase_rejects_unknown_mouse(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="unknown viewer mouse"):
         export_static_showcase(source, tmp_path / "showcase", "missing")
+
+
+def test_export_static_showcase_rejects_duplicate_mice(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    _write_viewer(source)
+
+    with pytest.raises(ValueError, match="duplicate viewer mouse"):
+        export_static_showcase(source, tmp_path / "showcase", ("5997", "5997"))
+
+
+def test_export_static_showcase_rejects_empty_mouse_selection(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    _write_viewer(source)
+
+    with pytest.raises(ValueError, match="at least one viewer mouse"):
+        export_static_showcase(source, tmp_path / "showcase", ())
 
 
 def test_export_static_showcase_refuses_nonempty_output(tmp_path: Path) -> None:
@@ -118,4 +165,4 @@ def test_export_static_showcase_requires_matching_semantic_approval(
     manifest_path.write_text(json.dumps(manifest))
 
     with pytest.raises(ValueError, match="not fingerprint-approved"):
-        export_static_showcase(source, tmp_path / "showcase", "5997")
+        export_static_showcase(source, tmp_path / "showcase", ("4257", "5997"))
