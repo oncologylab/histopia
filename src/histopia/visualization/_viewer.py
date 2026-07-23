@@ -577,6 +577,15 @@ _INDEX_HTML = """<!doctype html>
       <label class="check"><input id="show-links" type="checkbox" checked>Show topology links</label>
       <label>Spacing<input id="spacing" type="range" min="2" max="80" value="24"></label>
       <label>Opacity<input id="opacity" type="range" min="0.05" max="1" step="0.05" value="0.72"></label>
+      <div class="slide-navigation" aria-label="Slide navigation">
+        <button id="previous-slide" title="Previous slide" aria-label="Previous slide">←</button>
+        <output id="slide-focus">All slides</output>
+        <button id="next-slide" title="Next slide" aria-label="Next slide">→</button>
+      </div>
+      <div class="visibility-commands">
+        <button id="select-all">Select all</button>
+        <button id="deselect-all">Deselect all</button>
+      </div>
       <div class="commands">
         <button id="reset" title="Reset camera">Reset view</button>
         <button id="export" title="Export section order">Export order</button>
@@ -682,6 +691,7 @@ let currentK = null;
 let linkObject = null;
 let loadGeneration = 0;
 let textureGeneration = 0;
+let focusedSlideIndex = null;
 function disposeTexture(texture) { if (texture) texture.dispose(); }
 
 function resize() {
@@ -691,10 +701,12 @@ function resize() {
   camera.updateProjectionMatrix();
 }
 function resetCamera() {
-  if (!group.children.length) return;
+  const visibleMeshes = group.children.filter(child => child.visible);
+  if (!visibleMeshes.length) return;
   group.updateMatrixWorld(true);
-  const sphere = new THREE.Box3().setFromObject(group).getBoundingSphere(
-    new THREE.Sphere());
+  const bounds = new THREE.Box3();
+  visibleMeshes.forEach(mesh => bounds.expandByObject(mesh));
+  const sphere = bounds.getBoundingSphere(new THREE.Sphere());
   const verticalFov = THREE.MathUtils.degToRad(camera.fov);
   const horizontalFov = 2 * Math.atan(Math.tan(verticalFov / 2) * camera.aspect);
   const limitingFov = Math.min(verticalFov, horizontalFov);
@@ -725,6 +737,8 @@ function rebuildLinks() {
   if (!current?.semantic?.links?.length || !document.querySelector('#show-links').checked) return;
   const pair = current.semantic.links[Number(document.querySelector('#link-pair').value) || 0];
   if (!pair) return;
+  if (!current.slides[pair.source_section].mesh.visible ||
+      !current.slides[pair.target_section].mesh.visible) return;
   const sourceZ = current.slides[pair.source_section].mesh.position.z;
   const targetZ = current.slides[pair.target_section].mesh.position.z;
   const positions = [];
@@ -754,6 +768,38 @@ function layout() {
   });
   rebuildLinks();
 }
+function updateSlideFocus() {
+  const slides = orderedSlides();
+  const checked = document.querySelectorAll('#sections input:checked').length;
+  document.querySelector('#slide-focus').textContent = focusedSlideIndex == null
+    ? `${checked} selected`
+    : `${focusedSlideIndex + 1} / ${slides.length}`;
+}
+function setSlideVisibility(predicate) {
+  const slides = orderedSlides();
+  document.querySelectorAll('#sections li').forEach((item, index) => {
+    const visible = predicate(index, slides[index]);
+    item.querySelector('input').checked = visible;
+    slides[index].mesh.visible = visible;
+  });
+  updateSlideFocus();
+  rebuildLinks();
+}
+function focusSlide(index) {
+  const slides = orderedSlides();
+  if (!slides.length) return;
+  focusedSlideIndex = (index + slides.length) % slides.length;
+  setSlideVisibility(itemIndex => itemIndex === focusedSlideIndex);
+  resetCamera();
+}
+function stepSlide(offset) {
+  const slides = orderedSlides();
+  if (!slides.length) return;
+  const start = focusedSlideIndex == null
+    ? (offset > 0 ? -1 : 0)
+    : focusedSlideIndex;
+  focusSlide(start + offset);
+}
 function buildList() {
   const list = document.querySelector('#sections');
   list.replaceChildren();
@@ -763,9 +809,17 @@ function buildList() {
     item.draggable = true;
     const toggle = document.createElement('input');
     toggle.type = 'checkbox'; toggle.checked = true;
-    toggle.addEventListener('change', () => slide.mesh.visible = toggle.checked);
+    toggle.addEventListener('change', () => {
+      focusedSlideIndex = null;
+      slide.mesh.visible = toggle.checked;
+      updateSlideFocus();
+      rebuildLinks();
+    });
     const text = document.createElement('span');
     text.textContent = `${slide.label}${slide.reference ? ' (reference)' : ''}`;
+    text.title = 'Show only this slide';
+    text.addEventListener('click', () =>
+      focusSlide([...list.children].indexOf(item)));
     item.append(toggle, text);
     item.addEventListener('dragstart', event => event.dataTransfer.setData('text/plain', slide.id));
     item.addEventListener('dragover', event => event.preventDefault());
@@ -777,6 +831,8 @@ function buildList() {
     });
     list.append(item);
   });
+  focusedSlideIndex = null;
+  updateSlideFocus();
 }
 function textureUrl(slide, mode, clusterCount = currentK) {
   if (mode === 'semantic') return slide.semantic_textures[String(clusterCount)];
@@ -900,6 +956,16 @@ document.querySelector('#clusters').addEventListener('change', async event => {
   await setMode('semantic', true);
 });
 document.querySelector('#reset').addEventListener('click', resetCamera);
+document.querySelector('#previous-slide').addEventListener('click', () => stepSlide(-1));
+document.querySelector('#next-slide').addEventListener('click', () => stepSlide(1));
+document.querySelector('#select-all').addEventListener('click', () => {
+  focusedSlideIndex = null;
+  setSlideVisibility(() => true);
+});
+document.querySelector('#deselect-all').addEventListener('click', () => {
+  focusedSlideIndex = null;
+  setSlideVisibility(() => false);
+});
 document.querySelector('#show-links').addEventListener('change', rebuildLinks);
 document.querySelector('#link-pair').addEventListener('change', rebuildLinks);
 document.querySelector('#export').addEventListener('click', () => {
@@ -913,4 +979,4 @@ function animate() { requestAnimationFrame(animate); controls.update(); renderer
 await loadMouse(manifest.mice[0]); animate();
 """
 
-_STYLES_CSS = """*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden}body{font-family:Arial,sans-serif;color:#202426;background:#f4f5f3}main{display:grid;grid-template-columns:300px minmax(0,1fr);width:100%;height:100%;overflow:hidden}aside{min-width:0;min-height:0;padding:18px;border-right:1px solid #c9ceca;background:#fff;overflow-y:auto;overflow-x:hidden}h1{font-size:22px;margin:0 0 18px}label{display:grid;gap:6px;font-size:13px;margin:14px 0}select,input{width:100%}.commands,.segmented{display:flex;gap:8px;margin:16px 0}button{border:1px solid #88918b;background:#fff;padding:7px 10px;border-radius:4px;cursor:pointer}.segmented{gap:0}.segmented button{flex:1;border-radius:0;margin-left:-1px}.segmented button:first-child{margin-left:0;border-radius:4px 0 0 4px}.segmented button:last-child{border-radius:0 4px 4px 0}.segmented button.active{background:#202426;color:#fff}.segmented button:disabled{color:#a7aca8;cursor:default}#legend{display:grid;grid-template-columns:1fr 1fr;gap:5px;font-size:11px}#legend span{display:flex;align-items:center;gap:5px}#legend i{display:block;width:12px;height:12px;border:1px solid #555}#order-status{font-size:12px;color:#8a4f12}ol{padding:0;list-style:none}li{display:grid;grid-template-columns:20px minmax(0,1fr);align-items:center;min-height:32px;border-bottom:1px solid #eceeec;font-size:12px;cursor:grab}li span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}li input{width:14px}#viewport{position:relative;min-width:0;min-height:0;width:100%;height:100%;overflow:hidden}canvas{display:block;width:100%!important;height:100%!important}@media(max-width:720px){main{grid-template-columns:1fr;grid-template-rows:250px minmax(0,1fr)}aside{border-right:0;border-bottom:1px solid #c9ceca}#sections{display:none}}"""
+_STYLES_CSS = """*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden}body{font-family:Arial,sans-serif;color:#202426;background:#f4f5f3}main{display:grid;grid-template-columns:300px minmax(0,1fr);width:100%;height:100%;overflow:hidden}aside{min-width:0;min-height:0;padding:18px;border-right:1px solid #c9ceca;background:#fff;overflow-y:auto;overflow-x:hidden}h1{font-size:22px;margin:0 0 18px}label{display:grid;gap:6px;font-size:13px;margin:14px 0}select,input{width:100%}.commands,.segmented,.visibility-commands{display:flex;gap:8px;margin:16px 0}button{border:1px solid #88918b;background:#fff;padding:7px 10px;border-radius:4px;cursor:pointer}.segmented{gap:0}.segmented button{flex:1;border-radius:0;margin-left:-1px}.segmented button:first-child{margin-left:0;border-radius:4px 0 0 4px}.segmented button:last-child{border-radius:0 4px 4px 0}.segmented button.active{background:#202426;color:#fff}.segmented button:disabled{color:#a7aca8;cursor:default}.slide-navigation{display:grid;grid-template-columns:36px minmax(0,1fr) 36px;align-items:center;gap:8px;margin:16px 0}.slide-navigation button{width:36px;height:32px;padding:0;font-size:18px}.slide-navigation output{text-align:center;font-size:12px;white-space:nowrap}.visibility-commands button{flex:1}#legend{display:grid;grid-template-columns:1fr 1fr;gap:5px;font-size:11px}#legend span{display:flex;align-items:center;gap:5px}#legend i{display:block;width:12px;height:12px;border:1px solid #555}#order-status{font-size:12px;color:#8a4f12}ol{padding:0;list-style:none}li{display:grid;grid-template-columns:20px minmax(0,1fr);align-items:center;min-height:32px;border-bottom:1px solid #eceeec;font-size:12px;cursor:grab}li span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}li input{width:14px}#viewport{position:relative;min-width:0;min-height:0;width:100%;height:100%;overflow:hidden}canvas{display:block;width:100%!important;height:100%!important}@media(max-width:720px){main{grid-template-columns:1fr;grid-template-rows:250px minmax(0,1fr)}aside{border-right:0;border-bottom:1px solid #c9ceca}#sections{display:none}}"""

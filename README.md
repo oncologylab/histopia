@@ -8,6 +8,7 @@ inter-section image alignment, spatial topology reconstruction, protein and
 marker intensity profiling, and later 3D reconstruction across tissue sections.
 
 **[Launch the interactive 3D semantic atlas](https://oncologylab.github.io/histopia/)**
+| **[Registration QC showcase](https://oncologylab.github.io/histopia/qc/)**
 | [PyPI](https://pypi.org/project/histopia/)
 
 ## Installation
@@ -87,9 +88,14 @@ one adjacent pair. Complete correspondence arrays remain in semantic result
 artifacts.
 
 The public showcase contains seven fingerprint-approved mouse atlases spanning
-180 serial sections. It supports specimen switching, histology, semantic, and
-blended textures, selectable K values, and adjacent-section topology links. See
+187 serial sections. It supports specimen switching, slide-by-slide navigation,
+select-all/deselect-all visibility, histology, semantic, and blended textures,
+selectable K values, and adjacent-section topology links. See
 `docs/github_pages_showcase.md` for the artifact and deployment model.
+
+A separate static registration QC portal presents reviewed tissue masks and
+orientation, H&E-anchored section order, and an interactive histology-only 3D
+registration stack without publishing raw slides or local source paths.
 
 ## License
 

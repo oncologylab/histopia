@@ -21,9 +21,29 @@ semantic results, and writes:
 - `showcase.json`, which records each semantic fingerprint and the SHA-256
   digest of every inventoried file.
 
-The current public artifact contains seven approved mice and 180 serial
-sections. The viewer permits specimen switching, histology/semantic/blended
-rendering, K=5 through K=15 exploration, and adjacent-section topology links.
+The current public artifact contains seven approved mice and 187 serial
+sections. The viewer permits specimen switching, slide-by-slide navigation,
+select-all/deselect-all visibility, histology/semantic/blended rendering, K=5
+through K=15 exploration, and adjacent-section topology links.
+
+## Registration QC Portal
+
+The same release may contain a separate `/qc/` portal for approved workflow
+diagnostics:
+
+```bash
+histopia-visualize qc-showcase \
+    /path/to/generated/viewer/histopia \
+    /path/to/new/showcase/qc \
+    --mouse sample-a \
+    --mouse sample-b
+```
+
+The portal contains only selected review artifacts and registered histology
+textures. It provides mask/orientation, section-order, and interactive 3D
+registration views. Semantic textures, raw slides, source paths, and unrelated
+specimens are excluded. The exporter rejects missing reviews, unsafe texture
+paths, local absolute paths, and non-empty output directories.
 
 Generated textures and manifests are not tracked in the source repository. The
 approved showcase is packaged as a versioned GitHub Release asset. The Pages
