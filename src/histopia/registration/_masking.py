@@ -721,9 +721,7 @@ def _recover_supported_pale_pixels(
     proposal = ndi.binary_opening(proposal, iterations=1)
     enclosed = ndi.binary_fill_holes(mask) & ~mask
     native_detached_seed = (
-        _resize_binary(detached_seed, mask.shape)
-        if detached_seed is not None
-        else None
+        _resize_binary(detached_seed, mask.shape) if detached_seed is not None else None
     )
     native_seed_envelope = (
         _resize_binary(
@@ -775,9 +773,8 @@ def _recover_supported_pale_pixels(
         if long_axis > 0.08 and short_axis < 0.025:
             continue
         if enclosed_fraction < 0.50:
-            if (
-                native_detached_seed is not None
-                and not np.any(component & native_detached_seed)
+            if native_detached_seed is not None and not np.any(
+                component & native_detached_seed
             ):
                 continue
             if (
