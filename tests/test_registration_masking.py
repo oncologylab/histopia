@@ -510,6 +510,53 @@ def test_group_consensus_rejects_repeated_l_shaped_frame_fragment() -> None:
     assert not refined["first"].mask[20:190, 20:140].any()
 
 
+def test_group_consensus_rejects_broad_corner_rail_with_false_peer_support() -> None:
+    tissue = np.zeros((240, 320), dtype=bool)
+    tissue[70:190, 120:270] = True
+    artifact = np.zeros_like(tissue)
+    artifact[20:45, 20:145] = True
+    artifact[20:175, 20:45] = True
+    target = tissue | artifact
+    shifted_peer = np.zeros_like(tissue)
+    shifted_peer[55:190, 55:255] = True
+
+    def result(mask: np.ndarray) -> TissueMaskResult:
+        return TissueMaskResult(mask, "synthetic", {}, True, [])
+
+    refined = refine_group_tissue_masks(
+        {
+            "target": result(target),
+            "peer-1": result(shifted_peer),
+            "peer-2": result(shifted_peer),
+        }
+    )
+
+    assert refined["target"].mask[90:170, 140:250].all()
+    assert not refined["target"].mask[20:175, 20:85].any()
+
+
+def test_group_consensus_preserves_displaced_neighbor_supported_tissue() -> None:
+    target = np.zeros((220, 340), dtype=bool)
+    target[50:170, 35:155] = True
+    target[95:155, 205:275] = True
+    peer = np.zeros_like(target)
+    peer[50:170, 35:155] = True
+    peer[95:155, 250:320] = True
+
+    def result(mask: np.ndarray) -> TissueMaskResult:
+        return TissueMaskResult(mask, "synthetic", {}, True, [])
+
+    refined = refine_group_tissue_masks(
+        {
+            "target": result(target),
+            "peer-1": result(peer),
+            "peer-2": result(peer),
+        }
+    )
+
+    assert refined["target"].mask[105:145, 215:265].all()
+
+
 def test_group_consensus_preserves_low_fill_curved_tissue() -> None:
     rows, cols = np.indices((240, 320))
     radius = np.hypot(rows - 120, cols - 90)

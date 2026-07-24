@@ -362,6 +362,14 @@ def refine_group_tissue_masks(
                 np.bincount(cols - cols.min(), minlength=col_span).max(initial=0)
                 / row_span
             )
+            center_fill_ratio = _component_center_fill_ratio(component)
+            spans_outer_corner = (
+                (rows.min() < component.shape[0] * 0.12)
+                or (rows.max() >= component.shape[0] * 0.88)
+            ) and (
+                (cols.min() < component.shape[1] * 0.12)
+                or (cols.max() >= component.shape[1] * 0.88)
+            )
             if long_axis > 0.18 and short_axis < 0.08:
                 continue
             if long_axis > 0.45 and short_axis < 0.15 and bbox_fill < 0.40:
@@ -371,6 +379,15 @@ def refine_group_tissue_masks(
                 and bbox_fill < 0.25
                 and max_row_occupancy > 0.60
                 and max_col_occupancy > 0.60
+            ):
+                continue
+            if (
+                spans_outer_corner
+                and long_axis > 0.30
+                and bbox_fill < 0.35
+                and max_row_occupancy > 0.60
+                and max_col_occupancy > 0.60
+                and center_fill_ratio < 0.35
             ):
                 continue
             normalized_component = _resize_binary(component, normalized_shape)
@@ -397,7 +414,15 @@ def refine_group_tissue_masks(
             recurring_substantial_component = (
                 support >= min_group_support
                 and relative_area >= 0.10
-                and (relative_area >= 0.50 or direct_support >= 0.50)
+                and (
+                    relative_area >= 0.50
+                    or direct_support >= 0.50
+                    or (
+                        support >= 0.65
+                        and neighbor_support >= 0.45
+                        and center_fill_ratio >= 0.35
+                    )
+                )
             )
             if (
                 recurring_substantial_component
