@@ -19,9 +19,9 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  SHOWCASE_ARCHIVE: histopia-pages-sixteen-mouse-v4.tar.gz
-  SHOWCASE_SHA256: ce65292d0e7175e5af0d66ebe4f7bbc8d67ba223520c9dca9876b0c8697fd4ad
-  SHOWCASE_URL: https://github.com/oncologylab/histopia/releases/download/pages-demo-sixteen-mouse-v4/histopia-pages-sixteen-mouse-v4.tar.gz
+  SHOWCASE_ARCHIVE: histopia-pages-sixteen-mouse-v5.tar.gz
+  SHOWCASE_SHA256: 6ff83ce0033459ad3ac892e772f8d026cee2e015ec6f600b76e0eeb245bf7751
+  SHOWCASE_URL: https://github.com/oncologylab/histopia/releases/download/pages-demo-sixteen-mouse-v5/histopia-pages-sixteen-mouse-v5.tar.gz
 
 jobs:
   build:

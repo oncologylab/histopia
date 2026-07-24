@@ -2066,8 +2066,16 @@ function reportLoadError(error) {
 }
 const select = document.querySelector('#mouse');
 manifest.mice.forEach(mouse => select.add(new Option(mouse.id, mouse.id)));
+const requestedMouseId = new URLSearchParams(window.location.search).get('mouse');
+const initialMouse =
+  manifest.mice.find(mouse => mouse.id === requestedMouseId) ?? manifest.mice[0];
+select.value = initialMouse.id;
 select.addEventListener('change', () => {
-  loadMouse(manifest.mice.find(mouse => mouse.id === select.value))
+  const mouse = manifest.mice.find(candidate => candidate.id === select.value);
+  const url = new URL(window.location.href);
+  url.searchParams.set('mouse', mouse.id);
+  window.history.replaceState(null, '', url);
+  loadMouse(mouse)
     .catch(reportLoadError);
 });
 document.querySelector('#spacing').addEventListener('input', layout);
@@ -2100,7 +2108,7 @@ controls.addEventListener('change', () => {
 });
 controls.addEventListener('end', () => requestRenderBurst(1800));
 new ResizeObserver(resize).observe(viewport); resize(); resetCamera();
-try { await loadMouse(manifest.mice[0]); } catch (error) { reportLoadError(error); }
+try { await loadMouse(initialMouse); } catch (error) { reportLoadError(error); }
 requestRender();
 """
 

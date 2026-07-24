@@ -117,6 +117,8 @@ def test_viewer_builds_manifest_and_pinned_import_map(tmp_path: Path) -> None:
     assert "overflow:hidden" in styles
     assert "width:100%!important;height:100%!important" in styles
     assert "renderer.setSize(box.width, box.height, true)" in viewer
+    assert "new URLSearchParams(window.location.search).get('mouse')" in viewer
+    assert "window.history.replaceState(null, '', url)" in viewer
     assert "group.children.filter(child => child.visible)" in viewer
     assert "visibleMeshes.forEach(mesh => bounds.expandByObject(mesh))" in viewer
     assert "sphere.radius / 10000" in viewer

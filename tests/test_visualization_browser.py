@@ -71,10 +71,14 @@ def test_viewer_fits_desktop_and_ignores_stale_mouse_loads(tmp_path: Path) -> No
                 ),
             )
             page.goto(
-                f"http://127.0.0.1:{server.server_port}/histopia/",
+                f"http://127.0.0.1:{server.server_port}/histopia/?mouse=second",
                 wait_until="networkidle",
             )
-            page.wait_for_selector("#sections li")
+            page.wait_for_function(
+                """() => document.querySelector('#mouse').value === 'second'
+                  && document.querySelectorAll('#sections li').length === 3"""
+            )
+            assert page.url.endswith("/histopia/?mouse=second")
             page.wait_for_timeout(1800)
             page.evaluate("window.__histopiaRafCount = 0")
             page.wait_for_timeout(500)
@@ -111,6 +115,7 @@ def test_viewer_fits_desktop_and_ignores_stale_mouse_loads(tmp_path: Path) -> No
                 """() => document.querySelector('#mouse').value === 'second'
                   && document.querySelectorAll('#sections li').length === 3"""
             )
+            assert page.url.endswith("/histopia/?mouse=second")
             page.locator("#next-slide").click()
             assert page.locator("#slide-focus").inner_text() == "1 / 3"
             assert page.locator("#sections input:checked").count() == 1

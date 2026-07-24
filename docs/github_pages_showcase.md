@@ -29,6 +29,10 @@ atlases. The viewer permits specimen switching, slide-by-slide navigation,
 select-all/deselect-all visibility, histology/semantic/blended rendering, K=5
 through K=15 exploration, and adjacent-section topology links.
 
+The `mouse` query parameter creates a shareable link to a specimen, for example
+`?mouse=sample-a`. Changing the specimen updates the URL without reloading the
+viewer. An unknown specimen falls back to the first available stack.
+
 The viewer runtime is pinned to Three.js 0.170.0. Histopia verifies the
 packaged runtime checksums during every build, records the version in
 `build-report.json`, and includes the runtime files in the static artifact
