@@ -91,6 +91,9 @@ The project workflow is deliberately staged:
 The same button is used for each computational stage because preprocessing and
 pairwise-distance caches make unchanged work resumable. Review-required stages
 are reported as successful structured statuses rather than failed processes.
+Repeated **Open registration QC** calls also reuse exact mask, order, and
+registered-stack assets after validating both their input fingerprints and
+stored output checksums.
 
 The **Run analysis** tab retains advanced config-file execution. The **Export
 and import** tab supports:

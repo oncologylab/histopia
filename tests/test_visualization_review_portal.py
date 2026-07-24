@@ -16,8 +16,14 @@ def test_registration_review_builds_path_free_fixed_viewport_portal(
     run = tmp_path / "registration"
     output = tmp_path / "review"
 
-    def build_mask(registration_run: Path, destination: Path) -> Path:
+    def build_mask(
+        registration_run: Path,
+        destination: Path,
+        *,
+        workers: int,
+    ) -> Path:
         assert registration_run == run
+        assert workers == 3
         destination.mkdir(parents=True)
         (destination / "manifest.json").write_text(
             json.dumps(
@@ -85,8 +91,14 @@ def test_registration_review_supports_mask_only_preparation(
     run = tmp_path / "registration"
     output = tmp_path / "review"
 
-    def build_mask(registration_run: Path, destination: Path) -> Path:
+    def build_mask(
+        registration_run: Path,
+        destination: Path,
+        *,
+        workers: int,
+    ) -> Path:
         assert registration_run == run
+        assert workers == 1
         destination.mkdir(parents=True)
         (destination / "manifest.json").write_text(
             json.dumps(

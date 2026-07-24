@@ -39,6 +39,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     mask_review.add_argument("registration_run", type=Path)
     mask_review.add_argument("output", type=Path)
+    mask_review.add_argument("--workers", type=int, default=1)
     registration_review = commands.add_parser(
         "registration-review",
         help="Build one local portal for mask and section-order review.",
@@ -95,7 +96,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "mask-review":
         from histopia.visualization._viewer import build_mask_review
 
-        index = build_mask_review(args.registration_run, args.output)
+        index = build_mask_review(
+            args.registration_run,
+            args.output,
+            workers=args.workers,
+        )
         print(index)
         return 0
     if args.command == "registration-review":

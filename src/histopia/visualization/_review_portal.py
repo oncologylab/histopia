@@ -23,7 +23,11 @@ def build_registration_review(
 
     registration_run = Path(registration_run)
     output_dir = Path(output_dir)
-    mask_index = build_mask_review(registration_run, output_dir / "mask")
+    mask_index = build_mask_review(
+        registration_run,
+        output_dir / "mask",
+        workers=workers,
+    )
     mask = json.loads((mask_index.parent / "manifest.json").read_text())
     manifest = {
         "schema_version": 1,

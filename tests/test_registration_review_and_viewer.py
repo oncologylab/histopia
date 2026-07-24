@@ -201,10 +201,39 @@ def test_mask_review_builds_at_pre_registration_approval_gate(
 
     manifest = json.loads((index.parent / "manifest.json").read_text())
     assert manifest["approved"] is False
+    assert manifest["fingerprint_algorithm"] == "mask-review-v2"
     assert manifest["slides"][0]["slide"] == "section.ndpi"
     assert manifest["slides"][0]["method"] == "object_aware_fusion"
     assert manifest["slides"][0]["foreground_fraction"] == pytest.approx(255 / 720)
-    assert (index.parent / manifest["slides"][0]["texture"]).is_file()
+    asset = index.parent / manifest["slides"][0]["texture"]
+    first_asset = asset.read_bytes()
+    first_fingerprint = manifest["fingerprint"]
+    first_report = json.loads((index.parent / "build-report.json").read_text())
+    assert first_report["assets_encoded"] == 1
+    assert first_report["assets_reused"] == 0
+
+    build_mask_review(run_dir, index.parent, workers=2)
+
+    warm_report = json.loads((index.parent / "build-report.json").read_text())
+    assert warm_report["assets_encoded"] == 0
+    assert warm_report["assets_reused"] == 1
+    assert asset.read_bytes() == first_asset
+
+    asset.write_bytes(b"corrupt")
+    build_mask_review(run_dir, index.parent)
+
+    repaired_report = json.loads((index.parent / "build-report.json").read_text())
+    assert repaired_report["assets_encoded"] == 1
+    assert repaired_report["assets_reused"] == 0
+    assert asset.read_bytes() == first_asset
+
+    mask[:4, :4] = 255
+    Image.fromarray(mask).save(processed / "section.mask.png")
+    build_mask_review(run_dir, index.parent)
+    changed_manifest = json.loads((index.parent / "manifest.json").read_text())
+    changed_report = json.loads((index.parent / "build-report.json").read_text())
+    assert changed_report["assets_encoded"] == 1
+    assert changed_manifest["fingerprint"] != first_fingerprint
 
 
 def test_alignment_review_builds_direct_file_checkerboards(
@@ -241,6 +270,24 @@ def test_alignment_review_builds_direct_file_checkerboards(
     serial = tmp_path / "serial"
     parallel = tmp_path / "parallel"
     build_alignment_review(run_dir, serial, workers=1)
+    first_assets = {
+        path.name: path.read_bytes() for path in (serial / "assets").glob("*.webp")
+    }
+    build_alignment_review(run_dir, serial, workers=2)
+    warm_report = json.loads((serial / "build-report.json").read_text())
+    assert warm_report["assets_encoded"] == 0
+    assert warm_report["assets_reused"] == 2
+
+    corrupted = next((serial / "assets").glob("*CK19.webp"))
+    corrupted.write_bytes(b"corrupt")
+    build_alignment_review(run_dir, serial, workers=2)
+    repaired_report = json.loads((serial / "build-report.json").read_text())
+    assert repaired_report["assets_encoded"] == 1
+    assert repaired_report["assets_reused"] == 1
+    assert {
+        path.name: path.read_bytes() for path in (serial / "assets").glob("*.webp")
+    } == first_assets
+
     index = build_alignment_review(run_dir, parallel, workers=2)
 
     manifest = json.loads((index.parent / "manifest.json").read_text())
@@ -252,11 +299,11 @@ def test_alignment_review_builds_direct_file_checkerboards(
     assert {
         path.relative_to(serial): path.read_bytes()
         for path in serial.rglob("*")
-        if path.is_file()
+        if path.is_file() and path.name != "build-report.json"
     } == {
         path.relative_to(parallel): path.read_bytes()
         for path in parallel.rglob("*")
-        if path.is_file()
+        if path.is_file() and path.name != "build-report.json"
     }
 
 

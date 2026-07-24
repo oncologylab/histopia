@@ -67,10 +67,10 @@ def test_build_command_targets_stable_histopia_directory(
 
 
 def test_mask_review_command_builds_requested_run(tmp_path: Path, monkeypatch) -> None:
-    calls: list[tuple[Path, Path]] = []
+    calls: list[tuple[Path, Path, int]] = []
 
-    def capture(run: Path, output: Path) -> Path:
-        calls.append((run, output))
+    def capture(run: Path, output: Path, *, workers: int) -> Path:
+        calls.append((run, output, workers))
         return output / "index.html"
 
     monkeypatch.setattr(
@@ -80,10 +80,10 @@ def test_mask_review_command_builds_requested_run(tmp_path: Path, monkeypatch) -
     run = tmp_path / "registration"
     output = tmp_path / "review"
 
-    result = _cli.main(["mask-review", str(run), str(output)])
+    result = _cli.main(["mask-review", str(run), str(output), "--workers", "4"])
 
     assert result == 0
-    assert calls == [(run, output)]
+    assert calls == [(run, output, 4)]
 
 
 def test_registration_review_command_passes_worker_count(

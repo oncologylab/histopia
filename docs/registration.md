@@ -251,6 +251,16 @@ Changed thumbnail pixels or geometry invalidate the saved approval fingerprint.
 Candidate overlays and binary masks are written under `qc/mask_candidates/`
 for adjudication.
 
+Mask, order, and registered-stack review builders keep checksum-validated WebP
+caches inside their generated output directories. Reopening unchanged QC
+verifies each input fingerprint and output checksum before reuse. Changed
+masks, thumbnails, transforms, encoding settings, missing files, or corrupted
+assets regenerate only the affected images. `--workers` controls cold mask,
+order, and alignment rendering; warm reuse remains checksum-bound regardless
+of worker count. On a 51-slide four-cohort review, an eight-worker cold build
+fell from 25.22 to 12.75 seconds and an unchanged warm rebuild fell from 16.32
+to 1.12 seconds; every mask-review WebP remained byte-identical.
+
 For a strict production run, keep the review manifests in the registration
 run directory and advance the workflow explicitly:
 

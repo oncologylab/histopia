@@ -366,6 +366,8 @@ def _write_viewer_runtime(output_dir: Path) -> None:
 def build_mask_review(
     registration_run: Path | str,
     output_dir: Path | str,
+    *,
+    workers: int = 1,
 ) -> Path:
     """Build a fixed-viewport audit of accepted masks for one registration run."""
 
@@ -376,53 +378,135 @@ def build_mask_review(
 
     registration_run = Path(registration_run)
     output_dir = Path(output_dir)
+    if workers <= 0:
+        raise ValueError("mask-review workers must be positive")
     assets_dir = output_dir / "assets"
     assets_dir.mkdir(parents=True, exist_ok=True)
+    cache_path = output_dir / ".histopia-mask-review-cache.json"
+    old_cache = _load_asset_cache(cache_path)
+    new_cache: dict[str, dict[str, object]] = {}
+    cache_stats = {"reused": 0, "encoded": 0}
+    build_started = time.perf_counter()
     payload = _mask_review_source_payload(registration_run)
-    rows = []
-    digest = hashlib.sha256(b"histopia-mask-review-v1")
-    for order, slide in enumerate(payload.get("slides", []), start=1):
+    slides = payload.get("slides", [])
+    if not isinstance(slides, list) or not slides:
+        raise ValueError("registration result contains no slides")
+    if any(not isinstance(slide, dict) for slide in slides):
+        raise ValueError("registration result slides must contain objects")
+
+    def render_slide(
+        indexed_slide: tuple[int, dict[str, object]],
+    ) -> tuple[
+        dict[str, object],
+        Path,
+        str,
+        dict[str, object],
+        dict[str, int],
+        tuple[str, str, str],
+    ]:
+        order, slide = indexed_slide
         source = Path(str(slide["path"]))
-        image = _read_rgb(
-            registration_run / "processed" / f"{source.stem}.thumbnail.png"
-        )
+        thumbnail_path = registration_run / "processed" / f"{source.stem}.thumbnail.png"
         mask_path = registration_run / "processed" / f"{source.stem}.mask.png"
-        mask_bytes = mask_path.read_bytes()
-        digest.update(source.name.encode())
-        digest.update(np.ascontiguousarray(image).tobytes())
-        digest.update(mask_bytes)
-        mask = _read_mask(mask_path)
-        overlay = overlay_mask(image, mask)
+        thumbnail_hash = _file_sha256(thumbnail_path)
+        mask_hash = _file_sha256(mask_path)
         filename = f"{order:03d}-{_safe_name(source.stem)}.webp"
-        Image.fromarray(overlay).save(
-            assets_dir / filename,
-            "WEBP",
-            lossless=False,
-            quality=88,
-            method=6,
+        asset_path = assets_dir / filename
+        relative = asset_path.relative_to(output_dir).as_posix()
+        options = {"lossless": False, "quality": 88, "method": 6}
+        input_hash = _review_asset_fingerprint(
+            "histopia-mask-review-overlay-v2",
+            source.name,
+            thumbnail_hash,
+            mask_hash,
+            json.dumps(options, sort_keys=True, separators=(",", ":")),
         )
+        previous = old_cache.get(relative, {})
+        mask = _read_mask(mask_path)
+        foreground_fraction = float(mask.mean())
+        reused = _cached_review_asset_is_current(
+            asset_path,
+            input_hash,
+            previous,
+        )
+        slide_stats = {"reused": 0, "encoded": 0}
+        if reused:
+            cache_entry = dict(previous)
+            slide_stats["reused"] = 1
+        else:
+            image = _read_rgb(thumbnail_path)
+            overlay = overlay_mask(image, mask)
+            Image.fromarray(overlay).save(asset_path, "WEBP", **options)
+            cache_entry = {
+                "input_sha256": input_hash,
+                "output_sha256": _file_sha256(asset_path),
+            }
+            slide_stats["encoded"] = 1
         mask_data = slide.get("mask", {})
         review = slide.get("mask_review") or {}
         review_status = str(review.get("status", "pending"))
-        rows.append(
-            {
-                "order": order,
-                "slide": source.name,
-                "label": _marker_label(source.stem),
-                "texture": f"assets/{filename}",
-                "method": str(mask_data.get("method", "unknown")),
-                "foreground_fraction": float(
-                    mask_data.get("metrics", {}).get("foreground_fraction", mask.mean())
-                ),
-                "approved": bool(review.get("approved"))
-                or review_status in {"auto_pass", "override_pass"},
-                "warning_count": len(mask_data.get("warnings", [])),
-            }
+        metrics = mask_data.get("metrics", {})
+        metrics = metrics if isinstance(metrics, dict) else {}
+        row = {
+            "order": order,
+            "slide": source.name,
+            "label": _marker_label(source.stem),
+            "texture": f"assets/{filename}",
+            "method": str(mask_data.get("method", "unknown")),
+            "foreground_fraction": float(
+                metrics.get("foreground_fraction", foreground_fraction)
+            ),
+            "approved": bool(review.get("approved"))
+            or review_status in {"auto_pass", "override_pass"},
+            "warning_count": len(mask_data.get("warnings", [])),
+        }
+        return (
+            row,
+            asset_path,
+            relative,
+            cache_entry,
+            slide_stats,
+            (source.name, thumbnail_hash, mask_hash),
         )
-    if not rows:
-        raise ValueError("registration result contains no slides")
+
+    indexed_slides = list(enumerate(slides, start=1))
+    executor = (
+        None
+        if workers == 1
+        else ThreadPoolExecutor(max_workers=workers, thread_name_prefix="mask-review")
+    )
+    results = (
+        map(render_slide, indexed_slides)
+        if executor is None
+        else executor.map(render_slide, indexed_slides)
+    )
+    rows: list[dict[str, object]] = []
+    expected_assets: set[Path] = set()
+    digest = hashlib.sha256(b"histopia-mask-review-v2")
+    try:
+        for row, asset_path, relative, cache_entry, slide_stats, inputs in results:
+            rows.append(row)
+            expected_assets.add(asset_path)
+            new_cache[relative] = cache_entry
+            cache_stats["reused"] += slide_stats["reused"]
+            cache_stats["encoded"] += slide_stats["encoded"]
+            for value in inputs:
+                digest.update(value.encode())
+                digest.update(b"\0")
+    finally:
+        if executor is not None:
+            executor.shutdown()
+
+    for stale_asset in assets_dir.glob("*.webp"):
+        if stale_asset not in expected_assets:
+            stale_asset.unlink()
+    _write_json_atomic(
+        cache_path,
+        {"schema_version": 1, "assets": new_cache},
+    )
     manifest = {
         "schema_version": 1,
+        "fingerprint_algorithm": "mask-review-v2",
         "fingerprint": digest.hexdigest(),
         "approved": all(row["approved"] for row in rows),
         "slides": rows,
@@ -432,6 +516,16 @@ def build_mask_review(
     (output_dir / "index.html").write_text(_MASK_REVIEW_HTML)
     (output_dir / "mask-review.js").write_text(_MASK_REVIEW_JS)
     (output_dir / "mask-review.css").write_text(_ORDER_REVIEW_CSS)
+    _write_json_atomic(
+        output_dir / "build-report.json",
+        {
+            "schema_version": 1,
+            "slide_count": len(rows),
+            "assets_reused": cache_stats["reused"],
+            "assets_encoded": cache_stats["encoded"],
+            "elapsed_seconds": round(time.perf_counter() - build_started, 3),
+        },
+    )
     return output_dir / "index.html"
 
 
@@ -452,6 +546,7 @@ def build_alignment_review(
     output_dir = Path(output_dir)
     if workers <= 0:
         raise ValueError("alignment-review workers must be positive")
+    build_started = time.perf_counter()
     payload = json.loads((registration_run / "registration_result.json").read_text())
     slides = payload.get("slides", [])
     if not isinstance(slides, list) or not slides:
@@ -463,48 +558,87 @@ def build_alignment_review(
     if reference_row is None:
         raise ValueError("registration result contains no reference slide")
     reference_path = Path(str(reference_row["path"]))
-    reference = _read_rgb(
+    reference_thumbnail_path = (
         registration_run / "processed" / f"{reference_path.stem}.thumbnail.png"
     )
+    reference_hash = _file_sha256(reference_thumbnail_path)
+    reference = _read_rgb(reference_thumbnail_path)
     assets_dir = output_dir / "assets"
     assets_dir.mkdir(parents=True, exist_ok=True)
+    cache_path = output_dir / ".histopia-alignment-review-cache.json"
+    old_cache = _load_asset_cache(cache_path)
+    new_cache: dict[str, dict[str, object]] = {}
+    cache_stats = {"reused": 0, "encoded": 0}
     tile_px = max(12, int(round(max(reference.shape[:2]) / 12)))
 
     def render_slide(
         indexed_row: tuple[int, dict[str, object]],
-    ) -> dict[str, object]:
+    ) -> tuple[
+        dict[str, object],
+        Path,
+        str,
+        dict[str, object],
+        dict[str, int],
+    ]:
         order, row = indexed_row
         source_path = Path(str(row["path"]))
-        source = _read_rgb(
+        source_thumbnail_path = (
             registration_run / "processed" / f"{source_path.stem}.thumbnail.png"
         )
+        source_hash = _file_sha256(source_thumbnail_path)
         matrix = np.asarray(row["transform"]["matrix"], dtype=float)
-        registered = warp_rgb_thumbnail(source, matrix, reference.shape[:2])
-        comparison = (
-            reference
-            if bool(row.get("is_reference"))
-            else checkerboard_rgb(reference, registered, tile_px=tile_px)
-        )
+        is_reference = bool(row.get("is_reference"))
         filename = f"{order:03d}-{_safe_name(source_path.stem)}.webp"
-        Image.fromarray(comparison).save(
-            assets_dir / filename,
-            "WEBP",
-            lossless=False,
-            quality=88,
-            method=6,
+        asset_path = assets_dir / filename
+        relative = asset_path.relative_to(output_dir).as_posix()
+        options = {"lossless": False, "quality": 88, "method": 6}
+        input_hash = _review_asset_fingerprint(
+            "histopia-alignment-review-checkerboard-v2",
+            source_path.name,
+            source_hash,
+            reference_path.name,
+            reference_hash,
+            json.dumps(matrix.tolist(), separators=(",", ":")),
+            json.dumps(reference.shape[:2]),
+            str(tile_px),
+            str(is_reference),
+            json.dumps(options, sort_keys=True, separators=(",", ":")),
         )
+        previous = old_cache.get(relative, {})
+        slide_stats = {"reused": 0, "encoded": 0}
+        if _cached_review_asset_is_current(asset_path, input_hash, previous):
+            cache_entry = dict(previous)
+            slide_stats["reused"] = 1
+        else:
+            if is_reference:
+                comparison = reference
+            else:
+                source = _read_rgb(source_thumbnail_path)
+                registered = warp_rgb_thumbnail(source, matrix, reference.shape[:2])
+                comparison = checkerboard_rgb(
+                    reference,
+                    registered,
+                    tile_px=tile_px,
+                )
+            Image.fromarray(comparison).save(asset_path, "WEBP", **options)
+            cache_entry = {
+                "input_sha256": input_hash,
+                "output_sha256": _file_sha256(asset_path),
+            }
+            slide_stats["encoded"] = 1
         metrics = row.get("alignment_metrics")
         metrics = metrics if isinstance(metrics, dict) else {}
-        return {
+        review_slide = {
             "order": order,
             "slide": source_path.name,
             "label": _marker_label(source_path.stem),
             "texture": f"assets/{filename}",
-            "reference": bool(row.get("is_reference")),
+            "reference": is_reference,
             "dice": metrics.get("dice"),
             "coverage": metrics.get("coverage"),
             "status": metrics.get("status"),
         }
+        return review_slide, asset_path, relative, cache_entry, slide_stats
 
     indexed_rows = [
         (index, row)
@@ -513,14 +647,38 @@ def build_alignment_review(
     ]
     if len(indexed_rows) != len(slides):
         raise ValueError("registration result slides must contain objects")
-    if workers == 1:
-        review_slides = [render_slide(row) for row in indexed_rows]
-    else:
-        with ThreadPoolExecutor(
+    executor = (
+        None
+        if workers == 1
+        else ThreadPoolExecutor(
             max_workers=workers,
             thread_name_prefix="alignment-review",
-        ) as executor:
-            review_slides = list(executor.map(render_slide, indexed_rows))
+        )
+    )
+    results = (
+        map(render_slide, indexed_rows)
+        if executor is None
+        else executor.map(render_slide, indexed_rows)
+    )
+    review_slides: list[dict[str, object]] = []
+    expected_assets: set[Path] = set()
+    try:
+        for review_slide, asset_path, relative, cache_entry, slide_stats in results:
+            review_slides.append(review_slide)
+            expected_assets.add(asset_path)
+            new_cache[relative] = cache_entry
+            cache_stats["reused"] += slide_stats["reused"]
+            cache_stats["encoded"] += slide_stats["encoded"]
+    finally:
+        if executor is not None:
+            executor.shutdown()
+    for stale_asset in assets_dir.glob("*.webp"):
+        if stale_asset not in expected_assets:
+            stale_asset.unlink()
+    _write_json_atomic(
+        cache_path,
+        {"schema_version": 1, "assets": new_cache},
+    )
     approval = _registration_approval_payload(registration_run)
     digest = hashlib.sha256(
         (registration_run / "registration_result.json").read_bytes()
@@ -536,6 +694,16 @@ def build_alignment_review(
     (output_dir / "index.html").write_text(_ALIGNMENT_REVIEW_HTML)
     (output_dir / "alignment-review.js").write_text(_ALIGNMENT_REVIEW_JS)
     (output_dir / "alignment-review.css").write_text(_ORDER_REVIEW_CSS)
+    _write_json_atomic(
+        output_dir / "build-report.json",
+        {
+            "schema_version": 1,
+            "slide_count": len(review_slides),
+            "assets_reused": cache_stats["reused"],
+            "assets_encoded": cache_stats["encoded"],
+            "elapsed_seconds": round(time.perf_counter() - build_started, 3),
+        },
+    )
     return output_dir / "index.html"
 
 
@@ -788,6 +956,26 @@ def _write_cached_webp(
         "output_sha256": _file_sha256(path),
     }
     stats["encoded"] += 1
+
+
+def _review_asset_fingerprint(domain: str, *values: str) -> str:
+    digest = hashlib.sha256(domain.encode())
+    for value in values:
+        digest.update(b"\0")
+        digest.update(value.encode())
+    return digest.hexdigest()
+
+
+def _cached_review_asset_is_current(
+    path: Path,
+    input_sha256: str,
+    previous: dict[str, object],
+) -> bool:
+    return (
+        path.is_file()
+        and previous.get("input_sha256") == input_sha256
+        and previous.get("output_sha256") == _file_sha256(path)
+    )
 
 
 def _file_sha256(path: Path) -> str:
