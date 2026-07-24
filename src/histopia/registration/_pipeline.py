@@ -1244,15 +1244,20 @@ def _section_distance_matrix(
                     crops[slide_paths[first]].mask,
                     crops[slide_paths[second]].mask,
                 )
+                hole_distance = _mask_hole_topology_distance(
+                    crops[slide_paths[first]].mask,
+                    crops[slide_paths[second]].mask,
+                )
                 area_distance = _physical_area_distance(
                     slide_paths[first],
                     slide_paths[second],
                     physical_areas,
                 )
                 distance = (
-                    0.65 * registration_distance
-                    + 0.20 * area_distance
-                    + 0.15 * shape_distance
+                    0.60 * registration_distance
+                    + 0.15 * area_distance
+                    + 0.10 * shape_distance
+                    + 0.15 * hole_distance
                 )
             except (ValueError, np.linalg.LinAlgError):
                 distance = 1.0
@@ -1405,6 +1410,34 @@ def _mask_shape_distance(first: np.ndarray, second: np.ndarray) -> float:
     aspect_distance = min(1.0, abs(first_aspect - second_aspect))
     topology_distance = min(1.0, abs(first_components - second_components) / 2.0)
     return 0.7 * aspect_distance + 0.3 * topology_distance
+
+
+def _mask_hole_topology_distance(first: np.ndarray, second: np.ndarray) -> float:
+    """Compare substantial internal cavities independently of outer shape."""
+
+    from scipy import ndimage as ndi
+
+    def largest_hole_fraction(mask: np.ndarray) -> float:
+        binary = np.asarray(mask, dtype=bool)
+        filled = ndi.binary_fill_holes(binary)
+        filled_area = int(np.count_nonzero(filled))
+        if filled_area == 0:
+            return 0.0
+        labels, count = ndi.label(filled & ~binary)
+        if count == 0:
+            return 0.0
+        sizes = np.bincount(labels.ravel())
+        return float(sizes[1:].max(initial=0) / filled_area)
+
+    first_fraction = largest_hole_fraction(first)
+    second_fraction = largest_hole_fraction(second)
+    first_has_hole = first_fraction >= 0.015
+    second_has_hole = second_fraction >= 0.015
+    if first_has_hole != second_has_hole:
+        return 1.0
+    if not first_has_hole:
+        return 0.0
+    return min(1.0, abs(first_fraction - second_fraction) / 0.10)
 
 
 def _read_fixed_positions(
