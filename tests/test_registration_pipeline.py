@@ -7,6 +7,7 @@ from PIL import Image
 
 from histopia.registration import RegistrationConfig, _pipeline, register_sections
 from histopia.registration._pipeline import (
+    _create_tissue_masks,
     _crop_to_mask,
     _load_automatic_mask_snapshot,
 )
@@ -53,6 +54,40 @@ def test_tissue_crop_ignores_tiny_remote_artifact() -> None:
 
     assert np.array_equal(crop.offset_xy, np.array([120.0, 70.0]))
     assert crop.image.shape[:2] == (178, 200)
+
+
+def test_parallel_mask_creation_matches_sequential_results(tmp_path: Path) -> None:
+    images = {}
+    for index, shift in enumerate((0, 3, 6)):
+        image = np.full((90, 110, 3), 255, dtype=np.uint8)
+        image[20 + shift : 70 + shift, 25:85] = [175, 95, 120]
+        images[tmp_path / f"section-{index}.png"] = image
+    sequential = _create_tissue_masks(
+        images,
+        RegistrationConfig(tmp_path, tmp_path / "sequential", mask_workers=1),
+    )
+    parallel = _create_tissue_masks(
+        images,
+        RegistrationConfig(tmp_path, tmp_path / "parallel", mask_workers=2),
+    )
+
+    assert sequential.keys() == parallel.keys()
+    for path in sequential:
+        assert sequential[path].method == parallel[path].method
+        assert np.array_equal(sequential[path].mask, parallel[path].mask)
+        assert sequential[path].candidate_masks.keys() == (
+            parallel[path].candidate_masks.keys()
+        )
+        for method in sequential[path].candidate_masks:
+            assert np.array_equal(
+                sequential[path].candidate_masks[method],
+                parallel[path].candidate_masks[method],
+            )
+
+
+def test_mask_workers_must_be_positive(tmp_path: Path) -> None:
+    with np.testing.assert_raises_regex(ValueError, "mask_workers must be positive"):
+        RegistrationConfig(tmp_path, tmp_path / "output", mask_workers=0)
 
 
 def test_automatic_mask_snapshot_requires_exact_hash_and_slide_set(

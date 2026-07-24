@@ -197,10 +197,7 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
             thumbnails,
         )
     else:
-        masks = {
-            path: create_tissue_mask(thumbnails[path], config.mask)
-            for path in slide_paths
-        }
+        masks = _create_tissue_masks(thumbnails, config)
         physical_pixel_areas = {
             path: _thumbnail_physical_pixel_area(geometry)
             for path, geometry in geometries.items()
@@ -486,6 +483,24 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
     result.write_json()
     _write_validation_report(result)
     return result
+
+
+def _create_tissue_masks(
+    thumbnails: dict[Path, np.ndarray],
+    config: RegistrationConfig,
+) -> dict[Path, TissueMaskResult]:
+    """Create independent masks with bounded, deterministic CPU parallelism."""
+
+    items = tuple(thumbnails.items())
+
+    def create(item: tuple[Path, np.ndarray]) -> tuple[Path, TissueMaskResult]:
+        path, image = item
+        return path, create_tissue_mask(image, config.mask)
+
+    if config.mask_workers == 1:
+        return dict(map(create, items))
+    with ThreadPoolExecutor(max_workers=config.mask_workers) as executor:
+        return dict(executor.map(create, items))
 
 
 def _write_primary_review_panels(

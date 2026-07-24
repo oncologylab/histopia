@@ -2,6 +2,7 @@ input_dir = "/path/to/validation-data/mouse-1/raw_wsi"
 output_dir = "/tmp/histopia-registration-runs/4577/example"
 reference_policy = "best_connected"
 section_order_strategy = "natural"
+mask_workers = 1
 ordering_workers = 1
 # Optional CSV or JSON with exact slide names and physical section order.
 # section_order_path = "/path/to/section_order.csv"

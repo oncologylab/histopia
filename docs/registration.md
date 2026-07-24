@@ -180,6 +180,12 @@ worker count does not change the scientific fingerprint. Start conservatively
 because each worker also invokes native OpenCV routines and holds image crops;
 `1` is the portable default.
 
+Set `mask_workers` above one to create per-slide mask candidate sets in
+parallel on CPU. Group consensus still runs after all independent masks are
+complete, and worker count does not change mask pixels. Each worker holds
+several thumbnail-sized arrays, so `1` remains the memory-conservative default;
+benchmark `2` or `4` on representative cohorts before increasing it further.
+
 Set `mask_review_path`, `mask_override_dir`, and
 `require_approved_masks = true` for production runs. Changed thumbnail pixels
 or geometry invalidate the saved approval fingerprint. Candidate overlays and
