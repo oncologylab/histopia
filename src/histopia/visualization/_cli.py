@@ -33,6 +33,12 @@ def main(argv: list[str] | None = None) -> int:
     build.add_argument("--run", type=_named_path, action="append", required=True)
     build.add_argument("--semantic-run", type=_named_path, action="append", default=[])
     build.add_argument("--cohort-qc", type=Path)
+    mask_review = commands.add_parser(
+        "mask-review",
+        help="Build a fixed-viewport accepted-mask audit.",
+    )
+    mask_review.add_argument("registration_run", type=Path)
+    mask_review.add_argument("output", type=Path)
     showcase = commands.add_parser(
         "showcase",
         help="Export selected viewer mice as a static site.",
@@ -59,6 +65,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    if args.command == "mask-review":
+        from histopia.visualization._viewer import build_mask_review
+
+        index = build_mask_review(args.registration_run, args.output)
+        print(index)
+        return 0
     if args.command == "build":
         index = build_section_viewer(
             dict(args.run),

@@ -190,6 +190,7 @@ def refine_group_tissue_masks(
     results: dict[MaskKey, TissueMaskResult],
     *,
     physical_pixel_areas: dict[MaskKey, float | None] | None = None,
+    images: dict[MaskKey, np.ndarray] | None = None,
     normalized_shape: tuple[int, int] = (256, 256),
     min_group_support: float = 0.12,
 ) -> dict[MaskKey, TissueMaskResult]:
@@ -444,8 +445,32 @@ def refine_group_tissue_masks(
             candidate_warnings=result.candidate_warnings,
             candidate_masks=result.candidate_masks,
         )
+    if images is not None:
+        for key, result in refined.items():
+            image = images.get(key)
+            if image is None:
+                continue
+            cleaned = _remove_image_frame_exterior(result.mask, image)
+            if np.array_equal(cleaned, result.mask):
+                continue
+            warnings = _mask_warnings(cleaned, BrightfieldMaskConfig())
+            refined[key] = TissueMaskResult(
+                mask=cleaned,
+                method=f"{result.method}+frame_cleanup",
+                metrics=_mask_metrics(cleaned),
+                accepted=not warnings,
+                warnings=warnings,
+                candidate_metrics=result.candidate_metrics,
+                candidate_warnings=result.candidate_warnings,
+                candidate_masks=result.candidate_masks,
+            )
+
+    final_normalized = {
+        key: _resize_binary(result.mask, normalized_shape)
+        for key, result in refined.items()
+    }
     expected_fraction = float(
-        np.median([np.mean(mask) for mask in normalized.values()])
+        np.median([np.mean(mask) for mask in final_normalized.values()])
     )
     final_physical_areas = [
         float(np.count_nonzero(refined[key].mask) * pixel_area)
@@ -456,7 +481,7 @@ def refine_group_tissue_masks(
         float(np.median(final_physical_areas)) if final_physical_areas else None
     )
     for key, result in refined.items():
-        fraction = float(np.mean(_resize_binary(result.mask, normalized_shape)))
+        fraction = float(np.mean(final_normalized[key]))
         result.metrics["group_expected_foreground_fraction"] = expected_fraction
         result.metrics["group_foreground_fraction_ratio"] = (
             fraction / expected_fraction if expected_fraction else 0.0
@@ -881,6 +906,95 @@ def _remove_straight_border_rails(candidate: np.ndarray) -> np.ndarray:
     )
     candidate &= ~rails
     return _remove_border_bar_components(candidate)
+
+
+def _remove_image_frame_exterior(
+    candidate: np.ndarray,
+    image: np.ndarray,
+    *,
+    minimum_edge_support: float = 0.55,
+    minimum_exterior_fraction: float = 0.03,
+) -> np.ndarray:
+    """Clip mask foreground beyond a sustained inset scanner-frame edge.
+
+    Some brightfield scanners include a glass-holder edge well inside the
+    thumbnail boundary. Stain outside that edge can resemble tissue, while the
+    edge itself may be absent from a binary mask. A frame is therefore accepted
+    only when an RGB intensity edge spans most of one image axis and at least a
+    meaningful fraction of the selected mask lies on its exterior side.
+    """
+
+    mask = np.asarray(candidate, dtype=bool)
+    rgb = _as_rgb_float(image)
+    if rgb.shape[:2] != mask.shape or not mask.any():
+        return mask.copy()
+
+    cleaned = mask.copy()
+    gray = np.mean(rgb, axis=2)
+    vertical_support = np.mean(np.abs(np.diff(gray, axis=1)) > 0.05, axis=0)
+    horizontal_support = np.mean(np.abs(np.diff(gray, axis=0)) > 0.05, axis=1)
+    height, width = mask.shape
+
+    for start, stop, side in _inset_frame_bands(
+        vertical_support,
+        width,
+        minimum_support=minimum_edge_support,
+    ):
+        if side == "near":
+            exterior = cleaned[:, : min(width, stop + 3)]
+        else:
+            exterior = cleaned[:, max(0, start - 2) :]
+        if np.count_nonzero(exterior) / np.count_nonzero(cleaned) < (
+            minimum_exterior_fraction
+        ):
+            continue
+        if side == "near":
+            cleaned[:, : min(width, stop + 3)] = False
+        else:
+            cleaned[:, max(0, start - 2) :] = False
+
+    for start, stop, side in _inset_frame_bands(
+        horizontal_support,
+        height,
+        minimum_support=minimum_edge_support,
+    ):
+        if side == "near":
+            exterior = cleaned[: min(height, stop + 3), :]
+        else:
+            exterior = cleaned[max(0, start - 2) :, :]
+        if np.count_nonzero(exterior) / max(np.count_nonzero(cleaned), 1) < (
+            minimum_exterior_fraction
+        ):
+            continue
+        if side == "near":
+            cleaned[: min(height, stop + 3), :] = False
+        else:
+            cleaned[max(0, start - 2) :, :] = False
+    return cleaned
+
+
+def _inset_frame_bands(
+    edge_support: np.ndarray,
+    axis_length: int,
+    *,
+    minimum_support: float,
+) -> list[tuple[int, int, str]]:
+    """Return sustained edge bands in the outer inset zones of an axis."""
+
+    indices = np.flatnonzero(edge_support >= minimum_support)
+    if not indices.size:
+        return []
+    groups = np.split(indices, np.flatnonzero(np.diff(indices) > 1) + 1)
+    bands: list[tuple[int, int, str]] = []
+    for group in groups:
+        if group.size < 3:
+            continue
+        start, stop = int(group[0]), int(group[-1])
+        if axis_length * 0.03 <= start and stop <= axis_length * 0.22:
+            bands.append((start, stop, "near"))
+        elif axis_length * 0.78 <= start and stop <= axis_length * 0.97:
+            bands.append((start, stop, "far"))
+    return bands
 
 
 def _axis_binary_opening(mask: np.ndarray, size: int, *, axis: int) -> np.ndarray:

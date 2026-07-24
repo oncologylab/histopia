@@ -13,6 +13,7 @@ from histopia.registration._slides import SlideGeometry, discover_slides
 from histopia.semantic._result import _seal_semantic_result
 from histopia.visualization._viewer import (
     _tissue_review_crop,
+    build_mask_review,
     build_section_order_review,
     build_section_viewer,
 )
@@ -117,6 +118,46 @@ def test_viewer_builds_manifest_and_pinned_import_map(tmp_path: Path) -> None:
     assert "visibleMeshes.forEach(mesh => bounds.expandByObject(mesh))" in viewer
     assert "sphere.radius / 10000" in viewer
     assert "controls.minDistance" in viewer
+
+
+def test_mask_review_builds_full_thumbnail_audit(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    processed = run_dir / "processed"
+    processed.mkdir(parents=True)
+    image = np.full((24, 30, 3), 230, dtype=np.uint8)
+    mask = np.zeros((24, 30), dtype=np.uint8)
+    mask[5:20, 7:24] = 255
+    Image.fromarray(image).save(processed / "section.thumbnail.png")
+    Image.fromarray(mask).save(processed / "section.mask.png")
+    (run_dir / "registration_result.json").write_text(
+        json.dumps(
+            {
+                "reference_slide": str(tmp_path / "section.ndpi"),
+                "slides": [
+                    {
+                        "path": str(tmp_path / "section.ndpi"),
+                        "is_reference": True,
+                        "mask": {
+                            "method": "group_consensus",
+                            "metrics": {"foreground_fraction": 0.25},
+                            "warnings": [],
+                        },
+                        "mask_review": {"status": "auto_pass"},
+                        "transform": {"matrix": np.eye(3).tolist()},
+                    }
+                ],
+            }
+        )
+    )
+
+    index = build_mask_review(run_dir, tmp_path / "mask-review")
+
+    manifest = json.loads((index.parent / "manifest.json").read_text())
+    assert manifest["approved"] is True
+    assert len(manifest["fingerprint"]) == 64
+    assert manifest["slides"][0]["method"] == "group_consensus"
+    assert (index.parent / manifest["slides"][0]["texture"]).is_file()
+    assert "overflow:hidden" in (index.parent / "mask-review.css").read_text()
 
 
 def test_viewer_adds_lazy_semantic_and_blend_modes(tmp_path: Path) -> None:

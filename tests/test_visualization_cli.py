@@ -66,6 +66,26 @@ def test_build_command_targets_stable_histopia_directory(
     ]
 
 
+def test_mask_review_command_builds_requested_run(tmp_path: Path, monkeypatch) -> None:
+    calls: list[tuple[Path, Path]] = []
+
+    def capture(run: Path, output: Path) -> Path:
+        calls.append((run, output))
+        return output / "index.html"
+
+    monkeypatch.setattr(
+        "histopia.visualization._viewer.build_mask_review",
+        capture,
+    )
+    run = tmp_path / "registration"
+    output = tmp_path / "review"
+
+    result = _cli.main(["mask-review", str(run), str(output)])
+
+    assert result == 0
+    assert calls == [(run, output)]
+
+
 def test_showcase_command_exports_selected_static_mice(
     tmp_path: Path, monkeypatch
 ) -> None:

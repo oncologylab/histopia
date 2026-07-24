@@ -19,6 +19,7 @@ from histopia.registration._masking import (
     _pale_tissue_candidate,
     _remove_border_bar_components,
     _remove_hollow_detached_artifacts,
+    _remove_image_frame_exterior,
     _remove_scanner_edges,
     clean_external_tissue_mask,
 )
@@ -51,6 +52,32 @@ def test_scanner_edge_removal_disconnects_straight_rail_from_tissue() -> None:
 
     assert not cleaned[11, 20]
     assert cleaned[60:95, 120:180].mean() > 0.8
+
+
+def test_image_frame_removal_clips_only_scanner_exterior() -> None:
+    image = np.ones((240, 320, 3), dtype=np.float32)
+    for column, value in enumerate((0.85, 0.70, 0.55, 0.40, 0.25), start=45):
+        image[20:220, column] = value
+    candidate = np.zeros((240, 320), dtype=bool)
+    candidate[70:150, 12:44] = True
+    candidate[35:105, 95:185] = True
+    candidate[125:220, 105:215] = True
+
+    cleaned = _remove_image_frame_exterior(candidate, image)
+
+    assert not cleaned[:, :52].any()
+    assert np.array_equal(cleaned[:, 52:], candidate[:, 52:])
+
+
+def test_image_frame_removal_ignores_edge_without_exterior_foreground() -> None:
+    image = np.ones((240, 320, 3), dtype=np.float32)
+    image[20:220, 47:50] = 0.25
+    candidate = np.zeros((240, 320), dtype=bool)
+    candidate[35:220, 95:215] = True
+
+    cleaned = _remove_image_frame_exterior(candidate, image)
+
+    assert np.array_equal(cleaned, candidate)
 
 
 def test_scanner_edge_removal_disconnects_thick_rail_from_tissue() -> None:

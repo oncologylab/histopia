@@ -20,6 +20,7 @@ The WSI loader uses `pyvips`, which also requires native `libvips`. See
 Implemented now:
 
 - brightfield/IHC tissue-mask candidates with artifact, frame, and QC scoring
+- image-aware inset scanner-frame cleanup gated by selected exterior foreground
 - fail-closed mask review manifests and exact-shape binary overrides
 - strict WSI discovery that excludes label photos and generated artifacts
 - scanner-content geometry for SCN thumbnails and native-coordinate warping
@@ -153,6 +154,18 @@ Review cards are cropped around accepted tissue for morphology comparison.
 Physical tissue area remains a separate displayed measurement. Changing masks,
 cavity topology, anchors, pairwise distances, or the proposed sequence
 invalidates approval.
+
+Build a fixed-viewport audit of every accepted tissue mask before approval:
+
+```bash
+histopia-visualize mask-review \
+    /path/to/registration-run \
+    /path/to/mask-review
+```
+
+The audit uses full thumbnails rather than tissue crops so scanner frames,
+debris, and excluded peripheral tissue remain visible. It records the exact
+mask fingerprint and does not mark a cohort approved.
 
 Pairwise morphology distances are cached under the registration output
 directory because an all-pairs comparison is expensive for long stacks. The

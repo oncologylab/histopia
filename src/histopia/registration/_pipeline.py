@@ -208,6 +208,7 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
         masks = refine_group_tissue_masks(
             masks,
             physical_pixel_areas=physical_pixel_areas,
+            images=thumbnails,
         )
     for path in slide_paths:
         image = thumbnails[path]

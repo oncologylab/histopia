@@ -14,7 +14,11 @@ from pathlib import Path
 import numpy as np
 
 from histopia.registration._errors import OptionalDependencyError
-from histopia.registration._io import warp_mask_thumbnail, warp_rgb_thumbnail
+from histopia.registration._io import (
+    overlay_mask,
+    warp_mask_thumbnail,
+    warp_rgb_thumbnail,
+)
 from histopia.semantic._result import validate_semantic_result
 
 THREE_VERSION = "0.170.0"
@@ -283,6 +287,77 @@ def build_section_viewer(
             "elapsed_seconds": round(time.perf_counter() - build_started, 3),
         },
     )
+    return output_dir / "index.html"
+
+
+def build_mask_review(
+    registration_run: Path | str,
+    output_dir: Path | str,
+) -> Path:
+    """Build a fixed-viewport audit of accepted masks for one registration run."""
+
+    try:
+        from PIL import Image
+    except ImportError as exc:
+        raise OptionalDependencyError("pillow", "wsi") from exc
+
+    registration_run = Path(registration_run)
+    output_dir = Path(output_dir)
+    assets_dir = output_dir / "assets"
+    assets_dir.mkdir(parents=True, exist_ok=True)
+    payload = json.loads((registration_run / "registration_result.json").read_text())
+    rows = []
+    digest = hashlib.sha256(b"histopia-mask-review-v1")
+    for order, slide in enumerate(payload.get("slides", []), start=1):
+        source = Path(str(slide["path"]))
+        image = _read_rgb(
+            registration_run / "processed" / f"{source.stem}.thumbnail.png"
+        )
+        mask_path = registration_run / "processed" / f"{source.stem}.mask.png"
+        mask_bytes = mask_path.read_bytes()
+        digest.update(source.name.encode())
+        digest.update(np.ascontiguousarray(image).tobytes())
+        digest.update(mask_bytes)
+        mask = _read_mask(mask_path)
+        overlay = overlay_mask(image, mask)
+        filename = f"{order:03d}-{_safe_name(source.stem)}.webp"
+        Image.fromarray(overlay).save(
+            assets_dir / filename,
+            "WEBP",
+            lossless=False,
+            quality=88,
+            method=6,
+        )
+        mask_data = slide.get("mask", {})
+        review = slide.get("mask_review") or {}
+        review_status = str(review.get("status", "pending"))
+        rows.append(
+            {
+                "order": order,
+                "slide": source.name,
+                "label": _marker_label(source.stem),
+                "texture": f"assets/{filename}",
+                "method": str(mask_data.get("method", "unknown")),
+                "foreground_fraction": float(
+                    mask_data.get("metrics", {}).get("foreground_fraction", mask.mean())
+                ),
+                "approved": bool(review.get("approved"))
+                or review_status in {"auto_pass", "override_pass"},
+                "warning_count": len(mask_data.get("warnings", [])),
+            }
+        )
+    if not rows:
+        raise ValueError("registration result contains no slides")
+    manifest = {
+        "schema_version": 1,
+        "fingerprint": digest.hexdigest(),
+        "approved": all(row["approved"] for row in rows),
+        "slides": rows,
+    }
+    (output_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    (output_dir / "index.html").write_text(_MASK_REVIEW_HTML)
+    (output_dir / "mask-review.js").write_text(_MASK_REVIEW_JS)
+    (output_dir / "mask-review.css").write_text(_ORDER_REVIEW_CSS)
     return output_dir / "index.html"
 
 
@@ -745,6 +820,58 @@ _ORDER_REVIEW_HTML = """<!doctype html>
   <script type="module" src="order-review.js"></script>
 </body>
 </html>
+"""
+
+_MASK_REVIEW_HTML = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Histopia Tissue Mask Review</title>
+  <link rel="stylesheet" href="mask-review.css">
+</head>
+<body>
+  <header>
+    <strong>Histopia tissue masks</strong>
+    <span id="status"></span>
+    <span id="summary"></span>
+    <code id="fingerprint"></code>
+  </header>
+  <main id="slides"></main>
+  <script type="module" src="mask-review.js"></script>
+</body>
+</html>
+"""
+
+_MASK_REVIEW_JS = """const data = await (await fetch('manifest.json')).json();
+const slides = document.querySelector('#slides');
+const rowCount = innerWidth >= 2400
+  ? (data.slides.length <= 18 ? 2 : 3)
+  : (data.slides.length <= 18 ? 3 : 4);
+slides.style.setProperty('--rows', rowCount);
+slides.style.setProperty('--columns', Math.ceil(data.slides.length / rowCount));
+document.querySelector('#status').textContent =
+  data.approved ? 'Approved masks' : 'Approval required';
+document.querySelector('#summary').textContent =
+  `${data.slides.length} sections | ` +
+  `${data.slides.reduce((sum, slide) => sum + slide.warning_count, 0)} warnings`;
+document.querySelector('#fingerprint').textContent = data.fingerprint.slice(0, 16);
+for (const slide of data.slides) {
+  const card = document.createElement('article');
+  if (slide.approved) card.classList.add('fixed');
+  const image = document.createElement('img');
+  image.src = slide.texture;
+  image.alt = `Accepted tissue mask for ${slide.slide}`;
+  const label = document.createElement('div');
+  label.className = 'label';
+  label.textContent = `${String(slide.order).padStart(2, '0')} ${slide.label}`;
+  const metrics = document.createElement('div');
+  metrics.className = 'metrics';
+  metrics.textContent =
+    `${slide.method} | tissue ${(100 * slide.foreground_fraction).toFixed(1)}%`;
+  card.append(image, label, metrics);
+  slides.append(card);
+}
 """
 
 _ORDER_REVIEW_JS = """const data = await (await fetch('manifest.json')).json();
