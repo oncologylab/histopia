@@ -8,7 +8,11 @@ from histopia.registration._ordering import (
     propose_anchored_order,
     write_order_proposal,
 )
-from histopia.registration._pipeline import _mask_shape_distance, _read_fixed_positions
+from histopia.registration._pipeline import (
+    _mask_hole_topology_distance,
+    _mask_shape_distance,
+    _read_fixed_positions,
+)
 
 
 def test_anchored_order_preserves_fixed_slots() -> None:
@@ -151,3 +155,18 @@ def test_shape_distance_penalizes_topology_jump() -> None:
 
     assert _mask_shape_distance(one_piece, one_piece) == 0
     assert _mask_shape_distance(one_piece, two_pieces) > 0
+
+
+def test_hole_topology_distance_penalizes_significant_cavity_jump() -> None:
+    solid = np.zeros((100, 120), dtype=bool)
+    solid[10:90, 15:105] = True
+    small_hole = solid.copy()
+    small_hole[48:52, 58:62] = False
+    large_hole = solid.copy()
+    large_hole[35:65, 45:75] = False
+    similar_large_hole = solid.copy()
+    similar_large_hole[34:66, 44:76] = False
+
+    assert _mask_hole_topology_distance(solid, small_hole) == 0
+    assert _mask_hole_topology_distance(solid, large_hole) == 1
+    assert 0 < _mask_hole_topology_distance(large_hole, similar_large_hole) < 1
