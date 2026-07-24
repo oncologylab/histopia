@@ -62,8 +62,9 @@ def orient_section_group(
     """Match dominant tissue directions using reviewable quarter-turns.
 
     The anchor remains at zero degrees. When no anchor is supplied, the medoid
-    mask under rotation-invariant Dice similarity is used. Source arrays are
-    never modified.
+    mask under rotation-invariant Dice similarity is used. Low-confidence
+    slides inherit a turn only when confident slides in the same aspect family
+    establish a cohort consensus. Source arrays are never modified.
     """
 
     if not masks:
@@ -82,21 +83,34 @@ def orient_section_group(
         anchor = _rotation_invariant_medoid(normalized)
     reference = normalized[anchor]
     reference_aspect = _main_topology_log_aspect(masks[anchor])
-    decisions: dict[str, OrientationDecision] = {}
+    measurements: dict[str, tuple[tuple[float, ...], tuple[int, ...], int, float]] = {}
     for key, mask in normalized.items():
         scores = tuple(_dice(np.rot90(mask, turns), reference) for turns in range(4))
         candidates = (0, 1, 2, 3)
         if key == anchor:
-            best_turn = 0
+            raw_best_turn = 0
         else:
             candidates = _aspect_compatible_turns(
                 _main_topology_log_aspect(masks[key]), reference_aspect
             )
-            best_turn = max(candidates, key=lambda turns: (scores[turns], -turns))
+            raw_best_turn = max(candidates, key=lambda turns: (scores[turns], -turns))
         ordered_scores = sorted((scores[turn] for turn in candidates), reverse=True)
         margin = ordered_scores[0] - ordered_scores[1]
-        if key != anchor and margin < minimum_confidence_margin:
+        measurements[key] = (scores, candidates, raw_best_turn, margin)
+
+    consensus_turns = _confident_cohort_turns(
+        measurements,
+        anchor=anchor,
+        minimum_confidence_margin=minimum_confidence_margin,
+    )
+    decisions: dict[str, OrientationDecision] = {}
+    for key, (scores, candidates, raw_best_turn, margin) in measurements.items():
+        if key == anchor:
             best_turn = 0
+        elif margin >= minimum_confidence_margin:
+            best_turn = raw_best_turn
+        else:
+            best_turn = consensus_turns.get(candidates, 0)
         decisions[key] = OrientationDecision(
             quarter_turns_ccw=best_turn,
             score=float(scores[best_turn]),
@@ -110,6 +124,33 @@ def orient_section_group(
         minimum_confidence_margin,
     )
     return GroupOrientation(anchor, decisions, fingerprint)
+
+
+def _confident_cohort_turns(
+    measurements: dict[str, tuple[tuple[float, ...], tuple[int, ...], int, float]],
+    *,
+    anchor: str,
+    minimum_confidence_margin: float,
+) -> dict[tuple[int, ...], int]:
+    """Select deterministic consensus turns within aspect-compatible families."""
+
+    votes: dict[tuple[int, ...], dict[int, tuple[int, float]]] = {}
+    for key, (_, candidates, best_turn, margin) in measurements.items():
+        if key == anchor or margin < minimum_confidence_margin:
+            continue
+        count, weight = votes.setdefault(candidates, {}).get(best_turn, (0, 0.0))
+        votes[candidates][best_turn] = (count + 1, weight + margin)
+    return {
+        candidates: max(
+            turn_votes,
+            key=lambda turn: (
+                turn_votes[turn][0],
+                turn_votes[turn][1],
+                -turn,
+            ),
+        )
+        for candidates, turn_votes in votes.items()
+    }
 
 
 def apply_quarter_turn(array: np.ndarray, quarter_turns_ccw: int) -> np.ndarray:

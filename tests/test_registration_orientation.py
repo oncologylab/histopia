@@ -75,6 +75,27 @@ def test_low_confidence_orientation_remains_unrotated() -> None:
     assert result.decisions["peer"].quarter_turns_ccw == 0
 
 
+def test_low_confidence_orientation_uses_confident_cohort_consensus() -> None:
+    anchor = _asymmetric_mask()
+    confident = np.rot90(anchor, 1)
+    ambiguous = confident.copy()
+    ambiguous[:, :60] |= np.fliplr(confident)[:, :60]
+
+    result = orient_section_group(
+        {
+            "anchor": anchor,
+            "confident": confident,
+            "ambiguous": ambiguous,
+        },
+        anchor="anchor",
+        minimum_confidence_margin=0.20,
+    )
+
+    assert result.decisions["confident"].quarter_turns_ccw == 3
+    assert result.decisions["ambiguous"].confidence_margin < 0.20
+    assert result.decisions["ambiguous"].quarter_turns_ccw == 3
+
+
 def test_clear_matching_aspects_exclude_quarter_turns() -> None:
     anchor = np.zeros((80, 120), dtype=bool)
     anchor[20:55, 10:105] = True
