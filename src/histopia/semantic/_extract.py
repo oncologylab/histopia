@@ -10,6 +10,7 @@ from typing import Any
 
 import numpy as np
 
+from histopia._vips_image import normalize_vips_rgb_uchar
 from histopia.registration._slides import SlideGeometry
 from histopia.semantic._config import SemanticAtlasConfig
 from histopia.semantic._features import (
@@ -204,15 +205,10 @@ class _VipsPatchReader:
 
     @staticmethod
     def _as_rgb(image: Any) -> np.ndarray:
-        if image.bands > 3:
-            image = image[:3]
-        if image.bands == 1:
-            image = image.bandjoin([image, image])
-        if image.format != "uchar":
-            image = image.cast("uchar")
+        image = normalize_vips_rgb_uchar(image)
         return np.frombuffer(image.write_to_memory(), dtype=np.uint8).reshape(
             image.height, image.width, image.bands
-        )[..., :3]
+        )
 
 
 def _read_mask(path: Path) -> np.ndarray:

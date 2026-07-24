@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 
 from histopia.registration import _slides
+from histopia.registration._masking import create_tissue_mask
 
 
 def test_exact_slide_selection_preserves_external_ui_order(tmp_path: Path) -> None:
@@ -42,6 +43,64 @@ def test_exact_slide_selection_rejects_missing_or_derived_inputs(
         _slides.validate_slide_selection((derived,))
     with pytest.raises(FileNotFoundError, match="not found"):
         _slides.validate_slide_selection((tmp_path / "missing.ndpi",))
+
+
+@pytest.mark.integration
+def test_wsi_thumbnail_composites_grayscale_alpha_onto_white(
+    tmp_path: Path,
+) -> None:
+    pyvips = pytest.importorskip("pyvips")
+    pixels = np.array(
+        [[[0, 0], [64, 128], [200, 255]], [[10, 255], [100, 255], [250, 255]]],
+        dtype=np.uint8,
+    )
+    path = tmp_path / "grayscale-alpha.tif"
+    pyvips.Image.new_from_memory(
+        pixels.tobytes(),
+        3,
+        2,
+        2,
+        "uchar",
+    ).copy(interpretation="b-w").tiffsave(str(path))
+
+    thumbnail, geometry = _slides.load_slide_thumbnail(path, 3)
+
+    assert thumbnail.shape == (2, 3, 3)
+    assert thumbnail[0].tolist() == [
+        [255, 255, 255],
+        [159, 159, 159],
+        [200, 200, 200],
+    ]
+    assert geometry.thumbnail_shape == (2, 3)
+
+
+@pytest.mark.integration
+def test_transparent_grayscale_background_is_not_masked_as_tissue(
+    tmp_path: Path,
+) -> None:
+    pyvips = pytest.importorskip("pyvips")
+    pixels = np.zeros((256, 256, 2), dtype=np.uint8)
+    pixels[48:208, 64:192, 0] = 80
+    pixels[48:208, 64:192, 1] = 255
+    path = tmp_path / "transparent-background.tif"
+    pyvips.Image.new_from_memory(
+        pixels.tobytes(),
+        256,
+        256,
+        2,
+        "uchar",
+    ).copy(interpretation="b-w").tiffsave(str(path))
+
+    thumbnail, _ = _slides.load_slide_thumbnail(path, 256)
+    result = create_tissue_mask(thumbnail)
+
+    assert thumbnail[0, 0].tolist() == [255, 255, 255]
+    assert result.accepted
+    assert result.mask[100, 100]
+    assert not result.mask[0, 0]
+    assert result.metrics["component_count"] == 1
+    assert result.metrics["border_touch_fraction"] == 0
+    assert result.warnings == []
 
 
 def test_wsi_thumbnail_retries_a_finer_pyramid_level_after_decode_error(

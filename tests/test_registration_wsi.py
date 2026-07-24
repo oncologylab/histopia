@@ -9,6 +9,7 @@ from histopia.registration import (
     thumbnail_to_full_resolution_matrix,
     warp_slide_to_reference,
 )
+from histopia.registration._wsi import _as_rgb_uchar
 
 
 def test_slide_geometry_maps_thumbnail_pixels_to_micrometres() -> None:
@@ -60,6 +61,24 @@ def test_thumbnail_overlap_bbox_intersects_transformed_canvases() -> None:
     )
 
     assert bbox == (10, 0, 90, 80)
+
+
+@pytest.mark.integration
+def test_full_resolution_reader_normalizes_grayscale_alpha() -> None:
+    pyvips = pytest.importorskip("pyvips")
+    pixels = np.array([[[0, 0], [64, 128], [200, 255]]], dtype=np.uint8)
+    image = pyvips.Image.new_from_memory(
+        pixels.tobytes(),
+        3,
+        1,
+        2,
+        "uchar",
+    ).copy(interpretation="b-w")
+
+    rgb = _as_rgb_uchar(image)
+    array = np.frombuffer(rgb.write_to_memory(), dtype=np.uint8).reshape(1, 3, 3)
+
+    assert array.tolist() == [[[255, 255, 255], [159, 159, 159], [200, 200, 200]]]
 
 
 @pytest.mark.integration

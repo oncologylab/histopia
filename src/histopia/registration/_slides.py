@@ -8,6 +8,7 @@ from typing import Any
 
 import numpy as np
 
+from histopia._vips_image import normalize_vips_rgb_uchar
 from histopia.registration._errors import OptionalDependencyError
 
 STANDARD_IMAGE_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png"})
@@ -353,12 +354,7 @@ def _openslide_mpp(image: Any) -> tuple[tuple[float, float] | None, str]:
 
 
 def _vips_to_rgb(image: Any) -> np.ndarray:
-    if image.bands > 3:
-        image = image[:3]
-    if image.bands == 1:
-        image = image.bandjoin([image, image])
-    if image.format != "uchar":
-        image = image.cast("uchar")
+    image = normalize_vips_rgb_uchar(image)
     memory = image.write_to_memory()
     return (
         np.frombuffer(memory, dtype=np.uint8)

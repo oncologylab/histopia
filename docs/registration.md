@@ -25,6 +25,8 @@ Implemented now:
 - strict WSI discovery that excludes label photos and generated artifacts
 - scanner-content geometry for SCN thumbnails and native-coordinate warping
 - content-scale-aware pyramid fallback when a WSI thumbnail level is corrupt
+- consistent brightfield channel normalization, including grayscale-plus-alpha
+  images composited onto white for masking, warping, and semantic extraction
 - explicit full-mask mode for legacy reproduction only
 - feature and mask-moment rigid thumbnail registration
 - conservative affine tissue-mask refinement with transform plausibility gates

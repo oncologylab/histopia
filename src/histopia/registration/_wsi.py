@@ -9,6 +9,7 @@ from typing import Any
 
 import numpy as np
 
+from histopia._vips_image import normalize_vips_rgb_uchar
 from histopia.registration._errors import OptionalDependencyError
 from histopia.registration._slides import SlideGeometry
 
@@ -519,10 +520,4 @@ def _load_slide(path: Path) -> Any:
 
 
 def _as_rgb_uchar(image: Any) -> Any:
-    if image.bands > 3:
-        image = image[:3]
-    elif image.bands == 1:
-        image = image.bandjoin([image, image])
-    if image.format != "uchar":
-        image = image.cast("uchar")
-    return image
+    return normalize_vips_rgb_uchar(image)

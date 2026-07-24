@@ -3,9 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from histopia.semantic import PatchFeatures
-from histopia.semantic._extract import feature_cache_matches
+from histopia.semantic._extract import _VipsPatchReader, feature_cache_matches
 
 
 def _artifact(provenance: dict[str, object]) -> PatchFeatures:
@@ -49,3 +50,33 @@ def test_feature_cache_rejects_legacy_artifact(tmp_path: Path) -> None:
     )
 
     assert not feature_cache_matches(path, {"unused": True})
+
+
+@pytest.mark.integration
+def test_patch_reader_composites_grayscale_alpha_onto_white(
+    tmp_path: Path,
+) -> None:
+    pyvips = pytest.importorskip("pyvips")
+    row = np.array([[0, 0], [64, 128], [200, 255]], dtype=np.uint8)
+    pixels = np.repeat(
+        row[np.newaxis, :, :],
+        3,
+        axis=0,
+    )
+    path = tmp_path / "grayscale-alpha.tif"
+    pyvips.Image.new_from_memory(
+        pixels.tobytes(),
+        3,
+        3,
+        2,
+        "uchar",
+    ).copy(interpretation="b-w").tiffsave(str(path))
+
+    patch = _VipsPatchReader(path)(0, 0, 3, 3, 3)
+
+    assert patch.shape == (3, 3, 3)
+    assert patch[0].tolist() == [
+        [255, 255, 255],
+        [159, 159, 159],
+        [200, 200, 200],
+    ]
