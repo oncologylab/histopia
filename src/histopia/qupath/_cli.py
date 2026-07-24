@@ -16,6 +16,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--registration-run", type=Path, required=True)
     parser.add_argument("--semantic-run", type=Path)
     parser.add_argument("--clusters", type=int)
+    parser.add_argument(
+        "--semantic-geometry",
+        choices=("regions", "tiles"),
+        default="regions",
+        help="Coalesced regions (default) or one rectangle per source patch.",
+    )
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     if args.clusters is not None and args.semantic_run is None:
@@ -25,6 +31,7 @@ def main(argv: list[str] | None = None) -> int:
         args.output,
         semantic_run=args.semantic_run,
         clusters=args.clusters,
+        semantic_geometry=args.semantic_geometry,
     )
     print(result)
     return 0

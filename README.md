@@ -27,7 +27,7 @@ Install only the workflow dependencies you need:
 pip install "histopia[registration,wsi]"  # brightfield WSI registration
 pip install "histopia[semantic]"          # atlas fitting from saved features
 pip install "histopia[uni2h]"             # CPU/GPU UNI2-h extraction
-pip install "histopia[qupath]"             # QuPath interchange export
+pip install "histopia[qupath]"            # QuPath extension bridge
 ```
 
 ## Workflows
@@ -38,8 +38,8 @@ pip install "histopia[qupath]"             # QuPath interchange export
   correction, automatic K evaluation, and cross-section topology.
 - **Visualization:** interactive 3D histology/semantic stacks with quantitative
   QC and adjacent-section correspondence links.
-- **QuPath:** validated registration manifests and semantic GeoJSON annotations
-  in native WSI coordinates.
+- **QuPath:** extension-launched registration and semantic jobs, compact
+  checksummed GeoJSON regions, dynamic K selection, and native WSI coordinates.
 
 Start with [registration](docs/registration.md),
 [semantic atlas](docs/semantic_atlas.md), or

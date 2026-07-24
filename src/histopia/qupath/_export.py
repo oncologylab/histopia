@@ -5,12 +5,19 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-from histopia.semantic._result import validate_semantic_result
+from histopia.semantic._result_validation import validate_semantic_result
+
+_SEMANTIC_GEOMETRIES = ("regions", "tiles")
+_SEMANTIC_GEOMETRY_VERSIONS = {
+    "regions": "regions-v1",
+    "tiles": "tiles-v1",
+}
 
 
 def export_qupath_bundle(
@@ -19,6 +26,7 @@ def export_qupath_bundle(
     *,
     semantic_run: Path | str | None = None,
     clusters: int | None = None,
+    semantic_geometry: str = "regions",
 ) -> Path:
     """Export transforms and optional semantic annotations for QuPath.
 
@@ -26,6 +34,9 @@ def export_qupath_bundle(
     they can be imported directly into the corresponding original image.
     """
 
+    if semantic_geometry not in _SEMANTIC_GEOMETRIES:
+        choices = ", ".join(_SEMANTIC_GEOMETRIES)
+        raise ValueError(f"semantic_geometry must be one of: {choices}")
     registration_run = Path(registration_run).expanduser().resolve()
     output_dir = Path(output_dir).expanduser().resolve()
     registration_path = registration_run / "registration_result.json"
@@ -51,6 +62,12 @@ def export_qupath_bundle(
             raise ValueError(f"K={clusters} is unavailable; choose one of {available}")
         feature_paths = _index_feature_paths(semantic_root / "features")
         palette = [str(value) for value in semantic_payload["palette"]]
+        if not palette:
+            raise ValueError("semantic palette is empty")
+        annotation_dir = annotation_dir / (
+            f"{semantic_payload['fingerprint']}-k{clusters}-"
+            f"{_SEMANTIC_GEOMETRY_VERSIONS[semantic_geometry]}"
+        )
         annotation_dir.mkdir(parents=True, exist_ok=True)
 
     semantic_by_id = (
@@ -89,9 +106,10 @@ def export_qupath_bundle(
                 raise ValueError(f"semantic features are missing for {slide_id}")
             label_path = semantic_root / semantic_row["labels"][str(clusters)]
             relative = (
-                Path("annotations") / f"{order:03d}-{_safe_name(source.stem)}.geojson"
+                annotation_dir.relative_to(output_dir)
+                / f"{order:03d}-{_safe_name(source.stem)}.geojson"
             )
-            _write_semantic_geojson(
+            summary = _write_semantic_geojson(
                 output_dir / relative,
                 slide_id=slide_id,
                 feature_path=feature_path,
@@ -99,12 +117,18 @@ def export_qupath_bundle(
                 geometry=geometry,
                 clusters=int(clusters),
                 palette=palette,
+                semantic_geometry=semantic_geometry,
             )
             row["semantic_annotations"] = relative.as_posix()
+            row["semantic_annotations_sha256"] = _file_sha256(output_dir / relative)
+            row["semantic_annotations_bytes"] = (output_dir / relative).stat().st_size
+            row["semantic_annotation_classes"] = summary["class_count"]
+            row["semantic_annotation_regions"] = summary["region_count"]
+            row["semantic_patch_count"] = summary["patch_count"]
         slide_rows.append(row)
 
     manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
         "format": "histopia-qupath-bundle",
         "coordinate_conventions": {
             "semantic_annotations": "source_native_pixels",
@@ -118,6 +142,14 @@ def export_qupath_bundle(
             else None
         ),
         "semantic_clusters": clusters if semantic_payload is not None else None,
+        "semantic_geometry": (
+            semantic_geometry if semantic_payload is not None else None
+        ),
+        "semantic_geometry_version": (
+            _SEMANTIC_GEOMETRY_VERSIONS[semantic_geometry]
+            if semantic_payload is not None
+            else None
+        ),
         "slides": slide_rows,
     }
     path = output_dir / "histopia-qupath.json"
@@ -148,17 +180,36 @@ def _write_semantic_geojson(
     geometry: dict[str, Any],
     clusters: int,
     palette: list[str],
-) -> None:
+    semantic_geometry: str,
+) -> dict[str, int]:
     with np.load(feature_path, allow_pickle=False) as features:
         native_xy = np.asarray(features["native_xy"], dtype=np.float64)
+        feature_grid_rc = np.asarray(features["grid_rc"], dtype=np.int32)
         feature_slide_id = str(features["slide_id"].item())
     with np.load(label_path, allow_pickle=False) as labels_data:
         labels = np.asarray(labels_data["labels"], dtype=np.int32)
+        label_grid_rc = np.asarray(labels_data["grid_rc"], dtype=np.int32)
         patch_um = float(labels_data["patch_size_px"]) * float(
             labels_data["analysis_mpp"]
         )
-    if feature_slide_id != slide_id or len(native_xy) != len(labels):
+    if (
+        feature_slide_id != slide_id
+        or len(native_xy) != len(labels)
+        or feature_grid_rc.shape != label_grid_rc.shape
+        or not np.array_equal(feature_grid_rc, label_grid_rc)
+    ):
         raise ValueError(f"semantic coordinates do not match labels for {slide_id}")
+    if (
+        native_xy.ndim != 2
+        or native_xy.shape[1] != 2
+        or not np.all(np.isfinite(native_xy))
+        or feature_grid_rc.ndim != 2
+        or feature_grid_rc.shape[1] != 2
+        or len(np.unique(feature_grid_rc, axis=0)) != len(feature_grid_rc)
+    ):
+        raise ValueError(f"semantic coordinates are invalid for {slide_id}")
+    if labels.size and (int(labels.min()) < 0 or int(labels.max()) >= clusters):
+        raise ValueError(f"semantic labels are outside K={clusters} for {slide_id}")
     mpp = geometry.get("mpp_xy")
     native_shape = geometry.get("native_shape")
     if (
@@ -168,35 +219,36 @@ def _write_semantic_geojson(
         or len(native_shape) != 2
     ):
         raise ValueError(f"calibrated native geometry is required for {slide_id}")
-    half_width = patch_um / float(mpp[0]) / 2
-    half_height = patch_um / float(mpp[1]) / 2
+    half_width = max(1, round(patch_um / float(mpp[0]))) / 2
+    half_height = max(1, round(patch_um / float(mpp[1]))) / 2
     native_height, native_width = (int(value) for value in native_shape)
     features_json = []
+    region_count = 0
     for label in range(clusters):
-        points = native_xy[labels == label]
+        selected = labels == label
+        points = native_xy[selected]
         if not len(points):
             continue
-        polygons = [
-            [
-                [
-                    [max(0.0, x - half_width), max(0.0, y - half_height)],
-                    [
-                        min(float(native_width), x + half_width),
-                        max(0.0, y - half_height),
-                    ],
-                    [
-                        min(float(native_width), x + half_width),
-                        min(float(native_height), y + half_height),
-                    ],
-                    [
-                        max(0.0, x - half_width),
-                        min(float(native_height), y + half_height),
-                    ],
-                    [max(0.0, x - half_width), max(0.0, y - half_height)],
-                ]
-            ]
-            for x, y in points
-        ]
+        rectangles = (
+            _coalesce_patch_rectangles(
+                feature_grid_rc[selected],
+                points,
+                half_width=half_width,
+                half_height=half_height,
+                native_width=native_width,
+                native_height=native_height,
+            )
+            if semantic_geometry == "regions"
+            else _tile_rectangles(
+                points,
+                half_width=half_width,
+                half_height=half_height,
+                native_width=native_width,
+                native_height=native_height,
+            )
+        )
+        polygons = [_rectangle_polygon(rectangle) for rectangle in rectangles]
+        region_count += len(rectangles)
         color = _hex_color(palette[label % len(palette)])
         features_json.append(
             {
@@ -216,6 +268,8 @@ def _write_semantic_geojson(
                         "cluster": label,
                         "clusters": clusters,
                         "patch_count": int(len(points)),
+                        "region_count": len(rectangles),
+                        "geometry": semantic_geometry,
                         "slide_id": slide_id,
                     },
                 },
@@ -225,11 +279,163 @@ def _write_semantic_geojson(
         path,
         {
             "type": "FeatureCollection",
-            "histopia_schema_version": 1,
+            "histopia_schema_version": 2,
+            "histopia": {
+                "slide_id": slide_id,
+                "clusters": clusters,
+                "geometry": semantic_geometry,
+                "geometry_version": _SEMANTIC_GEOMETRY_VERSIONS[semantic_geometry],
+                "patch_count": int(len(labels)),
+                "region_count": region_count,
+            },
             "features": features_json,
         },
         compact=True,
     )
+    return {
+        "class_count": len(features_json),
+        "patch_count": int(len(labels)),
+        "region_count": region_count,
+    }
+
+
+def _tile_rectangles(
+    native_xy: np.ndarray,
+    *,
+    half_width: float,
+    half_height: float,
+    native_width: int,
+    native_height: int,
+) -> list[tuple[float, float, float, float]]:
+    return [
+        _bounded_rectangle(
+            float(x),
+            float(y),
+            float(x),
+            float(y),
+            half_width=half_width,
+            half_height=half_height,
+            native_width=native_width,
+            native_height=native_height,
+        )
+        for x, y in native_xy
+    ]
+
+
+def _coalesce_patch_rectangles(
+    grid_rc: np.ndarray,
+    native_xy: np.ndarray,
+    *,
+    half_width: float,
+    half_height: float,
+    native_width: int,
+    native_height: int,
+) -> list[tuple[float, float, float, float]]:
+    """Merge equal-label horizontal runs across identical adjacent rows."""
+
+    rows: dict[int, list[tuple[int, float, float]]] = defaultdict(list)
+    for (row, col), (x, y) in zip(grid_rc, native_xy, strict=True):
+        rows[int(row)].append((int(col), float(x), float(y)))
+    active: dict[tuple[int, int], tuple[int, tuple[float, float, float, float]]] = {}
+    completed: list[tuple[float, float, float, float]] = []
+    previous_row: int | None = None
+    for row in sorted(rows):
+        runs = _row_runs(rows[row])
+        if previous_row is None or row != previous_row + 1:
+            completed.extend(rectangle for _, rectangle in active.values())
+            active = {}
+        next_active: dict[
+            tuple[int, int], tuple[int, tuple[float, float, float, float]]
+        ] = {}
+        for start_col, end_col, start_x, end_x, y in runs:
+            key = (start_col, end_col)
+            rectangle = _bounded_rectangle(
+                start_x,
+                y,
+                end_x,
+                y,
+                half_width=half_width,
+                half_height=half_height,
+                native_width=native_width,
+                native_height=native_height,
+            )
+            prior = active.pop(key, None)
+            if prior is not None and _same_horizontal_bounds(prior[1], rectangle):
+                left, top, right, _ = prior[1]
+                rectangle = (left, top, right, rectangle[3])
+            next_active[key] = (row, rectangle)
+        completed.extend(rectangle for _, rectangle in active.values())
+        active = next_active
+        previous_row = row
+    completed.extend(rectangle for _, rectangle in active.values())
+    return completed
+
+
+def _row_runs(
+    cells: list[tuple[int, float, float]],
+) -> list[tuple[int, int, float, float, float]]:
+    ordered = sorted(cells)
+    runs: list[tuple[int, int, float, float, float]] = []
+    start_col, start_x, y = ordered[0]
+    end_col, end_x = start_col, start_x
+    for col, x, cell_y in ordered[1:]:
+        if col == end_col + 1 and np.isclose(cell_y, y, rtol=0, atol=1e-6):
+            end_col, end_x = col, x
+            continue
+        runs.append((start_col, end_col, start_x, end_x, y))
+        start_col, end_col = col, col
+        start_x, end_x, y = x, x, cell_y
+    runs.append((start_col, end_col, start_x, end_x, y))
+    return runs
+
+
+def _bounded_rectangle(
+    start_x: float,
+    start_y: float,
+    end_x: float,
+    end_y: float,
+    *,
+    half_width: float,
+    half_height: float,
+    native_width: int,
+    native_height: int,
+) -> tuple[float, float, float, float]:
+    return (
+        max(0.0, start_x - half_width),
+        max(0.0, start_y - half_height),
+        min(float(native_width), end_x + half_width),
+        min(float(native_height), end_y + half_height),
+    )
+
+
+def _same_horizontal_bounds(
+    first: tuple[float, float, float, float],
+    second: tuple[float, float, float, float],
+) -> bool:
+    return bool(
+        np.isclose(first[0], second[0], rtol=0, atol=1e-6)
+        and np.isclose(first[2], second[2], rtol=0, atol=1e-6)
+    )
+
+
+def _rectangle_polygon(
+    rectangle: tuple[float, float, float, float],
+) -> list[list[list[float | int]]]:
+    left, top, right, bottom = (_json_coordinate(value) for value in rectangle)
+    return [
+        [
+            [left, top],
+            [right, top],
+            [right, bottom],
+            [left, bottom],
+            [left, top],
+        ]
+    ]
+
+
+def _json_coordinate(value: float) -> float | int:
+    rounded = round(value)
+    return rounded if np.isclose(value, rounded, rtol=0, atol=1e-9) else value
 
 
 def _hex_color(value: str) -> list[int]:
