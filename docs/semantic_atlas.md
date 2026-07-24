@@ -162,7 +162,8 @@ histopia-visualize build /path/to/viewer-root \
   --run sample-b=/path/to/registration-b \
   --semantic-run sample-a=/path/to/semantic-a \
   --semantic-run sample-b=/path/to/semantic-b \
-  --cohort-qc /path/to/cohort-qc.json
+  --cohort-qc /path/to/cohort-qc.json \
+  --workers 4
 ```
 
 The canonical `histopia.visualization` viewer exposes Histology, Blend, and
@@ -179,4 +180,5 @@ Viewer builds checksum their generated WEBP assets and reuse exact matches.
 `build-report.json` records elapsed time and encoded/reused asset counts for
 each build. A changed image, transform, mask, label grid, palette, or encoder
 setting produces different rendered pixels and replaces only the affected
-asset.
+asset. `--workers` bounds concurrent encoders and defaults to one; worker
+counts do not change rendered bytes or cache ordering.

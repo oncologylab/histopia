@@ -66,3 +66,53 @@ def test_nonstaged_registration_preserves_strict_failure(
 
     with pytest.raises(RegistrationApprovalRequired, match="current section order"):
         _cli.main(["--config", str(config)])
+
+
+def test_registration_viewer_passes_worker_count(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    calls = []
+
+    def capture(
+        runs,
+        output,
+        *,
+        provisional_mice,
+        semantic_runs,
+        workers,
+    ):
+        calls.append((runs, output, provisional_mice, semantic_runs, workers))
+        return output / "index.html"
+
+    monkeypatch.setattr(
+        "histopia.visualization.build_section_viewer",
+        capture,
+    )
+    run = tmp_path / "registration"
+    semantic = tmp_path / "semantic"
+    output = tmp_path / "viewer"
+
+    result = _cli.main(
+        [
+            "--viewer-run",
+            f"mouse={run}",
+            "--viewer-semantic-run",
+            f"mouse={semantic}",
+            "--viewer-output-dir",
+            str(output),
+            "--viewer-workers",
+            "3",
+        ]
+    )
+
+    assert result == 0
+    assert calls == [
+        (
+            {"mouse": run},
+            output,
+            set(),
+            {"mouse": semantic},
+            3,
+        )
+    ]
+    assert capsys.readouterr().out.strip() == str(output / "index.html")

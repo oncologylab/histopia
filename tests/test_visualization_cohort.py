@@ -61,6 +61,15 @@ def test_viewer_embeds_seven_mouse_qc_and_exact_review_state(tmp_path: Path) -> 
     semantic = manifest["mice"][0]["semantic"]
     assert semantic["cluster_counts"] == list(range(5, 16))
     assert semantic["qc"]["topology_coverage"] == 0.8
+    assert list(semantic["qc"]) == [
+        "fingerprint",
+        "selected_k",
+        "median_topology_confidence",
+        "topology_coverage",
+        "unsupported_sections",
+        "review_approved",
+        "flags",
+    ]
     assert semantic["review"] == {
         "approved": False,
         "fingerprint_matches": True,
@@ -145,6 +154,45 @@ def test_viewer_rerenders_mouse_when_topology_output_is_changed(
     assert report["mice_reused"] == 0
     assert report["mice_rendered"] == 1
     assert json.loads(topology.read_text())["links"]
+
+
+def test_parallel_viewer_encoding_matches_serial_output(tmp_path: Path) -> None:
+    run, semantic_run, _ = _write_mouse(tmp_path, "4000", with_topology=True)
+    serial = tmp_path / "serial"
+    parallel = tmp_path / "parallel"
+
+    build_section_viewer(
+        {"4000": run},
+        serial,
+        semantic_runs={"4000": semantic_run},
+        workers=1,
+    )
+    build_section_viewer(
+        {"4000": run},
+        parallel,
+        semantic_runs={"4000": semantic_run},
+        workers=4,
+    )
+
+    serial_files = {
+        path.relative_to(serial): path.read_bytes()
+        for path in serial.rglob("*")
+        if path.is_file() and path.name != "build-report.json"
+    }
+    parallel_files = {
+        path.relative_to(parallel): path.read_bytes()
+        for path in parallel.rglob("*")
+        if path.is_file() and path.name != "build-report.json"
+    }
+    assert parallel_files == serial_files
+    report = json.loads((parallel / "build-report.json").read_text())
+    assert report["workers"] == 4
+    assert report["assets_encoded"] == 26
+
+
+def test_viewer_rejects_nonpositive_workers(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="viewer workers must be positive"):
+        build_section_viewer({}, tmp_path / "viewer", workers=0)
 
 
 def _write_mouse(

@@ -10,6 +10,7 @@ import os
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
 
@@ -33,30 +34,142 @@ THREE_VENDOR_SHA256 = {
 }
 MAX_DISPLAY_LINKS = 500
 VIEWER_MOUSE_CACHE_VERSION = 1
-_VIEWER_QC_FIELDS = frozenset(
-    {
-        "fingerprint",
-        "selected_k",
-        "slide_count",
-        "patch_count",
-        "median_tissue_fraction",
-        "accepted_topology_links",
-        "median_topology_confidence",
-        "topology_coverage",
-        "zero_link_pairs",
-        "selected_k_stability",
-        "selected_k_score",
-        "minimum_cluster_fraction",
-        "batch_correction_accepted",
-        "raw_slide_variance_fraction",
-        "corrected_slide_variance_fraction",
-        "raw_slide_prediction_accuracy",
-        "corrected_slide_prediction_accuracy",
-        "unsupported_sections",
-        "review_approved",
-        "flags",
-    }
+_VIEWER_QC_FIELDS = (
+    "fingerprint",
+    "selected_k",
+    "slide_count",
+    "patch_count",
+    "median_tissue_fraction",
+    "accepted_topology_links",
+    "median_topology_confidence",
+    "topology_coverage",
+    "zero_link_pairs",
+    "selected_k_stability",
+    "selected_k_score",
+    "minimum_cluster_fraction",
+    "batch_correction_accepted",
+    "raw_slide_variance_fraction",
+    "corrected_slide_variance_fraction",
+    "raw_slide_prediction_accuracy",
+    "corrected_slide_prediction_accuracy",
+    "unsupported_sections",
+    "review_approved",
+    "flags",
 )
+
+
+@dataclass(slots=True)
+class _WebpWriteJob:
+    relative: str
+    input_sha256: str
+    path: Path
+    options: dict[str, object]
+    image: np.ndarray | None
+    cache_entry: dict[str, object] | None
+    encoded: bool
+
+
+class _WebpWriteBatch:
+    """Encode one slide's independent WebPs with deterministic cache commits."""
+
+    def __init__(
+        self,
+        image_module,
+        output_dir: Path,
+        old_cache: dict[str, dict[str, object]],
+        new_cache: dict[str, dict[str, object]],
+        stats: dict[str, int],
+        *,
+        workers: int,
+    ) -> None:
+        self.image_module = image_module
+        self.output_dir = output_dir
+        self.old_cache = old_cache
+        self.new_cache = new_cache
+        self.stats = stats
+        self.workers = workers
+        self.jobs: list[_WebpWriteJob] = []
+
+    def queue(
+        self,
+        image: np.ndarray,
+        path: Path,
+        *,
+        options: dict[str, object],
+    ) -> None:
+        array = np.ascontiguousarray(image)
+        relative = path.relative_to(self.output_dir).as_posix()
+        digest = hashlib.sha256()
+        digest.update(b"histopia-viewer-webp-v1")
+        digest.update(str(array.dtype).encode())
+        digest.update(json.dumps(array.shape).encode())
+        digest.update(array.tobytes())
+        digest.update(
+            json.dumps(options, sort_keys=True, separators=(",", ":")).encode()
+        )
+        input_sha256 = digest.hexdigest()
+        previous = self.old_cache.get(relative, {})
+        if (
+            path.is_file()
+            and previous.get("input_sha256") == input_sha256
+            and previous.get("output_sha256") == _file_sha256(path)
+        ):
+            self.jobs.append(
+                _WebpWriteJob(
+                    relative,
+                    input_sha256,
+                    path,
+                    options,
+                    None,
+                    previous,
+                    False,
+                )
+            )
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.jobs.append(
+            _WebpWriteJob(
+                relative,
+                input_sha256,
+                path,
+                options,
+                array,
+                None,
+                True,
+            )
+        )
+
+    def flush(self) -> None:
+        if not self.jobs:
+            return
+        pending = [job for job in self.jobs if job.encoded]
+        if self.workers == 1 or len(pending) < 2:
+            entries = map(self._encode, pending)
+            for job, entry in zip(pending, entries, strict=True):
+                job.cache_entry = entry
+        else:
+            with ThreadPoolExecutor(
+                max_workers=min(self.workers, len(pending)),
+                thread_name_prefix="viewer-webp",
+            ) as executor:
+                entries = executor.map(self._encode, pending)
+                for job, entry in zip(pending, entries, strict=True):
+                    job.cache_entry = entry
+        for job in self.jobs:
+            if job.cache_entry is None:
+                raise RuntimeError(f"WEBP encoding did not complete: {job.relative}")
+            self.new_cache[job.relative] = job.cache_entry
+            self.stats["encoded" if job.encoded else "reused"] += 1
+        self.jobs.clear()
+
+    def _encode(self, job: _WebpWriteJob) -> dict[str, object]:
+        if job.image is None:
+            raise RuntimeError(f"WEBP encoding is missing pixels: {job.relative}")
+        self.image_module.fromarray(job.image).save(job.path, "WEBP", **job.options)
+        return {
+            "input_sha256": job.input_sha256,
+            "output_sha256": _file_sha256(job.path),
+        }
 
 
 def build_section_viewer(
@@ -66,6 +179,7 @@ def build_section_viewer(
     provisional_mice: set[str] | None = None,
     semantic_runs: dict[str, Path | str] | None = None,
     cohort_qc: Path | str | None = None,
+    workers: int = 1,
 ) -> Path:
     """Build a browser viewer from completed registration run directories."""
 
@@ -75,6 +189,8 @@ def build_section_viewer(
         raise OptionalDependencyError("pillow", "wsi") from exc
 
     output_dir = Path(output_dir)
+    if workers <= 0:
+        raise ValueError("viewer workers must be positive")
     assets_dir = output_dir / "assets"
     assets_dir.mkdir(parents=True, exist_ok=True)
     build_started = time.perf_counter()
@@ -85,6 +201,14 @@ def build_section_viewer(
     new_mouse_cache: dict[str, dict[str, object]] = {}
     cache_stats = {"reused": 0, "encoded": 0}
     mouse_stats = {"reused": 0, "rendered": 0}
+    webp_batch = _WebpWriteBatch(
+        Image,
+        output_dir,
+        old_asset_cache,
+        new_asset_cache,
+        cache_stats,
+        workers=workers,
+    )
     provisional_mice = provisional_mice or set()
     semantic_runs = semantic_runs or {}
     cohort_rows = _load_cohort_rows(cohort_qc)
@@ -209,15 +333,10 @@ def build_section_viewer(
             )
             rgba = np.dstack([registered, (registered_mask * 255).astype(np.uint8)])
             filename = f"{order:03d}-{_safe_name(source_path.stem)}.webp"
-            _write_cached_webp(
-                Image,
+            webp_batch.queue(
                 rgba,
                 mouse_assets / filename,
-                output_dir=output_dir,
                 options={"lossless": False, "quality": 88, "method": 6},
-                old_cache=old_asset_cache,
-                new_cache=new_asset_cache,
-                stats=cache_stats,
             )
             slide_payload = {
                 "id": source_path.name,
@@ -244,15 +363,10 @@ def build_section_viewer(
                         f"{order:03d}-{_safe_name(source_path.stem)}"
                         f"-k{count}-semantic.webp"
                     )
-                    _write_cached_webp(
-                        Image,
+                    webp_batch.queue(
                         semantic_rgba,
                         mouse_assets / semantic_name,
-                        output_dir=output_dir,
                         options={"lossless": True, "method": 6},
-                        old_cache=old_asset_cache,
-                        new_cache=new_asset_cache,
-                        stats=cache_stats,
                     )
                     semantic_textures[str(count)] = (
                         f"assets/{_safe_name(mouse_id)}/{semantic_name}"
@@ -263,15 +377,10 @@ def build_section_viewer(
                     raise ValueError("selected K is missing from semantic labels")
                 blend_name = f"{order:03d}-{_safe_name(source_path.stem)}-blend.webp"
                 blended = _blend_semantic(registered, registered_mask, selected_rgba)
-                _write_cached_webp(
-                    Image,
+                webp_batch.queue(
                     blended,
                     mouse_assets / blend_name,
-                    output_dir=output_dir,
                     options={"lossless": False, "quality": 90, "method": 6},
-                    old_cache=old_asset_cache,
-                    new_cache=new_asset_cache,
-                    stats=cache_stats,
                 )
                 slide_payload["semantic_textures"] = semantic_textures
                 slide_payload["semantic_texture"] = semantic_textures[
@@ -281,6 +390,7 @@ def build_section_viewer(
                     f"assets/{_safe_name(mouse_id)}/{blend_name}"
                 )
             slides.append(slide_payload)
+            webp_batch.flush()
         mouse_payload = {
             "id": mouse_id,
             "provisional_order": mouse_id in provisional_mice,
@@ -312,6 +422,7 @@ def build_section_viewer(
             "outputs": _mouse_output_hashes(mouse_payload, output_dir),
         }
 
+    webp_batch.flush()
     (output_dir / "manifest.json").write_text(
         json.dumps({"schema_version": 1, "mice": mouse_payloads}, indent=2) + "\n"
     )
@@ -341,6 +452,7 @@ def build_section_viewer(
             "mice_reused": mouse_stats["reused"],
             "mice_rendered": mouse_stats["rendered"],
             "three_version": THREE_VERSION,
+            "workers": workers,
             "elapsed_seconds": round(time.perf_counter() - build_started, 3),
         },
     )
@@ -929,33 +1041,18 @@ def _write_cached_webp(
     new_cache: dict[str, dict[str, object]],
     stats: dict[str, int],
 ) -> None:
-    """Reuse an exact WEBP asset or encode and checksum a replacement."""
+    """Write one exact cache-aware WebP for review workflows."""
 
-    array = np.ascontiguousarray(image)
-    relative = path.relative_to(output_dir).as_posix()
-    digest = hashlib.sha256()
-    digest.update(b"histopia-viewer-webp-v1")
-    digest.update(str(array.dtype).encode())
-    digest.update(json.dumps(array.shape).encode())
-    digest.update(array.tobytes())
-    digest.update(json.dumps(options, sort_keys=True, separators=(",", ":")).encode())
-    input_sha256 = digest.hexdigest()
-    previous = old_cache.get(relative, {})
-    if (
-        path.is_file()
-        and previous.get("input_sha256") == input_sha256
-        and previous.get("output_sha256") == _file_sha256(path)
-    ):
-        new_cache[relative] = previous
-        stats["reused"] += 1
-        return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    image_module.fromarray(array).save(path, "WEBP", **options)
-    new_cache[relative] = {
-        "input_sha256": input_sha256,
-        "output_sha256": _file_sha256(path),
-    }
-    stats["encoded"] += 1
+    batch = _WebpWriteBatch(
+        image_module,
+        output_dir,
+        old_cache,
+        new_cache,
+        stats,
+        workers=1,
+    )
+    batch.queue(image, path, options=options)
+    batch.flush()
 
 
 def _review_asset_fingerprint(domain: str, *values: str) -> str:
@@ -1042,7 +1139,7 @@ def _public_qc_row(raw_row: dict[str, object]) -> dict[str, object]:
             not isinstance(value, int) or isinstance(value, bool)
         ):
             raise ValueError(f"cohort QC {key} must be an integer")
-    numeric_fields = _VIEWER_QC_FIELDS - {
+    nonnumeric_fields = {
         "fingerprint",
         "selected_k",
         "slide_count",
@@ -1054,6 +1151,7 @@ def _public_qc_row(raw_row: dict[str, object]) -> dict[str, object]:
         "unsupported_sections",
         "flags",
     }
+    numeric_fields = (key for key in _VIEWER_QC_FIELDS if key not in nonnumeric_fields)
     for key in numeric_fields:
         value = row.get(key)
         if value is not None and (
@@ -1080,7 +1178,7 @@ def _public_qc_row(raw_row: dict[str, object]) -> dict[str, object]:
     ):
         raise ValueError("invalid cohort QC flag")
     row["flags"] = list(flags)
-    return row
+    return {key: row[key] for key in _VIEWER_QC_FIELDS if key in row}
 
 
 def _semantic_review_payload(

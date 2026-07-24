@@ -114,6 +114,15 @@ def main(argv: list[str] | None = None) -> int:
         help="Add semantic atlas textures to a viewer mouse.",
     )
     parser.add_argument(
+        "--viewer-workers",
+        type=int,
+        default=1,
+        help=(
+            "Bound concurrent WebP encoders used with --viewer-run; "
+            "default 1 minimizes memory use."
+        ),
+    )
+    parser.add_argument(
         "--provisional-mouse",
         action="append",
         default=[],
@@ -238,6 +247,7 @@ def main(argv: list[str] | None = None) -> int:
             args.viewer_output_dir,
             provisional_mice=set(args.provisional_mouse),
             semantic_runs=semantic_runs,
+            workers=args.viewer_workers,
         )
         print(index_path)
         return 0

@@ -378,6 +378,7 @@ histopia-register \
   --viewer-run mouse-1=/path/to/run-1 \
   --viewer-run mouse-2=/path/to/run-2 \
   --provisional-mouse mouse-2 \
+  --viewer-workers 4 \
   --viewer-output-dir /path/to/viewer
 ```
 
@@ -389,7 +390,14 @@ mouse is reused only when its ordered transforms, geometry, reviewed thumbnail
 fingerprints, semantic fingerprint, and cohort QC all match and every
 referenced output still matches its saved checksum. The build report separates
 reused/rendered mice and reused/encoded assets so incremental performance is
-auditable.
+auditable. `--viewer-workers` bounds concurrent WebP encoders. The default of
+one is memory-conservative; four is a balanced server setting. Encoded bytes,
+manifest data, and cache order are deterministic across worker counts.
+
+On an 18-section semantic-atlas benchmark producing 234 WebPs, four workers
+reduced a cold build from 46.5 to 24.5 seconds while peak resident memory rose
+from 241 to 378 MiB. The exact warm cache rebuilt the same viewer in 0.06
+seconds without encoding an asset.
 
 ## Non-Rigid Refinement
 

@@ -26,7 +26,7 @@ def test_serve_command_dispatches_explicit_network_settings(
 def test_build_command_targets_stable_histopia_directory(
     tmp_path: Path, monkeypatch
 ) -> None:
-    calls: list[tuple[dict[str, Path], Path, dict[str, Path], Path | None]] = []
+    calls: list[tuple[dict[str, Path], Path, dict[str, Path], Path | None, int]] = []
 
     def capture(
         runs: dict[str, Path],
@@ -34,8 +34,9 @@ def test_build_command_targets_stable_histopia_directory(
         *,
         semantic_runs: dict[str, Path],
         cohort_qc: Path | None,
+        workers: int,
     ) -> Path:
-        calls.append((runs, output, semantic_runs, cohort_qc))
+        calls.append((runs, output, semantic_runs, cohort_qc, workers))
         return output / "index.html"
 
     monkeypatch.setattr(_cli, "build_section_viewer", capture)
@@ -52,6 +53,8 @@ def test_build_command_targets_stable_histopia_directory(
             f"mouse={semantic}",
             "--cohort-qc",
             str(tmp_path / "cohort.json"),
+            "--workers",
+            "4",
         ]
     )
 
@@ -62,6 +65,7 @@ def test_build_command_targets_stable_histopia_directory(
             tmp_path / "viewer" / "histopia",
             {"mouse": semantic},
             tmp_path / "cohort.json",
+            4,
         )
     ]
 
