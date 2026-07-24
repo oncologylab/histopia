@@ -10,6 +10,8 @@ from pathlib import Path
 
 import numpy as np
 
+from histopia.compute import resolve_compute_device
+
 
 def _preload_wsi_backend(
     importer: Callable[[str], object] = import_module,
@@ -38,7 +40,7 @@ class Uni2hEncoder:
         cls,
         cache_dir: Path | str,
         *,
-        device: str = "cuda",
+        device: str = "auto",
         local_only: bool = True,
     ) -> Uni2hEncoder:
         """Load gated weights from an external cache; never package model data."""
@@ -59,6 +61,7 @@ class Uni2hEncoder:
             from timm.data.transforms_factory import create_transform
         except ImportError as exc:
             raise RuntimeError("UNI2-h extraction requires the 'uni2h' extra") from exc
+        resolved_device = resolve_compute_device(device, torch_module=torch).resolved
         kwargs = {
             "img_size": 224,
             "patch_size": 14,
@@ -85,7 +88,7 @@ class Uni2hEncoder:
                 f"UNI2-h weights unavailable from {mode} at {cache_dir}; "
                 "accept the model license and populate this external cache first"
             ) from exc
-        model.eval().to(device)
+        model.eval().to(resolved_device)
         transform = create_transform(
             **resolve_data_config(model.pretrained_cfg, model=model)
         )
@@ -93,7 +96,7 @@ class Uni2hEncoder:
         return cls(
             model,
             transform,
-            device=device,
+            device=resolved_device,
             model_fingerprint=hashlib.sha256(identity).hexdigest(),
         )
 
@@ -106,14 +109,15 @@ class Uni2hEncoder:
         tensors = [
             self.transform(Image.fromarray(image, mode="RGB")) for image in images
         ]
-        batch = torch.stack(tensors).to(self.device, non_blocking=True)
+        uses_cuda = self.device.startswith("cuda")
+        batch = torch.stack(tensors).to(self.device, non_blocking=uses_cuda)
         try:
             with (
                 torch.inference_mode(),
                 torch.autocast(
                     device_type="cuda",
                     dtype=torch.bfloat16,
-                    enabled=self.device.startswith("cuda"),
+                    enabled=uses_cuda,
                 ),
             ):
                 output = self.model(batch)
@@ -121,7 +125,8 @@ class Uni2hEncoder:
             if len(images) == 1:
                 raise
             midpoint = len(images) // 2
-            torch.cuda.empty_cache()
+            if uses_cuda:
+                torch.cuda.empty_cache()
             return np.concatenate(
                 [self.encode(images[:midpoint]), self.encode(images[midpoint:])]
             )

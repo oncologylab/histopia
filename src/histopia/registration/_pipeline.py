@@ -5,7 +5,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +39,11 @@ from histopia.registration._ordering import (
     order_is_approved,
     propose_anchored_order,
     write_order_proposal,
+)
+from histopia.registration._ordering_cache import (
+    load_ordering_distance_cache,
+    ordering_cache_fingerprint,
+    write_ordering_distance_cache,
 )
 from histopia.registration._orientation import (
     apply_quarter_turn,
@@ -278,9 +283,34 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
             path: _physical_mask_area(working_masks[path], geometries[path])
             for path in slide_paths
         }
-        distances = _section_distance_matrix(
-            slide_paths, crops, config, physical_areas=physical_areas
+        input_fingerprints = {
+            path.name: _ordering_input_fingerprint(
+                working_masks[path],
+                geometries[path],
+                orientation_turns[path.name],
+            )
+            for path in slide_paths
+        }
+        distance_fingerprint = ordering_cache_fingerprint(
+            tuple(path.name for path in slide_paths),
+            input_fingerprints,
+            _ordering_distance_settings(config),
         )
+        cache_path = config.output_dir / ".cache" / "section-order-distances.npz"
+        distances = load_ordering_distance_cache(
+            cache_path,
+            expected_fingerprint=distance_fingerprint,
+            expected_size=len(slide_paths),
+        )
+        if distances is None:
+            distances = _section_distance_matrix(
+                slide_paths, crops, config, physical_areas=physical_areas
+            )
+            write_ordering_distance_cache(
+                cache_path,
+                distances,
+                fingerprint=distance_fingerprint,
+            )
         fixed_positions = _read_fixed_positions(slide_paths, config.section_order_path)
         proposal = propose_anchored_order(
             tuple(path.name for path in slide_paths),
@@ -289,14 +319,7 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
             physical_areas_um2={
                 path.name: physical_areas[path] for path in slide_paths
             },
-            input_fingerprints={
-                path.name: _ordering_input_fingerprint(
-                    working_masks[path],
-                    geometries[path],
-                    orientation_turns[path.name],
-                )
-                for path in slide_paths
-            },
+            input_fingerprints=input_fingerprints,
             orientation_quarter_turns=orientation_turns,
             cavity_fractions={
                 path.name: _largest_internal_cavity_fraction(working_masks[path])
@@ -1294,6 +1317,22 @@ def _ordering_input_fingerprint(
     digest.update(np.ascontiguousarray(mask, dtype=np.uint8).tobytes())
     digest.update(json.dumps(geometry.to_json_dict(), sort_keys=True).encode())
     return digest.hexdigest()
+
+
+def _ordering_distance_settings(config: RegistrationConfig) -> dict[str, object]:
+    """Return only settings that affect pairwise morphology distances."""
+
+    return {
+        "max_processed_image_dim_px": config.max_processed_image_dim_px,
+        "rigid_method": config.rigid_method,
+        "refinement": asdict(config.refinement),
+        "weights": {
+            "registration": 0.60,
+            "physical_area": 0.15,
+            "shape": 0.10,
+            "hole_topology": 0.15,
+        },
+    }
 
 
 def _transform_from_oriented_coordinates(

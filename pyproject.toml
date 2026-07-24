@@ -93,6 +93,7 @@ dev = [
 histopia-register = "histopia.registration._cli:main"
 histopia-semantic = "histopia.semantic._cli:main"
 histopia-visualize = "histopia.visualization._cli:main"
+histopia-qupath = "histopia.qupath._cli:main"
 
 [project.urls]
 Homepage = "https://github.com/oncologylab/histopia"

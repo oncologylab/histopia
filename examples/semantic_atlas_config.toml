@@ -13,4 +13,4 @@ pca_components = 64
 balanced_patch_cap = 4096
 max_cross_section_distance_um = 112.0
 seed = 0
-device = "cuda"
+device = "auto"

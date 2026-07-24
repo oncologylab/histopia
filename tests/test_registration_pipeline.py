@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from histopia.registration import RegistrationConfig, register_sections
+from histopia.registration import RegistrationConfig, _pipeline, register_sections
 from histopia.registration._pipeline import (
     _crop_to_mask,
     _load_automatic_mask_snapshot,
@@ -92,3 +92,42 @@ def test_automatic_mask_snapshot_requires_exact_hash_and_slide_set(
     mask_path.write_bytes(b"changed")
     with np.testing.assert_raises_regex(ValueError, "hash mismatch"):
         _load_automatic_mask_snapshot(manifest, (slide,), {slide: image})
+
+
+def test_anchored_order_reuses_exact_distance_cache(
+    tmp_path: Path, monkeypatch
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    base = np.full((80, 80, 3), 255, dtype=np.uint8)
+    base[18:62, 22:58] = np.array([185, 100, 120], dtype=np.uint8)
+    for index, shift in enumerate((0, 2, 4), start=1):
+        Image.fromarray(np.roll(base, shift=(shift, 0), axis=(0, 1))).save(
+            input_dir / f"[#{index:03d}] section.png"
+        )
+    original = _pipeline._section_distance_matrix
+    calls = 0
+
+    def counted(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(_pipeline, "_section_distance_matrix", counted)
+    config = RegistrationConfig(
+        input_dir=input_dir,
+        output_dir=output_dir,
+        rigid_method="phase_correlation",
+        section_order_strategy="anchored_similarity",
+        max_processed_image_dim_px=80,
+    )
+
+    register_sections(config)
+    first = json.loads((output_dir / "section_order_review.json").read_text())
+    register_sections(config)
+    second = json.loads((output_dir / "section_order_review.json").read_text())
+
+    assert calls == 1
+    assert first["fingerprint"] == second["fingerprint"]
+    assert (output_dir / ".cache" / "section-order-distances.npz").is_file()

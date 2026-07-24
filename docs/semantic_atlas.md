@@ -39,6 +39,14 @@ histopia-semantic fit --config semantic-atlas.toml
 authenticated Hugging Face access. Subsequent extraction defaults to local-only
 model loading. `histopia-semantic run` combines extraction and fitting.
 
+Set `device = "auto"` to prefer CUDA, then Apple MPS, then CPU. Explicit
+`"cuda"`, `"cuda:N"`, `"mps"`, and `"cpu"` values fail clearly when the
+requested backend is unavailable. Use `histopia-semantic doctor` to inspect
+the resolved device and accelerator memory before extraction. CUDA extraction
+uses bfloat16 autocast and recursively reduces a batch after an out-of-memory
+error; CPU execution remains available for portability and small validation
+runs.
+
 By default, independent five-seed fits are evaluated for K=5 through K=15.
 Selection balances silhouette, seed stability, within-section coherence, and
 accepted cross-section continuity, rejects tiny clusters, and prefers smaller
@@ -93,3 +101,9 @@ highest-confidence links while preserving complete correspondences in result
 artifacts. Browser checks are available through the `browser-test` optional
 dependency and verify desktop layout, WebGL output, assets, and rapid sample
 switching.
+
+Viewer builds checksum their generated WEBP assets and reuse exact matches.
+`build-report.json` records elapsed time and encoded/reused asset counts for
+each build. A changed image, transform, mask, label grid, palette, or encoder
+setting produces different rendered pixels and replaces only the affected
+asset.

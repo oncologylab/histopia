@@ -86,6 +86,29 @@ def test_viewer_requires_qc_for_every_semantic_mouse(tmp_path: Path) -> None:
         )
 
 
+def test_viewer_reuses_checksum_verified_assets(tmp_path: Path) -> None:
+    run, semantic_run, _ = _write_mouse(tmp_path, "4000", with_topology=False)
+    output = tmp_path / "viewer"
+
+    build_section_viewer(
+        {"4000": run},
+        output,
+        semantic_runs={"4000": semantic_run},
+    )
+    asset = next((output / "assets" / "4000").glob("*.webp"))
+    original_mtime = asset.stat().st_mtime_ns
+    build_section_viewer(
+        {"4000": run},
+        output,
+        semantic_runs={"4000": semantic_run},
+    )
+
+    report = json.loads((output / "build-report.json").read_text())
+    assert report["assets_encoded"] == 0
+    assert report["assets_reused"] == 13
+    assert asset.stat().st_mtime_ns == original_mtime
+
+
 def _write_mouse(
     root: Path,
     mouse_id: str,

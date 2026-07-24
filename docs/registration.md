@@ -154,6 +154,13 @@ Physical tissue area remains a separate displayed measurement. Changing masks,
 cavity topology, anchors, pairwise distances, or the proposed sequence
 invalidates approval.
 
+Pairwise morphology distances are cached under the registration output
+directory because an all-pairs comparison is expensive for long stacks. The
+cache is reused only when the ordered slide set, reviewed mask pixels, physical
+geometry, quarter-turn orientation, rigid method, refinement settings, and
+distance weights match exactly. A stale, incomplete, or checksum-invalid cache
+is ignored and rebuilt; it never bypasses order fingerprint approval.
+
 Set `mask_review_path`, `mask_override_dir`, and
 `require_approved_masks = true` for production runs. Changed thumbnail pixels
 or geometry invalidate the saved approval fingerprint. Candidate overlays and

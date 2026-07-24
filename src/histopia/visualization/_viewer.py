@@ -3,9 +3,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
+import os
 import re
+import time
 from pathlib import Path
 
 import numpy as np
@@ -60,6 +63,10 @@ def build_section_viewer(
     output_dir = Path(output_dir)
     assets_dir = output_dir / "assets"
     assets_dir.mkdir(parents=True, exist_ok=True)
+    build_started = time.perf_counter()
+    old_asset_cache = _load_asset_cache(output_dir / ".histopia-asset-cache.json")
+    new_asset_cache: dict[str, dict[str, object]] = {}
+    cache_stats = {"reused": 0, "encoded": 0}
     provisional_mice = provisional_mice or set()
     semantic_runs = semantic_runs or {}
     cohort_rows = _load_cohort_rows(cohort_qc)
@@ -143,12 +150,15 @@ def build_section_viewer(
             )
             rgba = np.dstack([registered, (registered_mask * 255).astype(np.uint8)])
             filename = f"{order:03d}-{_safe_name(source_path.stem)}.webp"
-            Image.fromarray(rgba).save(
+            _write_cached_webp(
+                Image,
+                rgba,
                 mouse_assets / filename,
-                "WEBP",
-                lossless=False,
-                quality=88,
-                method=6,
+                output_dir=output_dir,
+                options={"lossless": False, "quality": 88, "method": 6},
+                old_cache=old_asset_cache,
+                new_cache=new_asset_cache,
+                stats=cache_stats,
             )
             slide_payload = {
                 "id": source_path.name,
@@ -175,8 +185,15 @@ def build_section_viewer(
                         f"{order:03d}-{_safe_name(source_path.stem)}"
                         f"-k{count}-semantic.webp"
                     )
-                    Image.fromarray(semantic_rgba).save(
-                        mouse_assets / semantic_name, "WEBP", lossless=True, method=6
+                    _write_cached_webp(
+                        Image,
+                        semantic_rgba,
+                        mouse_assets / semantic_name,
+                        output_dir=output_dir,
+                        options={"lossless": True, "method": 6},
+                        old_cache=old_asset_cache,
+                        new_cache=new_asset_cache,
+                        stats=cache_stats,
                     )
                     semantic_textures[str(count)] = (
                         f"assets/{_safe_name(mouse_id)}/{semantic_name}"
@@ -187,12 +204,15 @@ def build_section_viewer(
                     raise ValueError("selected K is missing from semantic labels")
                 blend_name = f"{order:03d}-{_safe_name(source_path.stem)}-blend.webp"
                 blended = _blend_semantic(registered, registered_mask, selected_rgba)
-                Image.fromarray(blended).save(
+                _write_cached_webp(
+                    Image,
+                    blended,
                     mouse_assets / blend_name,
-                    "WEBP",
-                    lossless=False,
-                    quality=90,
-                    method=6,
+                    output_dir=output_dir,
+                    options={"lossless": False, "quality": 90, "method": 6},
+                    old_cache=old_asset_cache,
+                    new_cache=new_asset_cache,
+                    stats=cache_stats,
                 )
                 slide_payload["semantic_textures"] = semantic_textures
                 slide_payload["semantic_texture"] = semantic_textures[
@@ -238,7 +258,94 @@ def build_section_viewer(
         _VIEWER_JS.replace("__THREE__", THREE_VERSION)
     )
     (output_dir / "styles.css").write_text(_STYLES_CSS)
+    _write_json_atomic(
+        output_dir / ".histopia-asset-cache.json",
+        {"schema_version": 1, "assets": new_asset_cache},
+    )
+    _write_json_atomic(
+        output_dir / "build-report.json",
+        {
+            "schema_version": 1,
+            "mouse_count": len(mouse_payloads),
+            "slide_count": sum(len(mouse["slides"]) for mouse in mouse_payloads),
+            "assets_reused": cache_stats["reused"],
+            "assets_encoded": cache_stats["encoded"],
+            "elapsed_seconds": round(time.perf_counter() - build_started, 3),
+        },
+    )
     return output_dir / "index.html"
+
+
+def _load_asset_cache(path: Path) -> dict[str, dict[str, object]]:
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    assets = payload.get("assets") if isinstance(payload, dict) else None
+    if not isinstance(assets, dict):
+        return {}
+    return {
+        str(name): entry
+        for name, entry in assets.items()
+        if isinstance(name, str) and isinstance(entry, dict)
+    }
+
+
+def _write_cached_webp(
+    image_module,
+    image: np.ndarray,
+    path: Path,
+    *,
+    output_dir: Path,
+    options: dict[str, object],
+    old_cache: dict[str, dict[str, object]],
+    new_cache: dict[str, dict[str, object]],
+    stats: dict[str, int],
+) -> None:
+    """Reuse an exact WEBP asset or encode and checksum a replacement."""
+
+    array = np.ascontiguousarray(image)
+    relative = path.relative_to(output_dir).as_posix()
+    digest = hashlib.sha256()
+    digest.update(b"histopia-viewer-webp-v1")
+    digest.update(str(array.dtype).encode())
+    digest.update(json.dumps(array.shape).encode())
+    digest.update(array.tobytes())
+    digest.update(json.dumps(options, sort_keys=True, separators=(",", ":")).encode())
+    input_sha256 = digest.hexdigest()
+    previous = old_cache.get(relative, {})
+    if (
+        path.is_file()
+        and previous.get("input_sha256") == input_sha256
+        and previous.get("output_sha256") == _file_sha256(path)
+    ):
+        new_cache[relative] = previous
+        stats["reused"] += 1
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    image_module.fromarray(array).save(path, "WEBP", **options)
+    new_cache[relative] = {
+        "input_sha256": input_sha256,
+        "output_sha256": _file_sha256(path),
+    }
+    stats["encoded"] += 1
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _write_json_atomic(path: Path, payload: dict[str, object]) -> None:
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        temporary.write_text(json.dumps(payload, indent=2) + "\n")
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _load_cohort_rows(

@@ -2,6 +2,10 @@
 
 **Histology Spatial Topology for Omics Profiling and Inter-section Alignment**
 
+[![Tests](https://github.com/oncologylab/histopia/actions/workflows/tests.yml/badge.svg)](https://github.com/oncologylab/histopia/actions/workflows/tests.yml)
+[![PyPI](https://img.shields.io/pypi/v/histopia.svg)](https://pypi.org/project/histopia/)
+[![Python](https://img.shields.io/pypi/pyversions/histopia.svg)](https://pypi.org/project/histopia/)
+
 Histopia is a computational research-software package for serial-section
 histology and proteomic image analysis. The long-term goal is to support
 inter-section image alignment, spatial topology reconstruction, protein and
@@ -17,85 +21,58 @@ marker intensity profiling, and later 3D reconstruction across tissue sections.
 pip install histopia
 ```
 
-For local development:
+Install only the workflow dependencies you need:
 
 ```bash
-python -m pip install -e ".[dev]"
+pip install "histopia[registration,wsi]"  # brightfield WSI registration
+pip install "histopia[semantic]"          # atlas fitting from saved features
+pip install "histopia[uni2h]"             # CPU/GPU UNI2-h extraction
+```
+
+## Workflows
+
+- **Registration:** group-aware tissue masks, reviewed section orientation and
+  order, hybrid serial/reference affine alignment, QC, and resumable WSI export.
+- **Semantic atlas:** globally fitted UNI2-h morphology regions, guarded slide
+  correction, automatic K evaluation, and cross-section topology.
+- **Visualization:** interactive 3D histology/semantic stacks with quantitative
+  QC and adjacent-section correspondence links.
+- **QuPath:** validated registration manifests and semantic GeoJSON annotations
+  in native WSI coordinates.
+
+Start with [registration](docs/registration.md),
+[semantic atlas](docs/semantic_atlas.md), or
+[QuPath integration](docs/qupath.md). Installation profiles and reproducible
+constraints are documented in
+[dependency management](docs/dependency_management.md).
+
+## Compute
+
+UNI2-h extraction supports `device = "auto"`, `"cpu"`, `"cuda"`, `"cuda:N"`,
+or `"mps"` without importing Torch at base-package import time. Inspect the
+active machine before starting a long extraction:
+
+```bash
+histopia-semantic doctor
+```
+
+Registration ordering and viewer assets use exact, checksummed caches. Any
+change to reviewed masks, geometry, orientation, transforms, semantic labels,
+or encoding settings invalidates the affected cache.
+
+## Development
+
+```bash
+git clone https://github.com/oncologylab/histopia.git
+cd histopia
+python -m pip install -e ".[dev,registration,semantic,wsi]"
 python -m pytest
 python -m ruff check .
 ```
 
-## Current Status
-
-Histopia is in early development. Registration now includes brightfield/IHC
-tissue-mask QC, hybrid serial/reference rigid alignment, conservative affine
-mask refinement, per-slide acceptance metrics, resumable full-resolution WSI
-warping, and opt-in acceptance-gated dense refinement. The current KPF
-validation supports coarse section placement, QC, and pyramidal registered TIFF
-export. OME metadata and cell-level correspondence remain under development.
-
-## Registration Development
-
-The registration module is intentionally small and dependency-light at import
-time. Install optional dependencies for active registration work:
-
-```bash
-python -m pip install -e ".[dev,registration,wsi]"
-```
-
-For reproducible local validation, use the pinned constraints file:
-
-```bash
-python -m pip install -e ".[dev,registration,wsi]" \
-    -c constraints/registration-repro.txt
-```
-
-Build a registration manifest without modifying source data:
-
-```bash
-histopia-register --manifest /path/to/registration-dataset
-```
-
-See `docs/registration.md` for the current API and validation workflow, and
-`docs/dependency_management.md` for install profiles.
-Current KPF validation notes are in `docs/kpf_registration_validation.md`.
-
-## Serial-Section Semantic Atlas
-
-Histopia can extract compact UNI2-h patch features from unregistered source
-slides, map them through accepted registration transforms, and fit one global
-semantic atlas across the section stack. Install the light analysis layer with
-`.[semantic]` or the GPU extraction stack with `.[uni2h]`.
-
-Model weights remain external and subject to their own access and license
-terms. See `docs/semantic_atlas.md` for the staged, review-gated workflow.
-
-## Visualization
-
-Interactive review generation and serving are available from the canonical
-`histopia.visualization` module and the `histopia-visualize` command. A viewer
-root always exposes its current build at the stable `/histopia/` endpoint:
-
-```bash
-histopia-visualize build /path/to/viewer-root \
-    --run sample=/path/to/registration-run \
-    --semantic-run sample=/path/to/semantic-run
-histopia-visualize serve /path/to/viewer-root --port 8765
-```
-
-The semantic topology overlay displays at most 500 high-confidence links for
-one adjacent pair. Complete correspondence arrays remain in semantic result
-artifacts.
-
-The public showcase contains seven fingerprint-approved mouse atlases spanning
-187 serial sections. It supports specimen switching, slide-by-slide navigation,
-select-all/deselect-all visibility, histology, semantic, and blended textures,
-selectable K values, and adjacent-section topology links. See
-`docs/github_pages_showcase.md` for the artifact and deployment model.
-
-A separate static registration QC portal presents reviewed tissue masks and
-orientation, H&E-anchored section order, and an interactive histology-only 3D
-registration stack without publishing raw slides or local source paths.
+Histopia remains research software. Registration and semantic results are
+fingerprinted and explicitly review-gated; current validation does not establish
+clinical use, cell-level correspondence, or final OME metadata conformance.
 
 ## License
 

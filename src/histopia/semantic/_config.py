@@ -29,7 +29,7 @@ class SemanticAtlasConfig:
     balanced_patch_cap: int = 4096
     max_cross_section_distance_um: float = 112.0
     seed: int = 0
-    device: str = "cuda"
+    device: str = "auto"
 
     def __post_init__(self) -> None:
         self.registration_run = Path(self.registration_run)
@@ -42,6 +42,15 @@ class SemanticAtlasConfig:
             )
         if not 0 <= self.min_tissue_fraction <= 1:
             raise ValueError("min_tissue_fraction must be between 0 and 1")
+        normalized_device = self.device.strip().lower()
+        if normalized_device not in {
+            "auto",
+            "cpu",
+            "cuda",
+            "mps",
+        } and not normalized_device.startswith("cuda:"):
+            raise ValueError("device must be auto, cpu, cuda, cuda:N, or mps")
+        self.device = normalized_device
         requested = (
             tuple(
                 value

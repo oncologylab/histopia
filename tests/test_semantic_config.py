@@ -15,6 +15,7 @@ def test_semantic_config_defaults_to_automatic_k_range(tmp_path) -> None:
 
     assert config.cluster_counts == tuple(range(5, 16))
     assert config.selected_clusters is None
+    assert config.device == "auto"
 
 
 def test_semantic_config_loads_legacy_explicit_cluster_counts(tmp_path) -> None:
@@ -41,4 +42,20 @@ def test_semantic_config_rejects_selected_k_outside_generated_counts(tmp_path) -
             cluster_min=5,
             cluster_max=10,
             selected_clusters=11,
+        )
+
+
+def test_semantic_config_validates_and_normalizes_device(tmp_path) -> None:
+    config = SemanticAtlasConfig(
+        registration_run=tmp_path / "registration",
+        output_dir=tmp_path / "semantic",
+        device=" CUDA:1 ",
+    )
+
+    assert config.device == "cuda:1"
+    with pytest.raises(ValueError, match="device must be"):
+        SemanticAtlasConfig(
+            registration_run=tmp_path / "registration",
+            output_dir=tmp_path / "semantic",
+            device="gpu",
         )

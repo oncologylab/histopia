@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -23,6 +24,10 @@ def main(argv: list[str] | None = None) -> int:
         description="Extract UNI2-h features and fit a global serial-section atlas."
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers.add_parser(
+        "doctor",
+        help="Report available CPU and accelerator execution backends.",
+    )
     for command in ("preflight", "extract", "fit", "run"):
         child = subparsers.add_parser(command)
         child.add_argument("--config", type=Path, required=True)
@@ -43,6 +48,11 @@ def main(argv: list[str] | None = None) -> int:
     cohort.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
 
+    if args.command == "doctor":
+        from histopia.compute import inspect_compute
+
+        print(json.dumps(inspect_compute(), indent=2))
+        return 0
     if args.command == "cache-model":
         return _cache_model(args.cache_dir)
     if args.command == "cohort-qc":
