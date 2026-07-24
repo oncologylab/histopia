@@ -1,10 +1,11 @@
 # QuPath Integration
 
 Histopia keeps GPU and Python image-analysis dependencies outside QuPath's JVM.
-The `histopia-qupath` command writes a validated interchange bundle for the
-companion Histopia QuPath extension. The extension can also launch registration
-and semantic-atlas configs through the selected Python environment, stream
-progress without blocking QuPath, and cancel the active process.
+The companion extension makes QuPath the workflow front end: users select
+slides from an open QuPath project, configure registration and semantic
+analysis, launch and cancel jobs, review registration QC, and import semantic
+regions. Python remains a child process so WSI, GPU, and model dependencies do
+not enter QuPath's JVM.
 
 ```bash
 pip install "histopia[qupath]"
@@ -51,12 +52,28 @@ Download the
 [latest companion extension release](https://github.com/oncologylab/qupath-extension-histopia/releases/latest),
 verify the accompanying SHA-256 checksum, and drag the JAR onto QuPath 0.7.
 Restart QuPath, then open
-**Extensions > Histopia > Open Histopia tools**. Its two tabs support:
+**Extensions > Histopia > Open Histopia tools**.
 
-- running `histopia-register --config ...` from a registration TOML or JSON
-- running `histopia-semantic run --config ...`, with optional authenticated
-  model download
-- live process output and explicit cancellation
+The primary **Project workflow** tab supports:
+
+- exact multi-selection from local WSI entries in the open QuPath project
+- QuPath project order, morphology-only sorting, or morphology sorting with a
+  selected reference fixed at position 1
+- automatic or explicit registration reference selection
+- registration resolution and worker controls
+- semantic device, K range, batch-size, patch-reader, and model-cache controls
+- live process output, cancellation, opening the registration QC directory,
+  and reviewer/notes-based approval
+- direct semantic execution from the approved registration workspace
+
+The extension writes runtime-only configs and an exact slide-selection
+manifest under `<workspace>/.histopia`. Selected slides may come from different
+directories, but each must have a unique filename and a single local NDPI, SCN,
+SVS, TIFF, or OME-TIFF source URI.
+
+The **Run analysis** tab retains advanced config-file execution. The **Export
+and import** tab supports:
+
 - loading all available K values from a semantic result, defaulting to the
   atlas-selected K
 - exporting the schema-2 bundle and importing the matching open slide

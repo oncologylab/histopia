@@ -68,3 +68,19 @@ def test_registration_config_rejects_unknown_keys(tmp_path: Path) -> None:
                 "typo": True,
             }
         )
+
+
+def test_registration_config_accepts_exact_external_slide_selection(
+    tmp_path: Path,
+) -> None:
+    slides = (tmp_path / "second.ndpi", tmp_path / "first.scn")
+
+    config = _config_from_mapping(
+        {
+            "input_dir": str(tmp_path),
+            "input_slides": [str(path) for path in slides],
+            "output_dir": str(tmp_path / "output"),
+        }
+    )
+
+    assert config.input_slides == slides

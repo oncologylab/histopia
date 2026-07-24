@@ -1,4 +1,7 @@
 input_dir = "/path/to/validation-data/mouse-1/raw_wsi"
+# For QuPath or another external UI, input_slides may select exact files
+# across directories. Their listed order is preserved as the initial order.
+# input_slides = ["/path/to/slide-1.ndpi", "/another/path/to/slide-2.scn"]
 output_dir = "/tmp/histopia-registration-runs/4577/example"
 reference_policy = "best_connected"
 section_order_strategy = "natural"

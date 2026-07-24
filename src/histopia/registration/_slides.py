@@ -126,6 +126,39 @@ def discover_slides(
     return tuple(sorted(paths, key=_natural_key))
 
 
+def validate_slide_selection(
+    paths: tuple[Path | str, ...],
+    *,
+    wsi_only: bool = False,
+) -> tuple[Path, ...]:
+    """Validate an exact, ordered slide selection supplied by an external UI."""
+
+    extensions = (
+        WSI_EXTENSIONS if wsi_only else WSI_EXTENSIONS | STANDARD_IMAGE_EXTENSIONS
+    )
+    selected: list[Path] = []
+    names: set[str] = set()
+    resolved_paths: set[Path] = set()
+    for value in paths:
+        path = Path(value).expanduser().resolve()
+        if not path.is_file():
+            raise FileNotFoundError(f"selected registration slide not found: {path}")
+        if path.suffix.lower() not in extensions:
+            raise ValueError(f"unsupported selected registration slide: {path}")
+        if _is_derived_or_label_image(path):
+            raise ValueError(f"derived image cannot be a registration input: {path}")
+        if path in resolved_paths:
+            raise ValueError(f"duplicate selected registration slide: {path}")
+        if path.name in names:
+            raise ValueError(
+                f"selected registration slide filenames must be unique: {path.name}"
+            )
+        selected.append(path)
+        resolved_paths.add(path)
+        names.add(path.name)
+    return tuple(selected)
+
+
 def load_slide_thumbnail(
     path: Path | str,
     max_dim_px: int,

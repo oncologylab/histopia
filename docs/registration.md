@@ -108,6 +108,14 @@ max_jacobian_p99 = 4.0
 max_inverse_consistency_fraction = 0.02
 ```
 
+External workflow UIs such as the Histopia QuPath extension can supply
+`input_slides` as an exact ordered list of absolute paths. This supports a
+QuPath project cohort whose source slides are stored in different directories.
+Histopia validates every path and rejects duplicate files, unsupported formats,
+derived images, and duplicate filenames before reading slide pixels. The list
+order is the initial physical order; configured similarity ordering may then
+propose a reviewed replacement.
+
 `mode = "full"` is available only for legacy reproduction and debugging. The
 default production path should use `auto_tissue`.
 

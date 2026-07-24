@@ -73,6 +73,7 @@ from histopia.registration._slides import (
     SlideGeometry,
     discover_slides,
     load_slide_thumbnail,
+    validate_slide_selection,
 )
 from histopia.registration._wsi import (
     WsiWarpResult,
@@ -170,9 +171,14 @@ class RegistrationResult:
 def register_sections(config: RegistrationConfig) -> RegistrationResult:
     """Run rigid thumbnail registration for a serial-section image folder."""
 
-    slide_paths = discover_slides(config.input_dir, wsi_only=config.wsi_only)
+    slide_paths = (
+        validate_slide_selection(config.input_slides, wsi_only=config.wsi_only)
+        if config.input_slides
+        else discover_slides(config.input_dir, wsi_only=config.wsi_only)
+    )
     if not slide_paths:
-        msg = f"no registration input slides found in {config.input_dir}"
+        source = "input_slides" if config.input_slides else config.input_dir
+        msg = f"no registration input slides found in {source}"
         raise FileNotFoundError(msg)
 
     if config.section_order_strategy != "anchored_similarity":

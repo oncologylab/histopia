@@ -4,8 +4,44 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from histopia.registration import _slides
+
+
+def test_exact_slide_selection_preserves_external_ui_order(tmp_path: Path) -> None:
+    first = tmp_path / "first.ndpi"
+    second = tmp_path / "second.scn"
+    first.touch()
+    second.touch()
+
+    selected = _slides.validate_slide_selection((second, first), wsi_only=True)
+
+    assert selected == (second.resolve(), first.resolve())
+
+
+def test_exact_slide_selection_rejects_duplicate_filenames(tmp_path: Path) -> None:
+    first = tmp_path / "one" / "section.ndpi"
+    second = tmp_path / "two" / "section.ndpi"
+    first.parent.mkdir()
+    second.parent.mkdir()
+    first.touch()
+    second.touch()
+
+    with pytest.raises(ValueError, match="filenames must be unique"):
+        _slides.validate_slide_selection((first, second), wsi_only=True)
+
+
+def test_exact_slide_selection_rejects_missing_or_derived_inputs(
+    tmp_path: Path,
+) -> None:
+    derived = tmp_path / "section.thumbnail.png"
+    derived.touch()
+
+    with pytest.raises(ValueError, match="derived image"):
+        _slides.validate_slide_selection((derived,))
+    with pytest.raises(FileNotFoundError, match="not found"):
+        _slides.validate_slide_selection((tmp_path / "missing.ndpi",))
 
 
 def test_wsi_thumbnail_retries_a_finer_pyramid_level_after_decode_error(

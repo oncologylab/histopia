@@ -99,6 +99,7 @@ class RegistrationConfig:
 
     input_dir: Path
     output_dir: Path
+    input_slides: tuple[Path, ...] = ()
     reference_slide: str | None = None
     reference_policy: Literal["explicit", "best_connected"] = "best_connected"
     section_order_path: Path | None = None
@@ -137,6 +138,7 @@ class RegistrationConfig:
     def __post_init__(self) -> None:
         self.input_dir = Path(self.input_dir)
         self.output_dir = Path(self.output_dir)
+        self.input_slides = tuple(Path(path) for path in self.input_slides)
         if self.registered_reference_dir is not None:
             self.registered_reference_dir = Path(self.registered_reference_dir)
         if self.section_order_path is not None:

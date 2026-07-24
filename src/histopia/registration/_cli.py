@@ -252,6 +252,7 @@ def _config_from_mapping(data: dict[str, Any]) -> RegistrationConfig:
     config = RegistrationConfig(
         input_dir=Path(data.pop("input_dir")),
         output_dir=Path(data.pop("output_dir")),
+        input_slides=tuple(Path(path) for path in data.pop("input_slides", ())),
         reference_slide=data.pop("reference_slide", None),
         reference_policy=data.pop("reference_policy", "best_connected"),
         section_order_path=Path(section_order_value) if section_order_value else None,
