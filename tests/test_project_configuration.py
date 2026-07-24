@@ -42,8 +42,9 @@ def test_uni2h_repro_extra_matches_checked_in_constraints() -> None:
 def test_pages_workflow_uses_fingerprinted_release_artifact() -> None:
     workflow = Path(".github/workflows/pages.yml").read_text()
 
-    assert "actions/upload-pages-artifact@v4" in workflow
-    assert "actions/deploy-pages@v4" in workflow
+    assert "actions/configure-pages@v6" in workflow
+    assert "actions/upload-pages-artifact@v5" in workflow
+    assert "actions/deploy-pages@v5" in workflow
     assert "SHOWCASE_SHA256:" in workflow
     assert "sha256sum --check" in workflow
     assert "find _site -type l" in workflow
