@@ -41,6 +41,10 @@ def test_readme_links_to_interactive_pages_showcase() -> None:
     readme = Path("README.md").read_text()
 
     assert "https://oncologylab.github.io/histopia/" in readme
+    assert (
+        "https://github.com/oncologylab/qupath-extension-histopia/releases/latest"
+        in readme
+    )
 
 
 def test_registration_config_rejects_unknown_keys(tmp_path: Path) -> None:

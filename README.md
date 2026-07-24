@@ -5,14 +5,16 @@
 [![Tests](https://github.com/oncologylab/histopia/actions/workflows/tests.yml/badge.svg)](https://github.com/oncologylab/histopia/actions/workflows/tests.yml)
 [![PyPI](https://img.shields.io/pypi/v/histopia.svg)](https://pypi.org/project/histopia/)
 [![Python](https://img.shields.io/pypi/pyversions/histopia.svg)](https://pypi.org/project/histopia/)
+[![QuPath](https://img.shields.io/github/v/release/oncologylab/qupath-extension-histopia?label=QuPath)](https://github.com/oncologylab/qupath-extension-histopia/releases/latest)
 
-Histopia is a computational research-software package for serial-section
-histology and proteomic image analysis. The long-term goal is to support
-inter-section image alignment, spatial topology reconstruction, protein and
-marker intensity profiling, and later 3D reconstruction across tissue sections.
+Histopia is computational research software for serial-section histology and
+proteomic image analysis. It provides reviewed inter-section alignment,
+group-aware tissue masking, global morphology segmentation, spatial topology,
+and interactive 3D reconstruction across tissue sections.
 
 **[Launch the interactive 3D semantic atlas](https://oncologylab.github.io/histopia/)**
 | **[Registration QC showcase](https://oncologylab.github.io/histopia/qc/)**
+| [QuPath extension](https://github.com/oncologylab/qupath-extension-histopia/releases/latest)
 | [PyPI](https://pypi.org/project/histopia/)
 
 ## Installation
@@ -40,6 +42,7 @@ pip install "histopia[qupath]"            # QuPath extension bridge
   QC and adjacent-section correspondence links.
 - **QuPath:** extension-launched registration and semantic jobs, compact
   checksummed GeoJSON regions, dynamic K selection, and native WSI coordinates.
+  Install the [QuPath 0.7 extension release](https://github.com/oncologylab/qupath-extension-histopia/releases/latest).
 
 Start with [registration](docs/registration.md),
 [semantic atlas](docs/semantic_atlas.md), or

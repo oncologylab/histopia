@@ -47,7 +47,10 @@ new export is being written.
 
 ## QuPath Extension
 
-Build or install the companion extension, then open
+Download the
+[latest companion extension release](https://github.com/oncologylab/qupath-extension-histopia/releases/latest),
+verify the accompanying SHA-256 checksum, and drag the JAR onto QuPath 0.7.
+Restart QuPath, then open
 **Extensions > Histopia > Open Histopia tools**. Its two tabs support:
 
 - running `histopia-register --config ...` from a registration TOML or JSON
@@ -65,7 +68,7 @@ the Python package as a child process; GPU, WSI, and model dependencies remain
 in the Python environment rather than QuPath's JVM. Configure and test that
 environment independently with `histopia-semantic doctor`.
 
-The companion extension is maintained separately at
+Source code and release history are maintained separately at
 [`oncologylab/qupath-extension-histopia`](https://github.com/oncologylab/qupath-extension-histopia).
 This follows QuPath's recommended extension layout and keeps its Java/Gradle
 licensing and release lifecycle separate from the Python package.

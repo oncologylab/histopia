@@ -100,6 +100,9 @@ histopia-qupath = "histopia.qupath._cli:main"
 
 [project.urls]
 Homepage = "https://github.com/oncologylab/histopia"
+Documentation = "https://github.com/oncologylab/histopia/tree/main/docs"
+Interactive-Demo = "https://oncologylab.github.io/histopia/"
+QuPath-Extension = "https://github.com/oncologylab/qupath-extension-histopia/releases/latest"
 Repository = "https://github.com/oncologylab/histopia"
 Issues = "https://github.com/oncologylab/histopia/issues"
 
