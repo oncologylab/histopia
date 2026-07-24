@@ -34,6 +34,12 @@ packaged runtime checksums during every build, records the version in
 `build-report.json`, and includes the runtime files in the static artifact
 inventory.
 
+Rendering is demand-driven. The viewer redraws while sections load and while
+the camera is moving, then stops requesting animation frames when the scene is
+idle. Browser tests verify that the canvas remains populated after rendering
+stops, which reduces background CPU and GPU use without changing scientific
+textures.
+
 ## Registration QC Portal
 
 The same release contains a separate `/qc/` portal for approved workflow
