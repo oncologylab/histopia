@@ -18,7 +18,11 @@ from histopia.registration._nonrigid import (
     estimate_non_rigid_transform,
     warp_with_displacement,
 )
-from histopia.registration._ordering import SectionOrderProposal
+from histopia.registration._ordering import (
+    CavityContinuitySummary,
+    SectionOrderProposal,
+    summarize_cavity_continuity,
+)
 from histopia.registration._orientation import (
     GroupOrientation,
     OrientationDecision,
@@ -71,6 +75,7 @@ __all__ = [
     "SlideGeometry",
     "SlideRecord",
     "SectionOrderProposal",
+    "CavityContinuitySummary",
     "WsiWarpResult",
     "build_kpf_manifest",
     "build_section_viewer",
@@ -86,6 +91,7 @@ __all__ = [
     "normalize_slide_stem",
     "orient_section_group",
     "register_sections",
+    "summarize_cavity_continuity",
     "thumbnail_to_full_resolution_matrix",
     "warp_saved_registration",
     "warp_slide_to_reference",

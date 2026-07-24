@@ -6,6 +6,7 @@ import numpy as np
 from histopia.registration._ordering import (
     order_is_approved,
     propose_anchored_order,
+    summarize_cavity_continuity,
     write_order_proposal,
 )
 from histopia.registration._pipeline import (
@@ -120,7 +121,7 @@ def test_order_fingerprint_changes_with_accepted_mask_input() -> None:
     )
 
     assert baseline.fingerprint != changed.fingerprint
-    assert baseline.to_json_dict()["schema_version"] == 2
+    assert baseline.to_json_dict()["schema_version"] == 3
     assert baseline.to_json_dict()["input_fingerprints"]["A"] == "mask-b"
 
 
@@ -137,6 +138,53 @@ def test_order_proposal_records_physical_calibration() -> None:
     assert payload["physically_calibrated"] is True
     assert payload["slides"][1]["distance_from_previous"] == 0.2
     assert payload["slides"][1]["physical_tissue_area_um2"] == 1_800_000.0
+
+
+def test_order_proposal_records_cavity_continuity() -> None:
+    names = ("HE", "A", "B", "C", "D", "E")
+    fractions = {
+        "HE": 0.05,
+        "A": 0.03,
+        "B": 0.0,
+        "C": 0.0,
+        "D": 0.02,
+        "E": 0.06,
+    }
+    proposal = propose_anchored_order(
+        names,
+        np.zeros((6, 6)),
+        {"HE": 1, "A": 2, "B": 3, "C": 4, "D": 5, "E": 6},
+        cavity_fractions=fractions,
+    )
+
+    payload = proposal.to_json_dict()
+
+    assert payload["schema_version"] == 3
+    assert payload["cavity_continuity"]["blocks"] == [
+        {"start_order": 1, "end_order": 2},
+        {"start_order": 5, "end_order": 6},
+    ]
+    assert payload["cavity_continuity"]["review_recommended"] is True
+    assert payload["slides"][0]["largest_internal_cavity_fraction"] == 0.05
+
+
+def test_cavity_continuity_bridges_borderline_single_slide_gaps() -> None:
+    names = tuple(str(index) for index in range(1, 9))
+    fractions = {
+        "1": 0.02,
+        "2": 0.05,
+        "3": 0.02,
+        "4": 0.0,
+        "5": 0.03,
+        "6": 0.05,
+        "7": 0.02,
+        "8": 0.0,
+    }
+
+    summary = summarize_cavity_continuity(names, fractions)
+
+    assert summary.blocks == ((1, 7),)
+    assert summary.review_recommended is False
 
 
 def test_fixed_position_reader_rejects_unknown_anchor(tmp_path: Path) -> None:

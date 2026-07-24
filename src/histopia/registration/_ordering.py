@@ -11,6 +11,36 @@ import numpy as np
 
 
 @dataclass(frozen=True, slots=True)
+class CavityContinuitySummary:
+    """Describe substantial internal-cavity continuity along a proposed stack."""
+
+    blocks: tuple[tuple[int, int], ...]
+    weak_threshold: float
+    strong_threshold: float
+    bridge_gap: int
+
+    @property
+    def review_recommended(self) -> bool:
+        """Return whether substantial cavities form multiple separated blocks."""
+
+        return len(self.blocks) > 1
+
+    def to_json_dict(self) -> dict[str, object]:
+        """Return one-based block bounds suitable for review metadata."""
+
+        return {
+            "blocks": [
+                {"start_order": start, "end_order": end} for start, end in self.blocks
+            ],
+            "block_count": len(self.blocks),
+            "review_recommended": self.review_recommended,
+            "weak_threshold": self.weak_threshold,
+            "strong_threshold": self.strong_threshold,
+            "bridge_gap": self.bridge_gap,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class SectionOrderProposal:
     """A deterministic proposal that preserves explicitly anchored slots."""
 
@@ -23,11 +53,15 @@ class SectionOrderProposal:
     physical_areas_um2: dict[str, float | None] | None = None
     input_fingerprints: dict[str, str] | None = None
     orientation_quarter_turns: dict[str, int] | None = None
+    cavity_fractions: dict[str, float] | None = None
 
     def to_json_dict(self, *, approved: bool = False) -> dict[str, object]:
+        cavity_summary = summarize_cavity_continuity(
+            self.slides, self.cavity_fractions or {}
+        )
         return {
-            "schema_version": 2,
-            "algorithm": "anchored-morphology-v2",
+            "schema_version": 3,
+            "algorithm": "anchored-morphology-v3",
             "approved": approved,
             "fingerprint": self.fingerprint,
             "objective": self.objective,
@@ -41,6 +75,7 @@ class SectionOrderProposal:
             "input_fingerprints": self.input_fingerprints or {},
             "physically_calibrated": bool(self.physical_areas_um2)
             and all(area is not None for area in self.physical_areas_um2.values()),
+            "cavity_continuity": cavity_summary.to_json_dict(),
             "slides": [
                 {
                     "order": index + 1,
@@ -57,6 +92,11 @@ class SectionOrderProposal:
                     "quarter_turns_ccw": (self.orientation_quarter_turns or {}).get(
                         slide, 0
                     ),
+                    "largest_internal_cavity_fraction": (
+                        self.cavity_fractions.get(slide)
+                        if self.cavity_fractions is not None
+                        else None
+                    ),
                 }
                 for index, slide in enumerate(self.slides)
             ],
@@ -72,6 +112,7 @@ def propose_anchored_order(
     physical_areas_um2: dict[str, float | None] | None = None,
     input_fingerprints: dict[str, str] | None = None,
     orientation_quarter_turns: dict[str, int] | None = None,
+    cavity_fractions: dict[str, float] | None = None,
 ) -> SectionOrderProposal:
     """Optimize morphology continuity without moving fixed sequence slots."""
 
@@ -99,6 +140,19 @@ def propose_anchored_order(
                 "input fingerprints must exactly match slides "
                 f"(missing={sorted(missing)}, extra={sorted(extra)})"
             )
+    if cavity_fractions is not None:
+        missing = set(slide_names) - set(cavity_fractions)
+        extra = set(cavity_fractions) - set(slide_names)
+        if missing or extra:
+            raise ValueError(
+                "cavity fractions must exactly match slides "
+                f"(missing={sorted(missing)}, extra={sorted(extra)})"
+            )
+        if any(
+            not np.isfinite(value) or value < 0 or value > 1
+            for value in cavity_fractions.values()
+        ):
+            raise ValueError("cavity fractions must be between zero and one")
 
     index = {name: offset for offset, name in enumerate(slide_names)}
     fixed_by_position = {position: name for name, position in fixed_positions.items()}
@@ -159,23 +213,81 @@ def propose_anchored_order(
         physical_areas_um2=physical_areas_um2,
         input_fingerprints=input_fingerprints,
         orientation_quarter_turns=orientation_quarter_turns,
+        cavity_fractions=cavity_fractions,
     )
     adjacent_distances = tuple(
         float(matrix[index[first], index[second]])
         for first, second in zip(ordered, ordered[1:], strict=False)
     )
     return SectionOrderProposal(
-        ordered,
-        dict(fixed_positions),
-        fingerprint,
-        objective,
-        runner_up,
-        adjacent_distances,
-        dict(physical_areas_um2) if physical_areas_um2 is not None else None,
-        dict(input_fingerprints) if input_fingerprints is not None else None,
-        dict(orientation_quarter_turns)
-        if orientation_quarter_turns is not None
-        else None,
+        slides=ordered,
+        fixed_positions=dict(fixed_positions),
+        fingerprint=fingerprint,
+        objective=objective,
+        runner_up_objective=runner_up,
+        adjacent_distances=adjacent_distances,
+        physical_areas_um2=(
+            dict(physical_areas_um2) if physical_areas_um2 is not None else None
+        ),
+        input_fingerprints=(
+            dict(input_fingerprints) if input_fingerprints is not None else None
+        ),
+        orientation_quarter_turns=(
+            dict(orientation_quarter_turns)
+            if orientation_quarter_turns is not None
+            else None
+        ),
+        cavity_fractions=(
+            dict(cavity_fractions) if cavity_fractions is not None else None
+        ),
+    )
+
+
+def summarize_cavity_continuity(
+    slides: tuple[str, ...],
+    cavity_fractions: dict[str, float],
+    *,
+    weak_threshold: float = 0.015,
+    strong_threshold: float = 0.04,
+    bridge_gap: int = 1,
+) -> CavityContinuitySummary:
+    """Find graded cavity blocks while tolerating borderline single-slide gaps."""
+
+    if not cavity_fractions:
+        return CavityContinuitySummary((), weak_threshold, strong_threshold, bridge_gap)
+    if set(slides) != set(cavity_fractions):
+        raise ValueError("cavity fractions must exactly match slides")
+    if not 0 <= weak_threshold <= strong_threshold <= 1:
+        raise ValueError("cavity thresholds must satisfy 0 <= weak <= strong <= 1")
+    if bridge_gap < 0:
+        raise ValueError("bridge_gap must be non-negative")
+    if any(
+        not np.isfinite(value) or value < 0 or value > 1
+        for value in cavity_fractions.values()
+    ):
+        raise ValueError("cavity fractions must be between zero and one")
+
+    values = [cavity_fractions[slide] for slide in slides]
+    has_strong_cavity = any(value >= strong_threshold for value in values)
+    active = [value >= weak_threshold for value in values]
+    active_indices = [index for index, value in enumerate(active) if value]
+    for first, second in zip(active_indices, active_indices[1:], strict=False):
+        if second - first - 1 <= bridge_gap:
+            active[first : second + 1] = [True] * (second - first + 1)
+
+    blocks: list[tuple[int, int]] = []
+    start: int | None = None
+    for index, is_active in enumerate((*active, False)):
+        if is_active and start is None:
+            start = index
+        elif not is_active and start is not None:
+            if not has_strong_cavity or any(
+                value >= strong_threshold for value in values[start:index]
+            ):
+                blocks.append((start + 1, index))
+            start = None
+    return CavityContinuitySummary(
+        tuple(blocks), weak_threshold, strong_threshold, bridge_gap
     )
 
 
@@ -222,9 +334,10 @@ def _fingerprint(
     physical_areas_um2: dict[str, float | None] | None,
     input_fingerprints: dict[str, str] | None,
     orientation_quarter_turns: dict[str, int] | None,
+    cavity_fractions: dict[str, float] | None,
 ) -> str:
     payload = {
-        "algorithm": "anchored-morphology-v2",
+        "algorithm": "anchored-morphology-v3",
         "slides": slides,
         "fixed_positions": sorted(fixed_positions.items()),
         "distances": np.round(matrix, 8).tolist(),
@@ -235,6 +348,7 @@ def _fingerprint(
             sorted(input_fingerprints.items()) if input_fingerprints else []
         ),
         "orientation_quarter_turns": sorted((orientation_quarter_turns or {}).items()),
+        "cavity_fractions": sorted((cavity_fractions or {}).items()),
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
