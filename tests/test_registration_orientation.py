@@ -171,6 +171,35 @@ def test_orientation_override_defaults_unspecified_slides_to_zero(tmp_path) -> N
     }
 
 
+def test_orientation_override_loads_serialized_group_orientation(tmp_path) -> None:
+    anchor = _asymmetric_mask()
+    proposal = orient_section_group(
+        {"anchor": anchor, "rotated.ndpi": np.rot90(anchor, 1)},
+        anchor="anchor",
+    )
+    path = tmp_path / "orientation.json"
+    path.write_text(json.dumps(proposal.to_json_dict()))
+
+    assert load_orientation_overrides(
+        path,
+        ("anchor", "rotated.ndpi"),
+    ) == {
+        "anchor": 0,
+        "rotated.ndpi": 3,
+    }
+
+
+def test_orientation_override_rejects_non_object_mapping_value(tmp_path) -> None:
+    path = tmp_path / "orientation.json"
+    path.write_text(json.dumps({"slides": {"broken.ndpi": 1}}))
+
+    with pytest.raises(
+        ValueError,
+        match="each section orientation decision must be an object",
+    ):
+        load_orientation_overrides(path, ("broken.ndpi",))
+
+
 def test_oriented_transform_maps_original_slide_coordinates() -> None:
     working = RigidTransformResult(np.eye(3), "identity", 0, 0, [])
 

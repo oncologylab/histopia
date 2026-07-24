@@ -130,6 +130,12 @@ bridge a block. Multiple separated blocks are marked for human review. Set
 `require_approved_order = true` to stop before registration until the exact
 fingerprint is approved.
 
+Quarter-turn proposals produced by `orient_section_group(...).to_json_dict()`
+can be passed directly as `section_orientation_path`. The loader also accepts
+the explicit `{"slides": [{"slide": ..., "quarter_turns_ccw": ...}]}` form.
+The approved order fingerprint includes these turns, so changing an orientation
+invalidates order approval.
+
 Build a fixed-height visual review from the generated proposal and processed
 images:
 

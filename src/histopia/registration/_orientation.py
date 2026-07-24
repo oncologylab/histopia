@@ -170,8 +170,16 @@ def load_orientation_overrides(
         return turns
     payload = json.loads(path.read_text())
     rows = payload.get("slides")
+    if isinstance(rows, dict):
+        rows = [
+            {"slide": slide, **decision}
+            for slide, decision in rows.items()
+            if isinstance(decision, dict)
+        ]
+        if len(rows) != len(payload["slides"]):
+            raise ValueError("each section orientation decision must be an object")
     if not isinstance(rows, list):
-        raise ValueError("section orientation file must contain a slides list")
+        raise ValueError("section orientation file must contain slides")
     seen: set[str] = set()
     for row in rows:
         if not isinstance(row, dict) or "slide" not in row:
