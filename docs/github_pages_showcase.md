@@ -16,6 +16,8 @@ selected mice, rejects duplicate or local absolute paths, refuses unapproved
 semantic results, and writes:
 
 - the browser entry point, JavaScript, CSS, and selected static textures;
+- a pinned Three.js runtime and its license, so the viewer has no CDN or
+  third-party runtime request;
 - a selected-cohort `manifest.json`;
 - `.nojekyll` for static hosting; and
 - `showcase.json`, which records each semantic fingerprint and the SHA-256
@@ -26,6 +28,11 @@ The current public artifact contains 16 reviewed registration stacks spanning
 atlases. The viewer permits specimen switching, slide-by-slide navigation,
 select-all/deselect-all visibility, histology/semantic/blended rendering, K=5
 through K=15 exploration, and adjacent-section topology links.
+
+The viewer runtime is pinned to Three.js 0.170.0. Histopia verifies the
+packaged runtime checksums during every build, records the version in
+`build-report.json`, and includes the runtime files in the static artifact
+inventory.
 
 ## Registration QC Portal
 
@@ -56,8 +63,8 @@ available without changing the accepted main viewer.
 Generated textures and manifests are not tracked in the source repository. The
 approved showcase is packaged as a versioned GitHub Release asset. The Pages
 workflow downloads the exact release URL, verifies the archive SHA-256, checks
-that it contains no symbolic links, and deploys it through the GitHub Pages
-artifact workflow.
+that it contains no symbolic links and both local viewer runtimes, and deploys
+it through the GitHub Pages artifact workflow.
 
 To publish a new exact cohort:
 

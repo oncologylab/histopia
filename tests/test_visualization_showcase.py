@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from histopia.visualization import export_static_showcase
+from histopia.visualization._viewer import _write_viewer_runtime
 
 
 def _write_viewer(root: Path) -> None:
@@ -14,6 +15,7 @@ def _write_viewer(root: Path) -> None:
     (root / "assets" / "4943").mkdir()
     for name in ("index.html", "viewer.js", "styles.css"):
         (root / name).write_text(f"{name}\n")
+    _write_viewer_runtime(root)
     (root / "assets" / "5997" / "section.webp").write_bytes(b"5997")
     (root / "assets" / "4257" / "section.webp").write_bytes(b"4257")
     (root / "assets" / "4943" / "section.webp").write_bytes(b"4943")
@@ -76,6 +78,7 @@ def test_export_static_showcase_copies_only_selected_mice(tmp_path: Path) -> Non
     assert (output / "assets" / "4257" / "section.webp").read_bytes() == b"4257"
     assert not (output / "assets" / "4943").exists()
     assert (output / ".nojekyll").exists()
+    assert (output / "vendor" / "three.module.min.js").is_file()
     inventory = json.loads((output / "showcase.json").read_text())
     assert inventory["mouse_ids"] == ["5997", "4257"]
     assert inventory["semantic_results"] == {
@@ -89,6 +92,7 @@ def test_export_static_showcase_copies_only_selected_mice(tmp_path: Path) -> Non
         },
     }
     assert "manifest.json" in inventory["files"]
+    assert "vendor/three.module.min.js" in inventory["files"]
     assert all(
         len(metadata["sha256"]) == 64 for metadata in inventory["files"].values()
     )

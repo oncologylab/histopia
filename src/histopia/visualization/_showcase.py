@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 _VIEWER_FILES = ("index.html", "viewer.js", "styles.css")
+_VIEWER_DIRECTORIES = ("vendor",)
 _WINDOWS_ABSOLUTE = re.compile(r"^[A-Za-z]:[\\/]")
 
 
@@ -77,10 +78,15 @@ def export_static_showcase(
     for filename in _VIEWER_FILES:
         if not (source / filename).is_file():
             raise FileNotFoundError(f"viewer file not found: {filename}")
+    for directory in _VIEWER_DIRECTORIES:
+        if not (source / directory).is_dir():
+            raise FileNotFoundError(f"viewer directory not found: {directory}")
 
     output.mkdir(parents=True, exist_ok=True)
     for filename in _VIEWER_FILES:
         shutil.copy2(source / filename, output / filename)
+    for directory in _VIEWER_DIRECTORIES:
+        shutil.copytree(source / directory, output / directory)
     for mouse_id in selected_ids:
         shutil.copytree(source / "assets" / mouse_id, output / "assets" / mouse_id)
     (output / "manifest.json").write_text(json.dumps(static_manifest, indent=2) + "\n")

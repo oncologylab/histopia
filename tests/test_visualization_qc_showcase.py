@@ -15,7 +15,7 @@ from histopia.visualization._viewer import (
     _INDEX_HTML,
     _STYLES_CSS,
     _VIEWER_JS,
-    THREE_VERSION,
+    _write_viewer_runtime,
 )
 
 
@@ -23,6 +23,7 @@ def _write_source(root: Path) -> None:
     for name in ("index.html", "viewer.js", "styles.css"):
         (root / name).parent.mkdir(parents=True, exist_ok=True)
         (root / name).write_text(f"{name}\n")
+    _write_viewer_runtime(root)
     mice = []
     for mouse_id in ("4435", "4943", "unused"):
         asset = root / "assets" / mouse_id / "section.webp"
@@ -76,6 +77,7 @@ def test_export_registration_qc_showcase_selects_sanitized_mice(
     assert (
         output / "registration" / "assets" / "4943" / "section.webp"
     ).read_bytes() == b"4943"
+    assert (output / "registration" / "vendor" / "three.module.min.js").is_file()
     assert not (output / "registration" / "assets" / "unused").exists()
     assert (output / "reviews" / "4435" / "mask" / "mask.jpg").exists()
     assert (output / ".nojekyll").exists()
@@ -141,8 +143,8 @@ def test_registration_qc_portal_switches_embedded_mouse(tmp_path: Path) -> None:
     source = tmp_path / "source"
     output = tmp_path / "site" / "histopia" / "qc"
     _write_source(source)
-    (source / "index.html").write_text(_INDEX_HTML.replace("__THREE__", THREE_VERSION))
-    (source / "viewer.js").write_text(_VIEWER_JS.replace("__THREE__", THREE_VERSION))
+    (source / "index.html").write_text(_INDEX_HTML)
+    (source / "viewer.js").write_text(_VIEWER_JS)
     (source / "styles.css").write_text(_STYLES_CSS)
     for mouse_id in ("4435", "4943", "unused"):
         Image.new("RGBA", (24, 16), (80, 120, 160, 255)).save(

@@ -8,6 +8,7 @@ from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
 
 from histopia.visualization._showcase import (
+    _VIEWER_DIRECTORIES,
     _VIEWER_FILES,
     _file_inventory,
     _reject_local_paths,
@@ -175,6 +176,13 @@ def export_registration_qc_showcase(
                     if not source_file.is_file():
                         raise FileNotFoundError(f"viewer file not found: {filename}")
                     shutil.copy2(source_file, registration / filename)
+                for directory in _VIEWER_DIRECTORIES:
+                    source_directory = source / directory
+                    if not source_directory.is_dir():
+                        raise FileNotFoundError(
+                            f"viewer directory not found: {directory}"
+                        )
+                    shutil.copytree(source_directory, registration / directory)
             slides = []
             for slide in mouse.get("slides", []):
                 texture = _relative_asset(str(slide["texture"]), mouse_id)

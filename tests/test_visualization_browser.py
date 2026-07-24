@@ -14,7 +14,7 @@ from histopia.visualization._viewer import (
     _INDEX_HTML,
     _STYLES_CSS,
     _VIEWER_JS,
-    THREE_VERSION,
+    _write_viewer_runtime,
 )
 
 
@@ -30,9 +30,10 @@ def test_viewer_fits_desktop_and_ignores_stale_mouse_loads(tmp_path: Path) -> No
         _browser_mouse(assets, "second", 3, (30, 120, 180)),
     ]
     (site / "manifest.json").write_text(json.dumps({"schema_version": 1, "mice": mice}))
-    (site / "index.html").write_text(_INDEX_HTML.replace("__THREE__", THREE_VERSION))
-    (site / "viewer.js").write_text(_VIEWER_JS.replace("__THREE__", THREE_VERSION))
+    (site / "index.html").write_text(_INDEX_HTML)
+    (site / "viewer.js").write_text(_VIEWER_JS)
     (site / "styles.css").write_text(_STYLES_CSS)
+    _write_viewer_runtime(site)
 
     server = create_viewer_server(root, bind="127.0.0.1", port=0)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -49,6 +50,16 @@ def test_viewer_fits_desktop_and_ignores_stale_mouse_loads(tmp_path: Path) -> No
                 ),
             )
             page.on("requestfailed", lambda request: errors.append(request.url))
+            page.on(
+                "request",
+                lambda request: (
+                    errors.append(request.url)
+                    if not request.url.startswith(
+                        f"http://127.0.0.1:{server.server_port}/"
+                    )
+                    else None
+                ),
+            )
             page.goto(
                 f"http://127.0.0.1:{server.server_port}/histopia/",
                 wait_until="networkidle",

@@ -102,12 +102,14 @@ def test_viewer_builds_manifest_and_pinned_import_map(tmp_path: Path) -> None:
 
     manifest = json.loads((index.parent / "manifest.json").read_text())
     assert len(manifest["mice"][0]["slides"]) == 1
-    assert "three@0.170.0" in index.read_text()
+    assert "./vendor/three.module.min.js" in index.read_text()
     assert '<link rel="icon" href="data:">' in index.read_text()
     assert (
         "three/addons/controls/OrbitControls.js"
         in (index.parent / "viewer.js").read_text()
     )
+    assert (index.parent / "vendor" / "OrbitControls.js").is_file()
+    assert "MIT License" in (index.parent / "vendor" / "LICENSE-three.txt").read_text()
     styles = (index.parent / "styles.css").read_text()
     viewer = (index.parent / "viewer.js").read_text()
     assert "html,body" in styles
@@ -271,7 +273,9 @@ def test_viewer_adds_lazy_semantic_and_blend_modes(tmp_path: Path) -> None:
     )
 
     manifest = json.loads((index.parent / "manifest.json").read_text())
+    report = json.loads((index.parent / "build-report.json").read_text())
     slide = manifest["mice"][0]["slides"][0]
+    assert report["three_version"] == "0.170.0"
     assert slide["semantic_texture"].endswith("-semantic.webp")
     assert slide["blend_texture"].endswith("-blend.webp")
     assert slide["semantic_textures"]["2"].endswith("-k2-semantic.webp")

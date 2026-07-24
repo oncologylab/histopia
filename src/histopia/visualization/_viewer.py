@@ -9,6 +9,7 @@ import math
 import os
 import re
 import time
+from importlib import resources
 from pathlib import Path
 
 import numpy as np
@@ -23,6 +24,11 @@ from histopia.registration._io import (
 from histopia.semantic._result import validate_semantic_result
 
 THREE_VERSION = "0.170.0"
+THREE_VENDOR_SHA256 = {
+    "LICENSE-three.txt": "4c40a1ef62450b857c3b2aaf294936304cd552d965fbcd9d32d4c5bcf4ba4454",
+    "OrbitControls.js": "80efaadea4f8a636a65fb0bd08bfef62f3d93a0bb94e2e7500f23176c5c07f4e",
+    "three.module.min.js": "08fd7545d13d2c7fb65ab691530a802dafefd638596501854f267d0fb13c39e7",
+}
 MAX_DISPLAY_LINKS = 500
 VIEWER_MOUSE_CACHE_VERSION = 1
 _VIEWER_QC_FIELDS = frozenset(
@@ -307,13 +313,10 @@ def build_section_viewer(
     (output_dir / "manifest.json").write_text(
         json.dumps({"schema_version": 1, "mice": mouse_payloads}, indent=2) + "\n"
     )
-    (output_dir / "index.html").write_text(
-        _INDEX_HTML.replace("__THREE__", THREE_VERSION)
-    )
-    (output_dir / "viewer.js").write_text(
-        _VIEWER_JS.replace("__THREE__", THREE_VERSION)
-    )
+    (output_dir / "index.html").write_text(_INDEX_HTML)
+    (output_dir / "viewer.js").write_text(_VIEWER_JS)
     (output_dir / "styles.css").write_text(_STYLES_CSS)
+    _write_viewer_runtime(output_dir)
     _write_json_atomic(
         output_dir / ".histopia-asset-cache.json",
         {"schema_version": 1, "assets": new_asset_cache},
@@ -335,10 +338,27 @@ def build_section_viewer(
             "assets_encoded": cache_stats["encoded"],
             "mice_reused": mouse_stats["reused"],
             "mice_rendered": mouse_stats["rendered"],
+            "three_version": THREE_VERSION,
             "elapsed_seconds": round(time.perf_counter() - build_started, 3),
         },
     )
     return output_dir / "index.html"
+
+
+def _write_viewer_runtime(output_dir: Path) -> None:
+    """Write the pinned, checksum-verified Three.js runtime beside the viewer."""
+
+    vendor = output_dir / "vendor"
+    vendor.mkdir(parents=True, exist_ok=True)
+    packaged = resources.files("histopia.visualization").joinpath("_vendor")
+    for filename, expected_sha256 in THREE_VENDOR_SHA256.items():
+        content = packaged.joinpath(filename).read_bytes()
+        actual_sha256 = hashlib.sha256(content).hexdigest()
+        if actual_sha256 != expected_sha256:
+            raise RuntimeError(
+                f"packaged viewer dependency failed checksum: {filename}"
+            )
+        (vendor / filename).write_bytes(content)
 
 
 def build_mask_review(
@@ -1003,8 +1023,8 @@ _INDEX_HTML = """<!doctype html>
   <link rel="stylesheet" href="styles.css">
   <script type="importmap">
     {"imports": {
-      "three": "https://unpkg.com/three@__THREE__/build/three.module.js",
-      "three/addons/": "https://unpkg.com/three@__THREE__/examples/jsm/"
+      "three": "./vendor/three.module.min.js",
+      "three/addons/controls/OrbitControls.js": "./vendor/OrbitControls.js"
     }}
   </script>
 </head>
