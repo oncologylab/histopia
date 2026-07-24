@@ -43,9 +43,10 @@ Set `device = "auto"` to prefer CUDA, then Apple MPS, then CPU. Explicit
 `"cuda"`, `"cuda:N"`, `"mps"`, and `"cpu"` values fail clearly when the
 requested backend is unavailable. Use `histopia-semantic doctor` to inspect
 the resolved device and accelerator memory before extraction. CUDA extraction
-uses bfloat16 autocast and recursively reduces a batch after an out-of-memory
-error; CPU execution remains available for portability and small validation
-runs.
+uses native bfloat16 autocast when the selected GPU supports it and float16
+autocast otherwise, then recursively reduces a batch after an out-of-memory
+error. CPU and Apple MPS extraction use float32. The resolved precision is
+recorded in feature provenance.
 
 Validate the exact backend intended for a run, then optionally override only
 the machine-level controls without editing the saved scientific configuration:

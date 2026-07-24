@@ -48,6 +48,12 @@ class Uni2hEncoder:
         self.device = device
         self.model_fingerprint = model_fingerprint
         self.runtime_provenance = runtime_provenance or {"device": device}
+        self.precision = str(
+            self.runtime_provenance.get(
+                "precision",
+                "bfloat16-autocast" if device.startswith("cuda") else "float32",
+            )
+        )
 
     @classmethod
     def from_cache(
@@ -147,13 +153,14 @@ class Uni2hEncoder:
         ]
         uses_cuda = self.device.startswith("cuda")
         batch = torch.stack(tensors).to(self.device, non_blocking=uses_cuda)
+        autocast_dtype = _autocast_dtype(torch, self.precision)
         try:
             with (
                 torch.inference_mode(),
                 torch.autocast(
                     device_type="cuda",
-                    dtype=torch.bfloat16,
-                    enabled=uses_cuda,
+                    dtype=autocast_dtype,
+                    enabled=uses_cuda and autocast_dtype is not None,
                 ),
             ):
                 output = self.model(batch)
@@ -235,12 +242,11 @@ def _prepare_uni2h_runtime(
     except ImportError as exc:
         raise RuntimeError("UNI2-h extraction requires the 'uni2h' extra") from exc
     resolved_device = resolve_compute_device(device, torch_module=torch).resolved
+    precision = _inference_precision(torch, resolved_device)
     identity = f"MahmoodLab/UNI2-h@{revision}".encode()
     provenance: dict[str, object] = {
         "device": resolved_device,
-        "precision": (
-            "bfloat16-autocast" if resolved_device.startswith("cuda") else "float32"
-        ),
+        "precision": precision,
         "packages": {
             package: _package_version(package)
             for package in (
@@ -268,6 +274,30 @@ def _prepare_uni2h_runtime(
         provenance=provenance,
         torch=torch,
     )
+
+
+def _inference_precision(torch: Any, device: str) -> str:
+    """Choose a native autocast dtype for one resolved Torch device."""
+
+    if not device.startswith("cuda"):
+        return "float32"
+    index = torch.device(device).index or 0
+    with torch.cuda.device(index):
+        if torch.cuda.is_bf16_supported(including_emulation=False):
+            return "bfloat16-autocast"
+    return "float16-autocast"
+
+
+def _autocast_dtype(torch: Any, precision: str) -> Any | None:
+    """Map recorded runtime precision to a Torch dtype."""
+
+    if precision == "bfloat16-autocast":
+        return torch.bfloat16
+    if precision == "float16-autocast":
+        return torch.float16
+    if precision == "float32":
+        return None
+    raise ValueError(f"unsupported UNI2-h inference precision: {precision}")
 
 
 def _cached_model_revision(cache_dir: Path) -> str:
