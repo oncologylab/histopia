@@ -6,18 +6,23 @@ import hashlib
 import os
 from collections.abc import Callable
 from importlib import import_module
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 import numpy as np
 
 from histopia.compute import resolve_compute_device
+from histopia.semantic._vips import configure_vips_threads
 
 
 def _preload_wsi_backend(
     importer: Callable[[str], object] = import_module,
+    *,
+    vips_threads: int | None = None,
 ) -> None:
     """Load libvips before Torchvision in mixed native-library environments."""
 
+    configure_vips_threads(vips_threads)
     try:
         importer("pyvips")
     except ImportError as exc:
@@ -28,12 +33,19 @@ class Uni2hEncoder:
     """Batch encoder matching the published UNI2-h timm model contract."""
 
     def __init__(
-        self, model, transform, *, device: str, model_fingerprint: str
+        self,
+        model,
+        transform,
+        *,
+        device: str,
+        model_fingerprint: str,
+        runtime_provenance: dict[str, object] | None = None,
     ) -> None:
         self.model = model
         self.transform = transform
         self.device = device
         self.model_fingerprint = model_fingerprint
+        self.runtime_provenance = runtime_provenance or {"device": device}
 
     @classmethod
     def from_cache(
@@ -42,10 +54,11 @@ class Uni2hEncoder:
         *,
         device: str = "auto",
         local_only: bool = True,
+        vips_threads: int | None = None,
     ) -> Uni2hEncoder:
         """Load gated weights from an external cache; never package model data."""
 
-        _preload_wsi_backend()
+        _preload_wsi_backend(vips_threads=vips_threads)
         cache_dir = Path(cache_dir).expanduser().resolve()
         cache_dir.mkdir(parents=True, exist_ok=True)
         revision = _cached_model_revision(cache_dir)
@@ -93,11 +106,39 @@ class Uni2hEncoder:
             **resolve_data_config(model.pretrained_cfg, model=model)
         )
         identity = f"MahmoodLab/UNI2-h@{revision}".encode()
+        runtime_provenance: dict[str, object] = {
+            "device": resolved_device,
+            "precision": (
+                "bfloat16-autocast" if resolved_device.startswith("cuda") else "float32"
+            ),
+            "packages": {
+                package: _package_version(package)
+                for package in (
+                    "numpy",
+                    "pillow",
+                    "pyvips",
+                    "timm",
+                    "torch",
+                    "torchvision",
+                )
+            },
+            "libvips": _libvips_version(),
+            "cuda_runtime": str(torch.version.cuda or ""),
+        }
+        if resolved_device.startswith("cuda"):
+            device_index = torch.device(resolved_device).index or 0
+            runtime_provenance["accelerator"] = {
+                "name": torch.cuda.get_device_name(device_index),
+                "compute_capability": list(
+                    torch.cuda.get_device_capability(device_index)
+                ),
+            }
         return cls(
             model,
             transform,
             device=resolved_device,
             model_fingerprint=hashlib.sha256(identity).hexdigest(),
+            runtime_provenance=runtime_provenance,
         )
 
     def encode(self, images: np.ndarray) -> np.ndarray:
@@ -142,3 +183,18 @@ def _cached_model_revision(cache_dir: Path) -> str:
     if not revision or not (model_root / "snapshots" / revision).is_dir():
         raise RuntimeError("UNI2-h cache revision has no local snapshot")
     return revision
+
+
+def _package_version(package: str) -> str:
+    try:
+        return version(package)
+    except PackageNotFoundError:
+        return "unavailable"
+
+
+def _libvips_version() -> str:
+    try:
+        import pyvips
+    except ImportError:
+        return "unavailable"
+    return ".".join(str(pyvips.version(index)) for index in range(3))

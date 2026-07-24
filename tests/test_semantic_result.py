@@ -103,6 +103,10 @@ def test_result_records_and_checks_expected_preflight_slide_order(
         "analysis_mpp": 0.5,
         "patch_size_px": 224,
         "min_tissue_fraction": 0.5,
+        "batch_size": 128,
+        "encoder_runtime": {"device": "cuda", "torch": "test"},
+        "extraction_method": "test-grid-v2",
+        "patch_reader": "test-reader-v1",
     }
     sections = tuple(
         PatchFeatures(
@@ -147,6 +151,53 @@ def test_result_records_and_checks_expected_preflight_slide_order(
         "a.ndpi",
         "b.ndpi",
     ]
+    assert payload["feature_provenance"]["batch_size"] == 128
+    assert payload["feature_provenance"]["encoder_runtime"]["device"] == "cuda"
+    assert set(payload["fit_runtime"]) == {"numpy", "scikit-learn", "scipy"}
+
+
+def test_result_rejects_partial_execution_provenance(tmp_path: Path) -> None:
+    provenance = {
+        "preflight_fingerprint": "preflight-fingerprint",
+        "model_fingerprint": "model-fingerprint",
+        "analysis_mpp": 0.5,
+        "patch_size_px": 224,
+        "min_tissue_fraction": 0.5,
+        "batch_size": 128,
+        "slide_name": "a.ndpi",
+    }
+    section = PatchFeatures(
+        slide_id="a.ndpi",
+        features=np.ones((2, 3), dtype=np.float32),
+        grid_rc=np.array([[0, 0], [0, 1]], dtype=np.int32),
+        native_xy=np.array([[1, 1], [2, 1]], dtype=float),
+        reference_um_xy=np.array([[10, 10], [20, 10]], dtype=float),
+        tissue_fraction=np.ones(2, dtype=np.float32),
+        grid_shape=(1, 2),
+        patch_size_px=224,
+        analysis_mpp=0.5,
+        provenance=provenance,
+    )
+    (tmp_path / "preflight.json").write_text(
+        json.dumps(
+            {
+                "fingerprint": "preflight-fingerprint",
+                "slides": [{"slide_name": "a.ndpi"}],
+            }
+        )
+    )
+    labels = np.array([0, 1], dtype=np.int32)
+    atlas = JointAtlas(
+        slide_ids=("a.ndpi",),
+        section_offsets=np.array([0, 2]),
+        pca_components=2,
+        pca_mean=np.zeros(3, dtype=np.float32),
+        pca_basis=np.zeros((2, 3), dtype=np.float32),
+        clusterings={2: AtlasClustering(2, labels, labels, np.zeros((2, 2)), None)},
+    )
+
+    with pytest.raises(ValueError, match="execution provenance is incomplete"):
+        write_atlas_result(atlas, (section,), tmp_path, primary_clusters=2)
 
 
 def test_result_rejects_feature_sections_incomplete_against_preflight(

@@ -5,8 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 import tempfile
-from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Callable, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -24,6 +24,14 @@ class PatchEncoder(Protocol):
 
 
 PatchReader = Callable[[int, int, int, int, int], np.ndarray]
+PatchRequest = tuple[int, int, int, int, int]
+
+
+class BatchPatchReader(Protocol):
+    """Optional optimized interface for reading an ordered patch batch."""
+
+    def read_many(self, requests: Sequence[PatchRequest]) -> Sequence[np.ndarray]:
+        """Return one RGB array for each request without changing its order."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -216,23 +224,49 @@ def extract_patch_features(
     if not accepted:
         raise ValueError(f"no tissue patches passed coverage for {slide_id}")
 
-    def read_patch(row: tuple[int, int, int, int, float]) -> np.ndarray:
+    def request(row: tuple[int, int, int, int, float]) -> PatchRequest:
         _, _, left, top, _ = row
-        return reader(left, top, native_width, native_height, patch_size_px)
+        return left, top, native_width, native_height, patch_size_px
 
-    executor = (
+    def read_patch(row: tuple[int, int, int, int, float]) -> np.ndarray:
+        return reader(*request(row))
+
+    patch_executor = (
         ThreadPoolExecutor(max_workers=patch_workers) if patch_workers > 1 else None
     )
+    read_many = getattr(reader, "read_many", None)
+
+    def read_batch(
+        batch_rows: Sequence[tuple[int, int, int, int, float]],
+    ) -> tuple[np.ndarray, ...]:
+        if callable(read_many):
+            return tuple(read_many(tuple(request(row) for row in batch_rows)))
+        patches = (
+            patch_executor.map(read_patch, batch_rows)
+            if patch_executor is not None
+            else map(read_patch, batch_rows)
+        )
+        return tuple(patches)
+
+    batches = tuple(
+        accepted[start : start + batch_size]
+        for start in range(0, len(accepted), batch_size)
+    )
+    prefetch_executor = ThreadPoolExecutor(max_workers=1)
     feature_batches: list[np.ndarray] = []
+    pending: Future[tuple[np.ndarray, ...]] | None = prefetch_executor.submit(
+        read_batch, batches[0]
+    )
     try:
-        for start in range(0, len(accepted), batch_size):
-            batch_rows = accepted[start : start + batch_size]
-            patches = (
-                executor.map(read_patch, batch_rows)
-                if executor is not None
-                else map(read_patch, batch_rows)
+        for index in range(len(batches)):
+            assert pending is not None
+            patches = pending.result()
+            pending = (
+                prefetch_executor.submit(read_batch, batches[index + 1])
+                if index + 1 < len(batches)
+                else None
             )
-            images = np.stack(tuple(patches))
+            images = np.stack(patches)
             if images.shape[1:] != (patch_size_px, patch_size_px, 3):
                 raise ValueError("patch reader must return output_px square RGB arrays")
             encoded = np.asarray(encoder.encode(images), dtype=np.float32)
@@ -240,8 +274,11 @@ def extract_patch_features(
                 raise ValueError("encoder must return one feature vector per image")
             feature_batches.append(encoded)
     finally:
-        if executor is not None:
-            executor.shutdown()
+        if pending is not None:
+            pending.cancel()
+        prefetch_executor.shutdown(cancel_futures=True)
+        if patch_executor is not None:
+            patch_executor.shutdown(cancel_futures=True)
 
     grid_rc = np.asarray([(row, col) for row, col, *_ in accepted], dtype=np.int32)
     native_xy = np.asarray(

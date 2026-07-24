@@ -176,3 +176,51 @@ def test_parallel_patch_reads_match_sequential_features() -> None:
     np.testing.assert_array_equal(parallel.grid_rc, sequential.grid_rc)
     np.testing.assert_array_equal(parallel.native_xy, sequential.native_xy)
     np.testing.assert_array_equal(parallel.features, sequential.features)
+
+
+def test_batch_patch_reader_is_used_without_changing_patch_order() -> None:
+    geometry = SlideGeometry(
+        native_shape=(896, 896),
+        content_bbox_xywh=(0, 0, 896, 896),
+        thumbnail_shape=(8, 8),
+        bounds_source="test",
+        mpp_xy=(0.5, 0.5),
+    )
+
+    class BatchReader:
+        def __init__(self) -> None:
+            self.batches: list[tuple[tuple[int, int, int, int, int], ...]] = []
+
+        def __call__(
+            self, x: int, y: int, width: int, height: int, output_px: int
+        ) -> np.ndarray:
+            raise AssertionError("individual reader should not be called")
+
+        def read_many(
+            self, requests: tuple[tuple[int, int, int, int, int], ...]
+        ) -> tuple[np.ndarray, ...]:
+            self.batches.append(requests)
+            return tuple(
+                np.full((output_px, output_px, 3), x // width, dtype=np.uint8)
+                for x, _, width, _, output_px in requests
+            )
+
+    class MeanEncoder:
+        def encode(self, images: np.ndarray) -> np.ndarray:
+            return images.mean(axis=(1, 2, 3), dtype=np.float32)[:, None]
+
+    reader = BatchReader()
+    result = extract_patch_features(
+        slide_id="section.ndpi",
+        geometry=geometry,
+        tissue_mask=np.ones((8, 8), dtype=bool),
+        moving_to_reference_thumbnail=np.eye(3),
+        reference_geometry=geometry,
+        reader=reader,
+        encoder=MeanEncoder(),
+        batch_size=3,
+        patch_workers=4,
+    )
+
+    assert [len(batch) for batch in reader.batches] == [3, 3, 3, 3, 3, 1]
+    np.testing.assert_array_equal(result.features[:, 0], np.tile(range(4), 4))

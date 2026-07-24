@@ -53,6 +53,31 @@ deterministic. Each worker holds a decoded RGB patch and invokes native
 libvips, so `1` is the portable default; benchmark `2` or `4` with the intended
 storage and batch size.
 
+For regular source grids, the built-in pyvips reader coalesces adjacent patches
+into bounded row strips and prefetches one batch while the accelerator encodes
+the current batch. This avoids repeated WSI tile decoding without loading a
+whole slide into memory. Reader and extraction-method versions are part of
+feature provenance, so a changed sampling implementation invalidates stale
+caches.
+
+Feature provenance also records inference batch size, resolved device,
+precision, accelerator identity, and relevant package versions. Switching
+between CPU and GPU, changing batch size, or changing the numerical runtime
+therefore creates a distinct cache identity.
+
+The WSI provenance includes pyvips and native libvips versions. Result
+provenance separately records the NumPy, SciPy, and scikit-learn versions used
+for PCA, correspondence correction, K optimization, and regularization.
+
+Set `vips_threads` to cap libvips' native process-wide worker pool separately
+from `patch_workers`. The setting is applied before pyvips is imported and
+therefore cannot be changed later in the same process. Leave it unset to use
+libvips' adaptive default.
+
+CLI extraction reports each cached, started, and completed slide, including
+patch count and elapsed time. Feature files are committed atomically, so an
+interrupted campaign resumes only exact, provenance-valid completed slides.
+
 By default, independent five-seed fits are evaluated for K=5 through K=15.
 Selection balances silhouette, seed stability, within-section coherence, and
 accepted cross-section continuity, rejects tiny clusters, and prefers smaller
@@ -71,6 +96,12 @@ topology artifact, and the exact preflight slide order; stale or incomplete
 artifacts are rejected before QC or viewer generation. Scientific
 interpretation should wait until semantic overlays and sensitivity fits have
 been reviewed.
+
+Preflight also requires every registration mask to be accepted and backed by
+an approved mask-review record. Its portable slide provenance records the
+effective processed-mask checksum, mask method, and review status. This binds
+semantic patch selection to the cleaned mask actually used for registration,
+including reviewed overrides.
 
 Add an atlas to the section viewer with:
 

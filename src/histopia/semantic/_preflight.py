@@ -20,6 +20,8 @@ class SemanticPreflightSlide:
     source_sha256: str
     thumbnail_sha256: str
     mask_sha256: str
+    mask_method: str
+    mask_review_status: str
     transform_sha256: str
     thumbnail_shape: tuple[int, int]
     mpp_xy: tuple[float, float]
@@ -67,7 +69,7 @@ def preflight_registration(registration_run: Path | str) -> SemanticPreflight:
         _validate_slide(run, name, row) for name, row in zip(names, rows, strict=True)
     )
     core = {
-        "schema_version": 1,
+        "schema_version": 2,
         "registration_result_sha256": _sha256_file(result_path),
         "order_review_fingerprint": order_fingerprint,
         "reference_slide": references[0],
@@ -75,7 +77,7 @@ def preflight_registration(registration_run: Path | str) -> SemanticPreflight:
     }
     fingerprint = _sha256_json(core)
     return SemanticPreflight(
-        schema_version=1,
+        schema_version=2,
         registration_run=str(run),
         registration_result_sha256=core["registration_result_sha256"],
         order_review_fingerprint=order_fingerprint,
@@ -112,6 +114,24 @@ def _validate_slide(
     matrix = np.asarray(row.get("transform", {}).get("matrix"), dtype=float)
     if matrix.shape != (3, 3) or not np.all(np.isfinite(matrix)):
         raise ValueError(f"{slide_name}: transform must be a finite 3x3 matrix")
+    mask_payload = row.get("mask")
+    if not isinstance(mask_payload, dict) or not mask_payload.get("accepted"):
+        raise ValueError(f"{slide_name}: registration tissue mask is not accepted")
+    mask_method = str(mask_payload.get("method", "")).strip()
+    if not mask_method:
+        raise ValueError(f"{slide_name}: registration tissue mask has no method")
+    review = row.get("mask_review")
+    if not isinstance(review, dict):
+        raise ValueError(f"{slide_name}: tissue mask has no review provenance")
+    review_status = str(review.get("status", "")).strip()
+    approved = review_status in {"auto_pass", "override_pass"} or bool(
+        review.get("approved")
+    )
+    if not approved:
+        raise ValueError(
+            f"{slide_name}: tissue mask review is not approved "
+            f"(status={review_status or 'missing'})"
+        )
 
     stem = source.stem
     thumbnail = run / "processed" / f"{stem}.thumbnail.png"
@@ -131,6 +151,8 @@ def _validate_slide(
         source_sha256=_sha256_file(source),
         thumbnail_sha256=_sha256_file(thumbnail),
         mask_sha256=_sha256_file(mask),
+        mask_method=mask_method,
+        mask_review_status=review_status,
         transform_sha256=_sha256_json(matrix.tolist()),
         thumbnail_shape=shape,
         mpp_xy=mpp,

@@ -21,6 +21,7 @@ class SemanticAtlasConfig:
     min_tissue_fraction: float = 0.5
     batch_size: int = 64
     patch_workers: int = 1
+    vips_threads: int | None = None
     cluster_min: int = 5
     cluster_max: int = 15
     selected_clusters: int | None = None
@@ -43,6 +44,8 @@ class SemanticAtlasConfig:
             )
         if self.patch_workers <= 0:
             raise ValueError("patch_workers must be positive")
+        if self.vips_threads is not None and self.vips_threads <= 0:
+            raise ValueError("vips_threads must be positive when provided")
         if not 0 <= self.min_tissue_fraction <= 1:
             raise ValueError("min_tissue_fraction must be between 0 and 1")
         normalized_device = self.device.strip().lower()

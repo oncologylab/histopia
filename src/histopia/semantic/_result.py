@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import asdict
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 import numpy as np
@@ -146,6 +147,10 @@ def write_atlas_result(
         "pca_components": atlas.pca_components,
         "feature_normalization": "patch_l2_v2",
         "feature_provenance": common_provenance,
+        "fit_runtime": {
+            package: _package_version(package)
+            for package in ("numpy", "scikit-learn", "scipy")
+        },
         "correspondence": correspondence,
         "selected_k": selected_k,
         "batch_correction": batch,
@@ -265,19 +270,44 @@ def _fingerprint_core(core: dict[str, object]) -> str:
     ).hexdigest()
 
 
+def _package_version(package: str) -> str:
+    try:
+        return version(package)
+    except PackageNotFoundError:
+        return "unavailable"
+
+
 def _common_feature_provenance(
     sections: tuple[PatchFeatures, ...],
     output_dir: Path,
 ) -> dict[str, object] | None:
     if not sections or any(section.provenance is None for section in sections):
         return None
-    keys = (
+    required_keys = (
         "preflight_fingerprint",
         "model_fingerprint",
         "analysis_mpp",
         "patch_size_px",
         "min_tissue_fraction",
     )
+    execution_keys = (
+        "batch_size",
+        "encoder_runtime",
+        "extraction_method",
+        "patch_reader",
+    )
+    provenance_rows = tuple(section.provenance for section in sections)
+    if any(
+        any(key in provenance for key in execution_keys)
+        and not all(key in provenance for key in execution_keys)
+        for provenance in provenance_rows
+    ):
+        raise ValueError("semantic execution provenance is incomplete")
+    include_execution = all(
+        all(key in provenance for key in execution_keys)
+        for provenance in provenance_rows
+    )
+    keys = required_keys + (execution_keys if include_execution else ())
     common: dict[str, object] = {}
     for key in keys:
         values = {

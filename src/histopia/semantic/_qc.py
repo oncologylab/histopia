@@ -300,6 +300,14 @@ def _validate_provenance(payload: dict[str, object]) -> None:
     }
     if not isinstance(provenance, dict) or not required.issubset(provenance):
         raise ValueError("schema-3 semantic feature provenance is incomplete")
+    execution = {
+        "batch_size",
+        "encoder_runtime",
+        "extraction_method",
+        "patch_reader",
+    }
+    if execution.intersection(provenance) and not execution.issubset(provenance):
+        raise ValueError("schema-3 semantic execution provenance is incomplete")
 
 
 def _cohort_outlier_flags(

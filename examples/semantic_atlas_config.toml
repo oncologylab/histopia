@@ -7,6 +7,8 @@ patch_size_px = 224
 min_tissue_fraction = 0.5
 batch_size = 64
 patch_workers = 1
+# Optional process-wide cap for native libvips decoding threads.
+# vips_threads = 8
 cluster_min = 5
 cluster_max = 15
 # selected_clusters = 9  # Optional display override after reviewing K metrics.

@@ -41,6 +41,7 @@ def _write_registration(tmp_path: Path) -> Path:
                     "mpp_source": "test",
                 },
                 "transform": {"matrix": np.eye(3).tolist()},
+                "mask": {"accepted": True, "method": "group_consensus"},
                 "mask_review": {"status": "approved", "approved": True},
             }
         )
@@ -65,6 +66,8 @@ def test_preflight_records_complete_fingerprinted_registration(tmp_path: Path) -
     assert len(result.fingerprint) == 64
     assert [slide.slide_name for slide in result.slides] == ["HE.ndpi", "CK19.ndpi"]
     assert all(len(slide.mask_sha256) == 64 for slide in result.slides)
+    assert all(slide.mask_method == "group_consensus" for slide in result.slides)
+    assert all(slide.mask_review_status == "approved" for slide in result.slides)
     assert payload["fingerprint"] == result.fingerprint
     assert payload["order_review_fingerprint"] == "accepted-order"
 
@@ -97,6 +100,28 @@ def test_preflight_rejects_unapproved_order_when_manifest_exists(
     )
 
     with pytest.raises(ValueError, match="section order is not approved"):
+        preflight_registration(run)
+
+
+def test_preflight_rejects_unapproved_mask_review(tmp_path: Path) -> None:
+    run = _write_registration(tmp_path)
+    path = run / "registration_result.json"
+    payload = json.loads(path.read_text())
+    payload["slides"][1]["mask_review"] = {"status": "pending"}
+    path.write_text(json.dumps(payload))
+
+    with pytest.raises(ValueError, match="CK19.ndpi.*mask review is not approved"):
+        preflight_registration(run)
+
+
+def test_preflight_rejects_unaccepted_registration_mask(tmp_path: Path) -> None:
+    run = _write_registration(tmp_path)
+    path = run / "registration_result.json"
+    payload = json.loads(path.read_text())
+    payload["slides"][1]["mask"]["accepted"] = False
+    path.write_text(json.dumps(payload))
+
+    with pytest.raises(ValueError, match="CK19.ndpi.*mask is not accepted"):
         preflight_registration(run)
 
 

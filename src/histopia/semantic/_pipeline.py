@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 from histopia.semantic._atlas import JointAtlas, fit_joint_atlas
@@ -41,9 +42,15 @@ def run_semantic_atlas(
     encoder: PatchEncoder,
     *,
     overwrite_features: bool = False,
+    progress: Callable[[str], None] | None = None,
 ) -> Path:
     """Extract compact features, fit the global atlas, and request review."""
 
-    extract_registration_features(config, encoder, overwrite=overwrite_features)
+    extract_registration_features(
+        config,
+        encoder,
+        overwrite=overwrite_features,
+        progress=progress,
+    )
     _, result = fit_saved_features(config)
     return result

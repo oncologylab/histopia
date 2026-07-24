@@ -199,6 +199,22 @@ def test_semantic_qc_rejects_slide_list_that_differs_from_preflight(
         summarize_semantic_run(run)
 
 
+def test_semantic_qc_rejects_partial_execution_provenance(tmp_path: Path) -> None:
+    run = _write_run(tmp_path / "mouse", selected_k=5, patch_count=10)
+    payload = json.loads((run / "semantic_result.json").read_text())
+    core = {
+        key: value
+        for key, value in payload.items()
+        if key not in {"artifacts", "fingerprint"}
+    }
+    core["feature_provenance"]["batch_size"] = 128
+    resealed = _seal_semantic_result(run, core)
+    (run / "semantic_result.json").write_text(json.dumps(resealed))
+
+    with pytest.raises(ValueError, match="execution provenance is incomplete"):
+        summarize_semantic_run(run)
+
+
 def test_cohort_qc_writes_comparable_mouse_rows(tmp_path: Path) -> None:
     first = _write_run(tmp_path / "first", selected_k=5, patch_count=10)
     second = _write_run(tmp_path / "second", selected_k=7, patch_count=20)

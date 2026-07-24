@@ -91,12 +91,14 @@ def main(argv: list[str] | None = None) -> int:
             config.model_cache_dir,
             device=config.device,
             local_only=not args.allow_model_download,
+            vips_threads=config.vips_threads,
         )
         if args.command == "extract":
             paths = extract_registration_features(
                 config,
                 encoder,
                 overwrite=args.overwrite_features,
+                progress=print,
             )
             print(f"Extracted or verified {len(paths)} section artifacts.")
             return 0
@@ -104,6 +106,7 @@ def main(argv: list[str] | None = None) -> int:
             config,
             encoder,
             overwrite_features=args.overwrite_features,
+            progress=print,
         )
     print(result)
     print(
