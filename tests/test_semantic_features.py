@@ -140,3 +140,39 @@ def test_extract_patch_features_filters_grid_with_registered_tissue_mask() -> No
     np.testing.assert_allclose(result.native_xy, [[112, 112], [336, 112]])
     np.testing.assert_allclose(result.reference_um_xy, [[56, 56], [168, 56]])
     assert calls == [(0, 0, 224, 224, 224), (224, 0, 224, 224, 224)]
+
+
+def test_parallel_patch_reads_match_sequential_features() -> None:
+    geometry = SlideGeometry(
+        native_shape=(896, 896),
+        content_bbox_xywh=(0, 0, 896, 896),
+        thumbnail_shape=(8, 8),
+        bounds_source="test",
+        mpp_xy=(0.5, 0.5),
+    )
+
+    def reader(x: int, y: int, width: int, height: int, output_px: int) -> np.ndarray:
+        value = (x // width + 7 * (y // height)) % 256
+        return np.full((output_px, output_px, 3), value, dtype=np.uint8)
+
+    class MeanEncoder:
+        def encode(self, images: np.ndarray) -> np.ndarray:
+            means = images.mean(axis=(1, 2, 3), dtype=np.float32)
+            return np.column_stack([means, means**2])
+
+    kwargs = {
+        "slide_id": "section.ndpi",
+        "geometry": geometry,
+        "tissue_mask": np.ones((8, 8), dtype=bool),
+        "moving_to_reference_thumbnail": np.eye(3),
+        "reference_geometry": geometry,
+        "reader": reader,
+        "encoder": MeanEncoder(),
+        "batch_size": 5,
+    }
+    sequential = extract_patch_features(**kwargs, patch_workers=1)
+    parallel = extract_patch_features(**kwargs, patch_workers=4)
+
+    np.testing.assert_array_equal(parallel.grid_rc, sequential.grid_rc)
+    np.testing.assert_array_equal(parallel.native_xy, sequential.native_xy)
+    np.testing.assert_array_equal(parallel.features, sequential.features)

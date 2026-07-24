@@ -16,6 +16,7 @@ def test_semantic_config_defaults_to_automatic_k_range(tmp_path) -> None:
     assert config.cluster_counts == tuple(range(5, 16))
     assert config.selected_clusters is None
     assert config.device == "auto"
+    assert config.patch_workers == 1
 
 
 def test_semantic_config_loads_legacy_explicit_cluster_counts(tmp_path) -> None:
@@ -58,4 +59,13 @@ def test_semantic_config_validates_and_normalizes_device(tmp_path) -> None:
             registration_run=tmp_path / "registration",
             output_dir=tmp_path / "semantic",
             device="gpu",
+        )
+
+
+def test_semantic_config_rejects_nonpositive_patch_workers(tmp_path) -> None:
+    with pytest.raises(ValueError, match="patch_workers must be positive"):
+        SemanticAtlasConfig(
+            registration_run=tmp_path / "registration",
+            output_dir=tmp_path / "semantic",
+            patch_workers=0,
         )

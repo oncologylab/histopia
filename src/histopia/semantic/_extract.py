@@ -81,6 +81,7 @@ def extract_registration_features(
             patch_size_px=config.patch_size_px,
             min_tissue_fraction=config.min_tissue_fraction,
             batch_size=config.batch_size,
+            patch_workers=config.patch_workers,
             provenance=provenance,
         )
         artifact.save(output)

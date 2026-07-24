@@ -6,6 +6,7 @@ analysis_mpp = 0.5
 patch_size_px = 224
 min_tissue_fraction = 0.5
 batch_size = 64
+patch_workers = 1
 cluster_min = 5
 cluster_max = 15
 # selected_clusters = 9  # Optional display override after reviewing K metrics.

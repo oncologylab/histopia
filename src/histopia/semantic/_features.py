@@ -6,6 +6,7 @@ import hashlib
 import json
 import tempfile
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -179,10 +180,13 @@ def extract_patch_features(
     patch_size_px: int = 224,
     min_tissue_fraction: float = 0.5,
     batch_size: int = 64,
+    patch_workers: int = 1,
     provenance: dict[str, object] | None = None,
 ) -> PatchFeatures:
     """Read and encode tissue patches on a calibrated, non-overlapping grid."""
 
+    if patch_workers <= 0:
+        raise ValueError("patch_workers must be positive")
     if geometry.mpp_xy is None or reference_geometry.mpp_xy is None:
         raise ValueError("feature extraction requires calibrated slide MPP")
     mask = np.asarray(tissue_mask, dtype=bool)
@@ -212,21 +216,32 @@ def extract_patch_features(
     if not accepted:
         raise ValueError(f"no tissue patches passed coverage for {slide_id}")
 
+    def read_patch(row: tuple[int, int, int, int, float]) -> np.ndarray:
+        _, _, left, top, _ = row
+        return reader(left, top, native_width, native_height, patch_size_px)
+
+    executor = (
+        ThreadPoolExecutor(max_workers=patch_workers) if patch_workers > 1 else None
+    )
     feature_batches: list[np.ndarray] = []
-    for start in range(0, len(accepted), batch_size):
-        batch_rows = accepted[start : start + batch_size]
-        images = np.stack(
-            [
-                reader(left, top, native_width, native_height, patch_size_px)
-                for _, _, left, top, _ in batch_rows
-            ]
-        )
-        if images.shape[1:] != (patch_size_px, patch_size_px, 3):
-            raise ValueError("patch reader must return output_px square RGB arrays")
-        encoded = np.asarray(encoder.encode(images), dtype=np.float32)
-        if encoded.ndim != 2 or encoded.shape[0] != len(images):
-            raise ValueError("encoder must return one feature vector per image")
-        feature_batches.append(encoded)
+    try:
+        for start in range(0, len(accepted), batch_size):
+            batch_rows = accepted[start : start + batch_size]
+            patches = (
+                executor.map(read_patch, batch_rows)
+                if executor is not None
+                else map(read_patch, batch_rows)
+            )
+            images = np.stack(tuple(patches))
+            if images.shape[1:] != (patch_size_px, patch_size_px, 3):
+                raise ValueError("patch reader must return output_px square RGB arrays")
+            encoded = np.asarray(encoder.encode(images), dtype=np.float32)
+            if encoded.ndim != 2 or encoded.shape[0] != len(images):
+                raise ValueError("encoder must return one feature vector per image")
+            feature_batches.append(encoded)
+    finally:
+        if executor is not None:
+            executor.shutdown()
 
     grid_rc = np.asarray([(row, col) for row, col, *_ in accepted], dtype=np.int32)
     native_xy = np.asarray(

@@ -47,6 +47,12 @@ uses bfloat16 autocast and recursively reduces a batch after an out-of-memory
 error; CPU execution remains available for portability and small validation
 runs.
 
+Set `patch_workers` above one to read independent WSI patches concurrently
+before each encoder batch. Result order and feature fingerprints remain
+deterministic. Each worker holds a decoded RGB patch and invokes native
+libvips, so `1` is the portable default; benchmark `2` or `4` with the intended
+storage and batch size.
+
 By default, independent five-seed fits are evaluated for K=5 through K=15.
 Selection balances silhouette, seed stability, within-section coherence, and
 accepted cross-section continuity, rejects tiny clusters, and prefers smaller

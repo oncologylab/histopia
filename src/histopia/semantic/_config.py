@@ -20,6 +20,7 @@ class SemanticAtlasConfig:
     patch_size_px: int = 224
     min_tissue_fraction: float = 0.5
     batch_size: int = 64
+    patch_workers: int = 1
     cluster_min: int = 5
     cluster_max: int = 15
     selected_clusters: int | None = None
@@ -40,6 +41,8 @@ class SemanticAtlasConfig:
             raise ValueError(
                 "analysis scale, patch size, and batch size must be positive"
             )
+        if self.patch_workers <= 0:
+            raise ValueError("patch_workers must be positive")
         if not 0 <= self.min_tissue_fraction <= 1:
             raise ValueError("min_tissue_fraction must be between 0 and 1")
         normalized_device = self.device.strip().lower()
