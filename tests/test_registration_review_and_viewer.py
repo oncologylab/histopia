@@ -162,6 +162,46 @@ def test_mask_review_builds_full_thumbnail_audit(tmp_path: Path) -> None:
     assert "@media(max-width:600px)" in css
 
 
+def test_mask_review_builds_at_pre_registration_approval_gate(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "run"
+    processed = run_dir / "processed"
+    processed.mkdir(parents=True)
+    image = np.full((24, 30, 3), 230, dtype=np.uint8)
+    mask = np.zeros((24, 30), dtype=np.uint8)
+    mask[5:20, 7:24] = 255
+    Image.fromarray(image).save(processed / "section.thumbnail.png")
+    Image.fromarray(mask).save(processed / "section.mask.png")
+    (run_dir / "mask_review.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "slides": [
+                    {
+                        "slide": "section.ndpi",
+                        "thumbnail_sha256": "test",
+                        "status": "pending",
+                        "method": "object_aware_fusion",
+                        "reviewer": "",
+                        "notes": "",
+                        "override_path": None,
+                    }
+                ],
+            }
+        )
+    )
+
+    index = build_mask_review(run_dir, tmp_path / "mask-review")
+
+    manifest = json.loads((index.parent / "manifest.json").read_text())
+    assert manifest["approved"] is False
+    assert manifest["slides"][0]["slide"] == "section.ndpi"
+    assert manifest["slides"][0]["method"] == "object_aware_fusion"
+    assert manifest["slides"][0]["foreground_fraction"] == pytest.approx(255 / 720)
+    assert (index.parent / manifest["slides"][0]["texture"]).is_file()
+
+
 def test_viewer_adds_lazy_semantic_and_blend_modes(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     processed = run_dir / "processed"

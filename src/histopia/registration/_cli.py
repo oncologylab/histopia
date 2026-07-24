@@ -262,6 +262,7 @@ def _config_from_mapping(data: dict[str, Any]) -> RegistrationConfig:
         section_orientation_path=(
             Path(section_orientation_value) if section_orientation_value else None
         ),
+        thumbnail_workers=data.pop("thumbnail_workers", 1),
         mask_workers=data.pop("mask_workers", 1),
         ordering_workers=data.pop("ordering_workers", 1),
         require_approved_order=data.pop("require_approved_order", False),

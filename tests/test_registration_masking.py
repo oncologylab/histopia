@@ -17,6 +17,7 @@ from histopia.registration._masking import (
     _group_density_union_candidate,
     _mask_score,
     _pale_tissue_candidate,
+    _polish_selected_mask,
     _remove_border_bar_components,
     _remove_hollow_detached_artifacts,
     _remove_image_frame_exterior,
@@ -705,6 +706,27 @@ def test_small_hole_filling_preserves_large_lumen() -> None:
     assert not filled[50:80, 50:80].any()
 
 
+def test_group_pale_polishing_fills_small_holes_and_preserves_large_lumen() -> None:
+    mask = np.zeros((100, 100), dtype=bool)
+    mask[5:95, 5:95] = True
+    mask[20:24, 20:24] = False
+    mask[50:80, 50:80] = False
+    result = TissueMaskResult(
+        mask=mask,
+        method="group_pale_tissue+group_ranked",
+        metrics={},
+        accepted=True,
+        warnings=[],
+        candidate_masks={"group_pale_tissue": mask},
+    )
+
+    polished = _polish_selected_mask(result)
+
+    assert polished.mask[20:24, 20:24].all()
+    assert not polished.mask[50:80, 50:80].any()
+    assert polished.method.endswith("+polished")
+
+
 def test_large_blank_region_is_carved_from_tissue_mask() -> None:
     image = np.ones((200, 260, 3), dtype=np.float32)
     image[35:165, 30:150] = [0.75, 0.45, 0.40]
@@ -716,6 +738,20 @@ def test_large_blank_region_is_carved_from_tissue_mask() -> None:
 
     assert carved[60:140, 50:130].mean() > 0.8
     assert carved[60:140, 175:215].mean() < 0.1
+
+
+def test_small_attached_blank_artifact_is_carved_from_tissue_mask() -> None:
+    image = np.ones((200, 300, 3), dtype=np.float32)
+    image[40:160, 30:190] = [0.75, 0.45, 0.40]
+    image[40:160:3, 30:190:3] = [0.35, 0.15, 0.12]
+    mask = np.zeros((200, 300), dtype=bool)
+    mask[40:160, 30:190] = True
+    mask[90:100, 190:260] = True
+
+    carved = _carve_large_blank_regions(image, mask)
+
+    assert carved[60:140, 50:170].mean() > 0.8
+    assert not carved[90:100, 210:250].any()
 
 
 def test_blank_carving_is_noop_when_overlap_is_small() -> None:

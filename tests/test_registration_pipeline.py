@@ -1,5 +1,6 @@
 import hashlib
 import json
+import threading
 from pathlib import Path
 
 import numpy as np
@@ -10,7 +11,9 @@ from histopia.registration._pipeline import (
     _create_tissue_masks,
     _crop_to_mask,
     _load_automatic_mask_snapshot,
+    _load_registration_thumbnails,
 )
+from histopia.registration._slides import SlideGeometry
 
 
 def test_register_sections_writes_thumbnail_result(tmp_path: Path) -> None:
@@ -88,6 +91,59 @@ def test_parallel_mask_creation_matches_sequential_results(tmp_path: Path) -> No
 def test_mask_workers_must_be_positive(tmp_path: Path) -> None:
     with np.testing.assert_raises_regex(ValueError, "mask_workers must be positive"):
         RegistrationConfig(tmp_path, tmp_path / "output", mask_workers=0)
+
+
+def test_parallel_thumbnail_loading_matches_sequential_and_preserves_order(
+    tmp_path: Path, monkeypatch
+) -> None:
+    paths = tuple(tmp_path / f"section-{index}.ndpi" for index in range(4))
+    thread_names: set[str] = set()
+
+    def fake_load(path: Path, max_dim_px: int):
+        thread_names.add(threading.current_thread().name)
+        index = paths.index(path)
+        image = np.full((2, 3, 3), index + max_dim_px, dtype=np.uint16)
+        geometry = SlideGeometry(
+            native_shape=(20 + index, 30 + index),
+            content_bbox_xywh=(0, 0, 30 + index, 20 + index),
+            thumbnail_shape=(2, 3),
+            bounds_source="test",
+        )
+        return image, geometry
+
+    monkeypatch.setattr(_pipeline, "load_slide_thumbnail", fake_load)
+    sequential = _load_registration_thumbnails(
+        paths,
+        RegistrationConfig(
+            tmp_path,
+            tmp_path / "sequential",
+            thumbnail_workers=1,
+            max_processed_image_dim_px=12,
+        ),
+    )
+    parallel = _load_registration_thumbnails(
+        paths,
+        RegistrationConfig(
+            tmp_path,
+            tmp_path / "parallel",
+            thumbnail_workers=3,
+            max_processed_image_dim_px=12,
+        ),
+    )
+
+    assert tuple(sequential[0]) == paths
+    assert tuple(parallel[0]) == paths
+    assert sequential[1] == parallel[1]
+    for path in paths:
+        assert np.array_equal(sequential[0][path], parallel[0][path])
+    assert any(name.startswith("ThreadPoolExecutor") for name in thread_names)
+
+
+def test_thumbnail_workers_must_be_positive(tmp_path: Path) -> None:
+    with np.testing.assert_raises_regex(
+        ValueError, "thumbnail_workers must be positive"
+    ):
+        RegistrationConfig(tmp_path, tmp_path / "output", thumbnail_workers=0)
 
 
 def test_automatic_mask_snapshot_requires_exact_hash_and_slide_set(

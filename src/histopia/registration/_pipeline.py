@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -178,17 +179,11 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
     non_rigid_dir = qc_dir / "non_rigid"
     displacement_dir = config.output_dir / "transforms" / "non_rigid"
 
-    thumbnails: dict[Path, np.ndarray] = {}
-    geometries: dict[Path, SlideGeometry] = {}
+    thumbnails, geometries = _load_registration_thumbnails(slide_paths, config)
     masks: dict[Path, TissueMaskResult] = {}
     review_entries = load_mask_review(config.mask_review_path)
     resolved_reviews: dict[Path, MaskReviewEntry] = {}
     warnings: list[str] = []
-
-    for path in slide_paths:
-        image, geometry = load_slide_thumbnail(path, config.max_processed_image_dim_px)
-        thumbnails[path] = image
-        geometries[path] = geometry
 
     if config.automatic_mask_snapshot_path is not None:
         masks = _load_automatic_mask_snapshot(
@@ -483,6 +478,36 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
     result.write_json()
     _write_validation_report(result)
     return result
+
+
+def _load_registration_thumbnails(
+    slide_paths: tuple[Path, ...] | list[Path],
+    config: RegistrationConfig,
+) -> tuple[dict[Path, np.ndarray], dict[Path, SlideGeometry]]:
+    """Decode slide thumbnails with bounded, order-preserving parallelism."""
+
+    paths = tuple(slide_paths)
+
+    def load(path: Path) -> tuple[np.ndarray, SlideGeometry]:
+        return load_slide_thumbnail(path, config.max_processed_image_dim_px)
+
+    if config.thumbnail_workers == 1:
+        loaded = map(load, paths)
+        return _unpack_loaded_thumbnails(paths, loaded)
+    with ThreadPoolExecutor(max_workers=config.thumbnail_workers) as executor:
+        return _unpack_loaded_thumbnails(paths, executor.map(load, paths))
+
+
+def _unpack_loaded_thumbnails(
+    paths: tuple[Path, ...],
+    loaded: Iterable[tuple[np.ndarray, SlideGeometry]],
+) -> tuple[dict[Path, np.ndarray], dict[Path, SlideGeometry]]:
+    thumbnails: dict[Path, np.ndarray] = {}
+    geometries: dict[Path, SlideGeometry] = {}
+    for path, (image, geometry) in zip(paths, loaded, strict=True):
+        thumbnails[path] = image
+        geometries[path] = geometry
+    return thumbnails, geometries
 
 
 def _create_tissue_masks(

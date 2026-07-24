@@ -174,6 +174,11 @@ geometry, quarter-turn orientation, rigid method, refinement settings, and
 distance weights match exactly. A stale, incomplete, or checksum-invalid cache
 is ignored and rebuilt; it never bypasses order fingerprint approval.
 
+Set `thumbnail_workers` above one to decode independent WSI thumbnails in
+parallel. This usually shortens startup for multi-slide cohorts, but each
+worker temporarily holds another decoded WSI region. Output ordering and image
+values are unchanged. Start with `2` or `4` and measure peak memory.
+
 Set `ordering_workers` above one to evaluate independent slide pairs in
 parallel on CPU. Results are assigned in deterministic pair order and the
 worker count does not change the scientific fingerprint. Start conservatively

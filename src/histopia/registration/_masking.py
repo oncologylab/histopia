@@ -640,14 +640,21 @@ def _polish_selected_mask(result: TissueMaskResult) -> TissueMaskResult:
     cleaned = _remove_straight_border_rails(
         _remove_hollow_detached_artifacts(result.mask)
     )
-    if result.method.startswith(("group_density_union", "group_pale_tissue")):
+    pale_group_mask = result.method.startswith(
+        ("group_density_union", "group_pale_tissue")
+    )
+    cleaned = _fill_small_holes(
+        cleaned,
+        max_area=max(64, int(cleaned.size * (0.001 if pale_group_mask else 0.004))),
+    )
+    if pale_group_mask:
         if np.array_equal(cleaned, result.mask):
             return result
         metrics = _mask_metrics(cleaned)
         warnings = _mask_warnings(cleaned, BrightfieldMaskConfig())
         return TissueMaskResult(
             mask=cleaned,
-            method=f"{result.method}+satellite_cleanup",
+            method=f"{result.method}+polished",
             metrics=metrics,
             accepted=not warnings,
             warnings=warnings,
@@ -1150,7 +1157,7 @@ def _carve_large_blank_regions(rgb: np.ndarray, mask: np.ndarray) -> np.ndarray:
         neutral_blank = np.isin(labels, neutral_labels)
         blank |= ndi.binary_dilation(neutral_blank, iterations=12)
     removed = mask & blank
-    if np.count_nonzero(removed) < np.count_nonzero(mask) * 0.05:
+    if np.count_nonzero(removed) < np.count_nonzero(mask) * 0.005:
         return mask
     carved = mask & ~blank
     carved_labels, carved_count = ndi.label(carved)

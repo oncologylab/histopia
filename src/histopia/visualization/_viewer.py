@@ -356,7 +356,7 @@ def build_mask_review(
     output_dir = Path(output_dir)
     assets_dir = output_dir / "assets"
     assets_dir.mkdir(parents=True, exist_ok=True)
-    payload = json.loads((registration_run / "registration_result.json").read_text())
+    payload = _mask_review_source_payload(registration_run)
     rows = []
     digest = hashlib.sha256(b"histopia-mask-review-v1")
     for order, slide in enumerate(payload.get("slides", []), start=1):
@@ -410,6 +410,40 @@ def build_mask_review(
     (output_dir / "mask-review.js").write_text(_MASK_REVIEW_JS)
     (output_dir / "mask-review.css").write_text(_ORDER_REVIEW_CSS)
     return output_dir / "index.html"
+
+
+def _mask_review_source_payload(registration_run: Path) -> dict[str, object]:
+    result_path = registration_run / "registration_result.json"
+    if result_path.is_file():
+        payload = json.loads(result_path.read_text())
+        if not isinstance(payload, dict):
+            raise ValueError("registration result must be a JSON object")
+        return payload
+
+    review_path = registration_run / "mask_review.json"
+    payload = json.loads(review_path.read_text())
+    review_rows = payload.get("slides") if isinstance(payload, dict) else None
+    if not isinstance(review_rows, list):
+        raise ValueError("mask review must contain a slides list")
+    slides: list[dict[str, object]] = []
+    for review in review_rows:
+        if not isinstance(review, dict):
+            raise ValueError("mask review slides must contain objects")
+        name = review.get("slide")
+        if not isinstance(name, str) or not name:
+            raise ValueError("mask review contains an invalid slide")
+        slides.append(
+            {
+                "path": name,
+                "mask": {
+                    "method": review.get("method", "unknown"),
+                    "metrics": {},
+                    "warnings": [],
+                },
+                "mask_review": review,
+            }
+        )
+    return {"slides": slides}
 
 
 def _load_asset_cache(path: Path) -> dict[str, dict[str, object]]:
