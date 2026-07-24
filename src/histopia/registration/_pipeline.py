@@ -1382,6 +1382,7 @@ def _ordering_distance_settings(config: RegistrationConfig) -> dict[str, object]
     """Return only settings that affect pairwise morphology distances."""
 
     return {
+        "algorithm": "morphology-distance-v2",
         "max_processed_image_dim_px": config.max_processed_image_dim_px,
         "rigid_method": config.rigid_method,
         "refinement": asdict(config.refinement),
@@ -1519,13 +1520,10 @@ def _mask_hole_topology_distance(first: np.ndarray, second: np.ndarray) -> float
 
     first_fraction = _largest_internal_cavity_fraction(first)
     second_fraction = _largest_internal_cavity_fraction(second)
-    first_has_hole = first_fraction >= 0.015
-    second_has_hole = second_fraction >= 0.015
-    if first_has_hole != second_has_hole:
-        return 1.0
-    if not first_has_hole:
-        return 0.0
-    return min(1.0, abs(first_fraction - second_fraction) / 0.10)
+    noise_floor = 0.005
+    first_effective = max(0.0, first_fraction - noise_floor)
+    second_effective = max(0.0, second_fraction - noise_floor)
+    return min(1.0, abs(first_effective - second_effective) / 0.10)
 
 
 def _largest_internal_cavity_fraction(mask: np.ndarray) -> float:

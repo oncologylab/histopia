@@ -125,11 +125,13 @@ slides are proposed only for the remaining slots using registration support,
 physical tissue area when slide calibration is available, and mask topology.
 The proposal records adjacent distances, physical areas, a runner-up margin,
 the largest internal-cavity fraction for each slide, a graded cavity-continuity
-summary, and a fingerprint. Substantial cavities seed continuity blocks,
-neighboring weaker cavities extend them, and a single borderline section may
-bridge a block. Multiple separated blocks are marked for human review. Set
-`require_approved_order = true` to stop before registration until the exact
-fingerprint is approved.
+summary, and a fingerprint. Pairwise cavity distance is continuous after a
+small noise floor, so nearly identical sections on opposite sides of a review
+threshold cannot receive a categorical penalty. Substantial cavities seed
+continuity blocks, neighboring weaker cavities extend them, and a single
+borderline section may bridge a block. Multiple separated blocks are marked
+for human review. Set `require_approved_order = true` to stop before
+registration until the exact fingerprint is approved.
 
 Quarter-turn proposals produced by `orient_section_group(...).to_json_dict()`
 can be passed directly as `section_orientation_path`. The loader also accepts
@@ -171,8 +173,9 @@ Pairwise morphology distances are cached under the registration output
 directory because an all-pairs comparison is expensive for long stacks. The
 cache is reused only when the ordered slide set, reviewed mask pixels, physical
 geometry, quarter-turn orientation, rigid method, refinement settings, and
-distance weights match exactly. A stale, incomplete, or checksum-invalid cache
-is ignored and rebuilt; it never bypasses order fingerprint approval.
+distance algorithm/version and weights match exactly. A stale, incomplete, or
+checksum-invalid cache is ignored and rebuilt; it never bypasses order
+fingerprint approval.
 
 Set `thumbnail_workers` above one to decode independent WSI thumbnails in
 parallel. This usually shortens startup for multi-slide cohorts, but each

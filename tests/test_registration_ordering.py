@@ -218,3 +218,16 @@ def test_hole_topology_distance_penalizes_significant_cavity_jump() -> None:
     assert _mask_hole_topology_distance(solid, small_hole) == 0
     assert _mask_hole_topology_distance(solid, large_hole) == 1
     assert 0 < _mask_hole_topology_distance(large_hole, similar_large_hole) < 1
+
+
+def test_hole_topology_distance_is_continuous_near_review_threshold() -> None:
+    tissue = np.zeros((100, 100), dtype=bool)
+    tissue[10:90, 10:90] = True
+    below = tissue.copy()
+    below[45:54, 45:55] = False
+    above = tissue.copy()
+    above[45:55, 45:55] = False
+
+    distance = _mask_hole_topology_distance(below, above)
+
+    assert 0 < distance < 0.05
