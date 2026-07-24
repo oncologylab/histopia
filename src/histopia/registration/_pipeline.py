@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import os
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
@@ -51,6 +52,11 @@ from histopia.registration._orientation import (
     apply_quarter_turn,
     load_orientation_overrides,
     quarter_turn_matrix,
+)
+from histopia.registration._preprocessing_cache import (
+    load_or_create_group_masks,
+    load_or_create_independent_mask,
+    load_or_create_thumbnail,
 )
 from histopia.registration._qc import write_labeled_review_panel
 from histopia.registration._review import (
@@ -179,11 +185,26 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
     non_rigid_dir = qc_dir / "non_rigid"
     displacement_dir = config.output_dir / "transforms" / "non_rigid"
 
-    thumbnails, geometries = _load_registration_thumbnails(slide_paths, config)
+    preprocessing_cache_dir = (
+        config.output_dir / ".cache" / "preprocessing"
+        if config.preprocessing_cache
+        else None
+    )
+    thumbnails, geometries = _load_registration_thumbnails(
+        slide_paths,
+        config,
+        cache_dir=preprocessing_cache_dir,
+    )
     masks: dict[Path, TissueMaskResult] = {}
     review_entries = load_mask_review(config.mask_review_path)
     resolved_reviews: dict[Path, MaskReviewEntry] = {}
     warnings: list[str] = []
+    artifact_manifest_path = (
+        preprocessing_cache_dir / "mask-artifacts.json"
+        if preprocessing_cache_dir is not None and config.write_processed_images
+        else None
+    )
+    artifact_manifest = _load_mask_artifact_manifest(artifact_manifest_path)
 
     if config.automatic_mask_snapshot_path is not None:
         masks = _load_automatic_mask_snapshot(
@@ -192,15 +213,26 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
             thumbnails,
         )
     else:
-        masks = _create_tissue_masks(thumbnails, config)
+        masks = _create_tissue_masks(
+            thumbnails,
+            config,
+            cache_dir=preprocessing_cache_dir,
+        )
         physical_pixel_areas = {
             path: _thumbnail_physical_pixel_area(geometry)
             for path, geometry in geometries.items()
         }
-        masks = refine_group_tissue_masks(
-            masks,
-            physical_pixel_areas=physical_pixel_areas,
-            images=thumbnails,
+        independent_masks = masks
+        masks = load_or_create_group_masks(
+            independent_masks,
+            thumbnails,
+            physical_pixel_areas,
+            preprocessing_cache_dir,
+            lambda: refine_group_tissue_masks(
+                independent_masks,
+                physical_pixel_areas=physical_pixel_areas,
+                images=thumbnails,
+            ),
         )
     for path in slide_paths:
         image = thumbnails[path]
@@ -220,16 +252,45 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
         resolved_reviews[path] = review
         warnings.extend(f"{path.name}: {warning}" for warning in mask.warnings)
         if config.write_processed_images:
-            save_rgb(processed_dir / f"{path.stem}.thumbnail.png", image)
-            save_rgb(
-                processed_dir / f"{path.stem}.mask.png",
-                (mask.mask * 255).astype(np.uint8),
+            artifact_paths = _mask_artifact_paths(
+                processed_dir,
+                qc_dir,
+                mask_candidate_dir,
+                path,
+                mask,
             )
-            save_rgb(
-                qc_dir / f"{path.stem}.mask_overlay.png",
-                overlay_mask(image, mask.mask),
+            artifact_fingerprint = _mask_artifact_fingerprint(path, image, mask)
+            if not _mask_artifacts_are_current(
+                artifact_manifest,
+                path,
+                artifact_fingerprint,
+                artifact_paths,
+                config.output_dir,
+            ):
+                save_rgb(processed_dir / f"{path.stem}.thumbnail.png", image)
+                save_rgb(
+                    processed_dir / f"{path.stem}.mask.png",
+                    (mask.mask * 255).astype(np.uint8),
+                )
+                save_rgb(
+                    qc_dir / f"{path.stem}.mask_overlay.png",
+                    overlay_mask(image, mask.mask),
+                )
+                _write_candidate_mask_overlays(
+                    mask_candidate_dir,
+                    path,
+                    image,
+                    mask,
+                )
+            _record_mask_artifacts(
+                artifact_manifest,
+                path,
+                artifact_fingerprint,
+                artifact_paths,
+                config.output_dir,
             )
-            _write_candidate_mask_overlays(mask_candidate_dir, path, image, mask)
+    if artifact_manifest_path is not None:
+        _write_mask_artifact_manifest(artifact_manifest_path, artifact_manifest)
 
     review_path = config.mask_review_path or config.output_dir / "mask_review.json"
     write_mask_review(review_path, review_entries)
@@ -483,13 +544,20 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
 def _load_registration_thumbnails(
     slide_paths: tuple[Path, ...] | list[Path],
     config: RegistrationConfig,
+    *,
+    cache_dir: Path | None = None,
 ) -> tuple[dict[Path, np.ndarray], dict[Path, SlideGeometry]]:
     """Decode slide thumbnails with bounded, order-preserving parallelism."""
 
     paths = tuple(slide_paths)
 
     def load(path: Path) -> tuple[np.ndarray, SlideGeometry]:
-        return load_slide_thumbnail(path, config.max_processed_image_dim_px)
+        return load_or_create_thumbnail(
+            path,
+            config.max_processed_image_dim_px,
+            cache_dir,
+            load_slide_thumbnail,
+        )
 
     if config.thumbnail_workers == 1:
         loaded = map(load, paths)
@@ -513,6 +581,8 @@ def _unpack_loaded_thumbnails(
 def _create_tissue_masks(
     thumbnails: dict[Path, np.ndarray],
     config: RegistrationConfig,
+    *,
+    cache_dir: Path | None = None,
 ) -> dict[Path, TissueMaskResult]:
     """Create independent masks with bounded, deterministic CPU parallelism."""
 
@@ -520,7 +590,13 @@ def _create_tissue_masks(
 
     def create(item: tuple[Path, np.ndarray]) -> tuple[Path, TissueMaskResult]:
         path, image = item
-        return path, create_tissue_mask(image, config.mask)
+        return path, load_or_create_independent_mask(
+            path,
+            image,
+            config.mask,
+            cache_dir,
+            create_tissue_mask,
+        )
 
     if config.mask_workers == 1:
         return dict(map(create, items))
@@ -1046,6 +1122,110 @@ def _write_candidate_mask_overlays(
             output_dir / f"{path.stem}.{method}.png",
             overlay_mask(image, candidate),
         )
+
+
+def _mask_artifact_paths(
+    processed_dir: Path,
+    qc_dir: Path,
+    candidate_dir: Path,
+    source: Path,
+    result: TissueMaskResult,
+) -> tuple[Path, ...]:
+    paths = [
+        processed_dir / f"{source.stem}.thumbnail.png",
+        processed_dir / f"{source.stem}.mask.png",
+        qc_dir / f"{source.stem}.mask_overlay.png",
+    ]
+    for method in sorted(result.candidate_masks):
+        paths.extend(
+            [
+                candidate_dir / f"{source.stem}.{method}.mask.png",
+                candidate_dir / f"{source.stem}.{method}.png",
+            ]
+        )
+    return tuple(paths)
+
+
+def _mask_artifact_fingerprint(
+    source: Path,
+    image: np.ndarray,
+    result: TissueMaskResult,
+) -> str:
+    digest = hashlib.sha256(b"histopia-registration-mask-artifacts-v1")
+    digest.update(str(source.resolve()).encode())
+    digest.update(str(image.dtype).encode())
+    digest.update(np.asarray(image.shape, dtype=np.int64).tobytes())
+    digest.update(np.ascontiguousarray(image).tobytes())
+    digest.update(np.ascontiguousarray(result.mask).tobytes())
+    for method in sorted(result.candidate_masks):
+        digest.update(method.encode())
+        digest.update(np.ascontiguousarray(result.candidate_masks[method]).tobytes())
+    return digest.hexdigest()
+
+
+def _load_mask_artifact_manifest(path: Path | None) -> dict[str, Any]:
+    if path is None:
+        return {"schema": "histopia-registration-mask-artifacts-v1", "slides": {}}
+    try:
+        payload = json.loads(path.read_text())
+        if payload.get(
+            "schema"
+        ) == "histopia-registration-mask-artifacts-v1" and isinstance(
+            payload.get("slides"), dict
+        ):
+            return payload
+    except (OSError, TypeError, json.JSONDecodeError):
+        pass
+    return {"schema": "histopia-registration-mask-artifacts-v1", "slides": {}}
+
+
+def _mask_artifacts_are_current(
+    manifest: dict[str, Any],
+    source: Path,
+    fingerprint: str,
+    paths: tuple[Path, ...],
+    output_dir: Path,
+) -> bool:
+    entry = manifest["slides"].get(str(source.resolve()))
+    expected = [str(path.relative_to(output_dir)) for path in paths]
+    return bool(
+        isinstance(entry, dict)
+        and entry.get("fingerprint") == fingerprint
+        and entry.get("artifacts") == expected
+        and all(path.is_file() for path in paths)
+    )
+
+
+def _record_mask_artifacts(
+    manifest: dict[str, Any],
+    source: Path,
+    fingerprint: str,
+    paths: tuple[Path, ...],
+    output_dir: Path,
+) -> None:
+    key = str(source.resolve())
+    previous = manifest["slides"].get(key, {})
+    current_relative = [str(path.relative_to(output_dir)) for path in paths]
+    if isinstance(previous, dict):
+        for relative in previous.get("artifacts", []):
+            if not isinstance(relative, str):
+                continue
+            stale = (output_dir / relative).resolve()
+            if not stale.is_relative_to(output_dir.resolve()):
+                continue
+            if relative not in current_relative and stale.is_file():
+                stale.unlink()
+    manifest["slides"][key] = {
+        "fingerprint": fingerprint,
+        "artifacts": current_relative,
+    }
+
+
+def _write_mask_artifact_manifest(path: Path, manifest: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary.write_text(json.dumps(manifest, sort_keys=True, separators=(",", ":")))
+    temporary.replace(path)
 
 
 def _write_alignment_qc(

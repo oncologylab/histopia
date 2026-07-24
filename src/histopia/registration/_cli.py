@@ -265,6 +265,7 @@ def _config_from_mapping(data: dict[str, Any]) -> RegistrationConfig:
         thumbnail_workers=data.pop("thumbnail_workers", 1),
         mask_workers=data.pop("mask_workers", 1),
         ordering_workers=data.pop("ordering_workers", 1),
+        preprocessing_cache=data.pop("preprocessing_cache", True),
         require_approved_order=data.pop("require_approved_order", False),
         mask_review_path=Path(mask_review_value) if mask_review_value else None,
         mask_override_dir=Path(mask_override_value) if mask_override_value else None,

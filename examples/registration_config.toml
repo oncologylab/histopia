@@ -5,6 +5,8 @@ section_order_strategy = "natural"
 thumbnail_workers = 1
 mask_workers = 1
 ordering_workers = 1
+# Reuse source/config-bound thumbnails, mask candidates, and QC artifacts.
+preprocessing_cache = true
 # Optional CSV or JSON with exact slide names and physical section order.
 # section_order_path = "/path/to/section_order.csv"
 require_approved_masks = false

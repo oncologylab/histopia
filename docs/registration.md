@@ -220,6 +220,13 @@ complete, and worker count does not change mask pixels. Each worker holds
 several thumbnail-sized arrays, so `1` remains the memory-conservative default;
 benchmark `2` or `4` on representative cohorts before increasing it further.
 
+`preprocessing_cache = true` is the default. Histopia reuses decoded
+thumbnails, independent mask candidates, group-refined masks, and rendered
+mask-review artifacts only when their source metadata, pixel data,
+configuration, physical calibration, and algorithm schema match. Missing or
+corrupt entries are regenerated. Set it to `false` for an intentionally cold
+run; review approval fingerprints are enforced independently of this cache.
+
 Set `mask_review_path`, `mask_override_dir`, and
 `require_approved_masks = true` for production runs. Changed thumbnail pixels
 or geometry invalidate the saved approval fingerprint. Candidate overlays and

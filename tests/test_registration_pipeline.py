@@ -7,11 +7,16 @@ import numpy as np
 from PIL import Image
 
 from histopia.registration import RegistrationConfig, _pipeline, register_sections
+from histopia.registration._masking import TissueMaskResult
 from histopia.registration._pipeline import (
     _create_tissue_masks,
     _crop_to_mask,
     _load_automatic_mask_snapshot,
     _load_registration_thumbnails,
+    _mask_artifact_fingerprint,
+    _mask_artifact_paths,
+    _mask_artifacts_are_current,
+    _record_mask_artifacts,
 )
 from histopia.registration._slides import SlideGeometry
 
@@ -45,6 +50,65 @@ def test_register_sections_writes_thumbnail_result(tmp_path: Path) -> None:
     assert payload["slides"][1]["alignment_metrics"]["dice"] > 0.9
     assert (output_dir / "qc" / "[#001] fixed.mask_overlay.png").exists()
     assert (output_dir / "validation_report.md").exists()
+
+
+def test_mask_artifact_manifest_requires_exact_complete_bundle(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "output"
+    source = tmp_path / "slide.ndpi"
+    source.write_bytes(b"source")
+    image = np.full((16, 20, 3), 180, dtype=np.uint8)
+    mask = np.zeros((16, 20), dtype=bool)
+    mask[3:13, 4:16] = True
+    result = TissueMaskResult(
+        mask=mask,
+        method="test",
+        metrics={},
+        accepted=True,
+        warnings=[],
+        candidate_masks={"candidate": mask.copy()},
+    )
+    paths = _mask_artifact_paths(
+        output / "processed",
+        output / "qc",
+        output / "qc" / "mask_candidates",
+        source,
+        result,
+    )
+    fingerprint = _mask_artifact_fingerprint(source, image, result)
+    manifest: dict[str, object] = {
+        "schema": "histopia-registration-mask-artifacts-v1",
+        "slides": {},
+    }
+
+    assert not _mask_artifacts_are_current(manifest, source, fingerprint, paths, output)
+    for path in paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"artifact")
+    _record_mask_artifacts(manifest, source, fingerprint, paths, output)
+
+    assert _mask_artifacts_are_current(manifest, source, fingerprint, paths, output)
+    paths[-1].unlink()
+    assert not _mask_artifacts_are_current(manifest, source, fingerprint, paths, output)
+
+
+def test_mask_artifact_fingerprint_changes_with_rendered_mask(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "slide.ndpi"
+    source.write_bytes(b"source")
+    image = np.full((8, 9, 3), 180, dtype=np.uint8)
+    first = np.zeros((8, 9), dtype=bool)
+    second = first.copy()
+    second[2, 3] = True
+
+    def result(mask: np.ndarray) -> TissueMaskResult:
+        return TissueMaskResult(mask, "test", {}, True, [])
+
+    assert _mask_artifact_fingerprint(
+        source, image, result(first)
+    ) != _mask_artifact_fingerprint(source, image, result(second))
 
 
 def test_tissue_crop_ignores_tiny_remote_artifact() -> None:

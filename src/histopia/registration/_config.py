@@ -108,6 +108,7 @@ class RegistrationConfig:
     thumbnail_workers: int = 1
     mask_workers: int = 1
     ordering_workers: int = 1
+    preprocessing_cache: bool = True
     require_approved_order: bool = False
     mask_review_path: Path | None = None
     mask_override_dir: Path | None = None
