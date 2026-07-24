@@ -9,6 +9,7 @@ from histopia.semantic._atlas import JointAtlas, fit_joint_atlas
 from histopia.semantic._config import SemanticAtlasConfig
 from histopia.semantic._extract import extract_registration_features
 from histopia.semantic._features import PatchEncoder, PatchFeatures
+from histopia.semantic._preflight import SemanticPreflight
 from histopia.semantic._result import write_atlas_result
 
 
@@ -41,6 +42,7 @@ def run_semantic_atlas(
     config: SemanticAtlasConfig,
     encoder: PatchEncoder,
     *,
+    preflight: SemanticPreflight | None = None,
     overwrite_features: bool = False,
     progress: Callable[[str], None] | None = None,
 ) -> Path:
@@ -49,6 +51,7 @@ def run_semantic_atlas(
     extract_registration_features(
         config,
         encoder,
+        preflight=preflight,
         overwrite=overwrite_features,
         progress=progress,
     )

@@ -17,7 +17,11 @@ from histopia.semantic._features import (
     PatchFeatures,
     extract_patch_features,
 )
-from histopia.semantic._preflight import preflight_registration, write_preflight
+from histopia.semantic._preflight import (
+    SemanticPreflight,
+    preflight_registration,
+    write_preflight,
+)
 from histopia.semantic._vips import configure_vips_threads
 
 _EXTRACTION_METHOD = "histopia-source-grid-v2"
@@ -27,6 +31,7 @@ def extract_registration_features(
     config: SemanticAtlasConfig,
     encoder: PatchEncoder,
     *,
+    preflight: SemanticPreflight | None = None,
     overwrite: bool = False,
     progress: Callable[[str], None] | None = None,
 ) -> tuple[Path, ...]:
@@ -36,7 +41,8 @@ def extract_registration_features(
     registration_path = config.registration_run / "registration_result.json"
     payload = json.loads(registration_path.read_text())
     slides = payload["slides"]
-    preflight = preflight_registration(config.registration_run)
+    if preflight is None:
+        preflight = preflight_registration(config.registration_run)
     write_preflight(preflight, config.output_dir / "preflight.json")
     preflight_slides = {slide.slide_name: slide for slide in preflight.slides}
     model_fingerprint = getattr(encoder, "model_fingerprint", None)

@@ -103,6 +103,27 @@ def test_preflight_rejects_unapproved_order_when_manifest_exists(
         preflight_registration(run)
 
 
+def test_run_cli_checks_registration_before_requiring_model_cache(
+    tmp_path: Path,
+) -> None:
+    run = _write_registration(tmp_path)
+    (run / "section_order_review.json").write_text(
+        json.dumps({"approved": False, "fingerprint": "pending"})
+    )
+    config = tmp_path / "semantic.json"
+    config.write_text(
+        json.dumps(
+            {
+                "registration_run": str(run),
+                "output_dir": str(tmp_path / "semantic"),
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="section order is not approved"):
+        main(["run", "--config", str(config)])
+
+
 def test_preflight_rejects_unapproved_mask_review(tmp_path: Path) -> None:
     run = _write_registration(tmp_path)
     path = run / "registration_result.json"

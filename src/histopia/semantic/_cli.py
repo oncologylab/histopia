@@ -124,6 +124,11 @@ def main(argv: list[str] | None = None) -> int:
             f"fingerprint={preflight.fingerprint}"
         )
         return 0
+    preflight = None
+    if args.command in {"extract", "run"}:
+        from histopia.semantic._preflight import preflight_registration
+
+        preflight = preflight_registration(config.registration_run)
     if args.command == "fit":
         from histopia.semantic._pipeline import fit_saved_features
 
@@ -145,6 +150,7 @@ def main(argv: list[str] | None = None) -> int:
             paths = extract_registration_features(
                 config,
                 encoder,
+                preflight=preflight,
                 overwrite=args.overwrite_features,
                 progress=print,
             )
@@ -153,6 +159,7 @@ def main(argv: list[str] | None = None) -> int:
         result = run_semantic_atlas(
             config,
             encoder,
+            preflight=preflight,
             overwrite_features=args.overwrite_features,
             progress=print,
         )
