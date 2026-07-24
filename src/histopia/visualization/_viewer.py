@@ -921,6 +921,13 @@ article{position:relative;min-width:0;min-height:0;background:#f4f4f2;border:1px
 article.fixed{border:3px solid #e0b84b}img{display:block;width:100%;height:calc(100% - 34px);object-fit:contain;background:white}
 .label,.metrics{height:17px;padding:1px 5px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:#16191b}
 .label{font-weight:700}.metrics{font-size:11px;color:#4b5156}
+@media(max-width:600px){
+  header{height:32px;gap:8px;padding:4px 7px;font-size:10px;white-space:nowrap}
+  header strong{font-size:12px}header #score,header #summary,header code{display:none}
+  main{height:calc(100vh - 32px);gap:3px;padding:3px}
+  img{height:calc(100% - 32px)}
+  .label,.metrics{height:16px;padding:1px 4px}.metrics{font-size:10px}
+}
 """
 
 _VIEWER_JS = """import * as THREE from 'three';

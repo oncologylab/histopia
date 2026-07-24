@@ -52,6 +52,7 @@ button{height:32px;padding:0 14px;border:1px solid #899295;border-right:0;
   background:#fff;color:#1d2326;cursor:pointer}
 button:last-child{border-right:1px solid #899295}
 button.active{background:#1d292c;color:#fff}
+button:disabled{background:#eef0ef;color:#8a9294;cursor:not-allowed}
 a{margin-left:auto;color:#006d77;text-decoration:none;font-weight:600}
 main{width:100%;height:calc(100vh - 52px)}
 iframe{display:block;width:100%;height:100%;border:0;background:#fff}
@@ -97,16 +98,21 @@ function selectRegistrationMouse(attempt = 0) {
 
 function render() {
   const item = current();
+  if (!item.stages[stage]) stage = 'mask';
+  buttons.forEach(button => {
+    button.disabled = !item.stages[button.dataset.stage];
+  });
   buttons.forEach(button =>
     button.classList.toggle('active', button.dataset.stage === stage));
   frame.src = item.stages[stage];
 }
 
 mouse.addEventListener('change', () => {
+  render();
   if (stage === 'registration') selectRegistrationMouse();
-  else render();
 });
 buttons.forEach(button => button.addEventListener('click', () => {
+  if (button.disabled) return;
   stage = button.dataset.stage;
   render();
 }));
@@ -139,13 +145,6 @@ def export_registration_qc_showcase(
     if not isinstance(mice, list):
         raise ValueError("viewer manifest must contain a mice list")
     mice_by_id = {str(mouse.get("id")): mouse for mouse in mice}
-    unknown = [mouse_id for mouse_id in selected_ids if mouse_id not in mice_by_id]
-    if unknown:
-        raise ValueError(f"unknown viewer mouse: {unknown[0]}")
-
-    for filename in _VIEWER_FILES:
-        if not (source / filename).is_file():
-            raise FileNotFoundError(f"viewer file not found: {filename}")
     for mouse_id in selected_ids:
         for kind in ("mask", "order"):
             review = source / f"{mouse_id}-{kind}-review"
@@ -155,69 +154,77 @@ def export_registration_qc_showcase(
                 )
 
     output.mkdir(parents=True, exist_ok=True)
-    registration = output / "registration"
-    registration.mkdir()
-    for filename in _VIEWER_FILES:
-        shutil.copy2(source / filename, registration / filename)
-
+    registration: Path | None = None
     registration_mice = []
     portal_mice = []
     for mouse_id in selected_ids:
-        mouse = mice_by_id[mouse_id]
-        slides = []
-        for slide in mouse.get("slides", []):
-            texture = _relative_asset(str(slide["texture"]), mouse_id)
-            source_texture = source / texture
-            if not source_texture.is_file():
-                raise FileNotFoundError(f"registration texture not found: {texture}")
-            destination = registration / texture
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source_texture, destination)
-            slides.append(
-                {
-                    key: value
-                    for key, value in slide.items()
-                    if key
-                    not in {
-                        "semantic_texture",
-                        "semantic_textures",
-                        "blend_texture",
-                    }
-                }
-            )
-        registration_mice.append(
-            {
-                key: value
-                for key, value in mouse.items()
-                if key not in {"slides", "semantic"}
-            }
-            | {"slides": slides, "semantic": None}
-        )
-
         review_root = output / "reviews" / mouse_id
         shutil.copytree(source / f"{mouse_id}-mask-review", review_root / "mask")
         shutil.copytree(source / f"{mouse_id}-order-review", review_root / "order")
+        stages = {
+            "mask": f"reviews/{mouse_id}/mask/",
+            "order": f"reviews/{mouse_id}/order/",
+        }
+        mouse = mice_by_id.get(mouse_id)
+        if mouse is not None:
+            if registration is None:
+                registration = output / "registration"
+                registration.mkdir()
+                for filename in _VIEWER_FILES:
+                    source_file = source / filename
+                    if not source_file.is_file():
+                        raise FileNotFoundError(f"viewer file not found: {filename}")
+                    shutil.copy2(source_file, registration / filename)
+            slides = []
+            for slide in mouse.get("slides", []):
+                texture = _relative_asset(str(slide["texture"]), mouse_id)
+                source_texture = source / texture
+                if not source_texture.is_file():
+                    raise FileNotFoundError(
+                        f"registration texture not found: {texture}"
+                    )
+                destination = registration / texture
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source_texture, destination)
+                slides.append(
+                    {
+                        key: value
+                        for key, value in slide.items()
+                        if key
+                        not in {
+                            "semantic_texture",
+                            "semantic_textures",
+                            "blend_texture",
+                        }
+                    }
+                )
+            registration_mice.append(
+                {
+                    key: value
+                    for key, value in mouse.items()
+                    if key not in {"slides", "semantic"}
+                }
+                | {"slides": slides, "semantic": None}
+            )
+            stages["registration"] = "registration/"
         portal_mice.append(
             {
                 "id": mouse_id,
-                "stages": {
-                    "mask": f"reviews/{mouse_id}/mask/",
-                    "order": f"reviews/{mouse_id}/order/",
-                    "registration": "registration/",
-                },
+                "stages": stages,
             }
         )
 
-    registration_manifest = {
-        "schema_version": manifest.get("schema_version", 1),
-        "mice": registration_mice,
-    }
     portal_manifest = {"schema_version": 1, "mice": portal_mice}
-    _reject_local_paths(registration_manifest)
+    if registration is not None:
+        registration_manifest = {
+            "schema_version": manifest.get("schema_version", 1),
+            "mice": registration_mice,
+        }
+        _reject_local_paths(registration_manifest)
+        (registration / "manifest.json").write_text(
+            json.dumps(registration_manifest, indent=2) + "\n"
+        )
     _reject_local_paths(portal_manifest)
-    (registration / "manifest.json").write_text(
-        json.dumps(registration_manifest, indent=2) + "\n"
-    )
     (output / "qc-manifest.json").write_text(
         json.dumps(portal_manifest, indent=2) + "\n"
     )

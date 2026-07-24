@@ -95,6 +95,33 @@ def test_export_registration_qc_showcase_rejects_missing_review(
         export_registration_qc_showcase(source, tmp_path / "qc", "4435")
 
 
+def test_export_registration_qc_showcase_supports_provisional_reviews(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    output = tmp_path / "qc"
+    _write_source(source)
+    for kind in ("mask", "order"):
+        review = source / f"provisional-{kind}-review"
+        review.mkdir()
+        (review / "index.html").write_text(f"{kind} provisional\n")
+
+    export_registration_qc_showcase(source, output, "provisional")
+
+    portal = json.loads((output / "qc-manifest.json").read_text())
+    assert portal["mice"] == [
+        {
+            "id": "provisional",
+            "stages": {
+                "mask": "reviews/provisional/mask/",
+                "order": "reviews/provisional/order/",
+            },
+        }
+    ]
+    assert not (output / "registration").exists()
+    assert "button.disabled" in (output / "portal.js").read_text()
+
+
 def test_export_registration_qc_showcase_rejects_nonempty_output(
     tmp_path: Path,
 ) -> None:

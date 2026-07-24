@@ -46,6 +46,12 @@ registration views. Semantic textures, raw slides, source paths, and unrelated
 specimens are excluded. The exporter rejects missing reviews, unsafe texture
 paths, local absolute paths, and non-empty output directories.
 
+Mask and order reviews may be exported before a cohort is promoted into the
+source viewer manifest. The portal then disables 3D registration for that
+cohort, preserving review-before-promotion. Use a separately generated
+provisional viewer as the source when all three review stages should be
+available without changing the accepted main viewer.
+
 Generated textures and manifests are not tracked in the source repository. The
 approved showcase is packaged as a versioned GitHub Release asset. The Pages
 workflow downloads the exact release URL, verifies the archive SHA-256, checks

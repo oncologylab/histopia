@@ -157,7 +157,9 @@ def test_mask_review_builds_full_thumbnail_audit(tmp_path: Path) -> None:
     assert len(manifest["fingerprint"]) == 64
     assert manifest["slides"][0]["method"] == "group_consensus"
     assert (index.parent / manifest["slides"][0]["texture"]).is_file()
-    assert "overflow:hidden" in (index.parent / "mask-review.css").read_text()
+    css = (index.parent / "mask-review.css").read_text()
+    assert "overflow:hidden" in css
+    assert "@media(max-width:600px)" in css
 
 
 def test_viewer_adds_lazy_semantic_and_blend_modes(tmp_path: Path) -> None:
