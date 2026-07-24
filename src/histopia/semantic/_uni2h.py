@@ -5,9 +5,11 @@ from __future__ import annotations
 import hashlib
 import os
 from collections.abc import Callable
+from dataclasses import dataclass
 from importlib import import_module
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -58,23 +60,19 @@ class Uni2hEncoder:
     ) -> Uni2hEncoder:
         """Load gated weights from an external cache; never package model data."""
 
-        _preload_wsi_backend(vips_threads=vips_threads)
-        cache_dir = Path(cache_dir).expanduser().resolve()
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        revision = _cached_model_revision(cache_dir)
-        os.environ["HF_HOME"] = str(cache_dir)
-        if local_only:
-            os.environ["HF_HUB_OFFLINE"] = "1"
-        else:
-            os.environ.pop("HF_HUB_OFFLINE", None)
+        runtime = _prepare_uni2h_runtime(
+            cache_dir,
+            device=device,
+            local_only=local_only,
+            vips_threads=vips_threads,
+        )
         try:
             import timm
-            import torch
             from timm.data import resolve_data_config
             from timm.data.transforms_factory import create_transform
         except ImportError as exc:
             raise RuntimeError("UNI2-h extraction requires the 'uni2h' extra") from exc
-        resolved_device = resolve_compute_device(device, torch_module=torch).resolved
+        torch = runtime.torch
         kwargs = {
             "img_size": 224,
             "patch_size": 14,
@@ -89,7 +87,7 @@ class Uni2hEncoder:
             "act_layer": torch.nn.SiLU,
             "reg_tokens": 8,
             "dynamic_img_size": True,
-            "cache_dir": str(cache_dir),
+            "cache_dir": str(runtime.cache_dir),
         }
         try:
             model = timm.create_model(
@@ -98,47 +96,44 @@ class Uni2hEncoder:
         except Exception as exc:
             mode = "local cache" if local_only else "Hugging Face access"
             raise RuntimeError(
-                f"UNI2-h weights unavailable from {mode} at {cache_dir}; "
+                f"UNI2-h weights unavailable from {mode} at {runtime.cache_dir}; "
                 "accept the model license and populate this external cache first"
             ) from exc
-        model.eval().to(resolved_device)
+        model.eval().to(runtime.device)
         transform = create_transform(
             **resolve_data_config(model.pretrained_cfg, model=model)
         )
-        identity = f"MahmoodLab/UNI2-h@{revision}".encode()
-        runtime_provenance: dict[str, object] = {
-            "device": resolved_device,
-            "precision": (
-                "bfloat16-autocast" if resolved_device.startswith("cuda") else "float32"
-            ),
-            "packages": {
-                package: _package_version(package)
-                for package in (
-                    "numpy",
-                    "pillow",
-                    "pyvips",
-                    "timm",
-                    "torch",
-                    "torchvision",
-                )
-            },
-            "libvips": _libvips_version(),
-            "cuda_runtime": str(torch.version.cuda or ""),
-        }
-        if resolved_device.startswith("cuda"):
-            device_index = torch.device(resolved_device).index or 0
-            runtime_provenance["accelerator"] = {
-                "name": torch.cuda.get_device_name(device_index),
-                "compute_capability": list(
-                    torch.cuda.get_device_capability(device_index)
-                ),
-            }
         return cls(
             model,
             transform,
-            device=resolved_device,
-            model_fingerprint=hashlib.sha256(identity).hexdigest(),
-            runtime_provenance=runtime_provenance,
+            device=runtime.device,
+            model_fingerprint=runtime.model_fingerprint,
+            runtime_provenance=runtime.provenance,
+        )
+
+    @classmethod
+    def lazy_from_cache(
+        cls,
+        cache_dir: Path | str,
+        *,
+        device: str = "auto",
+        local_only: bool = True,
+        vips_threads: int | None = None,
+    ) -> _LazyUni2hEncoder:
+        """Resolve exact provenance now and load model weights only when needed."""
+
+        runtime = _prepare_uni2h_runtime(
+            cache_dir,
+            device=device,
+            local_only=local_only,
+            vips_threads=vips_threads,
+        )
+        return _LazyUni2hEncoder(
+            cache_dir=runtime.cache_dir,
+            device=runtime.device,
+            local_only=local_only,
+            vips_threads=vips_threads,
+            runtime=runtime,
         )
 
     def encode(self, images: np.ndarray) -> np.ndarray:
@@ -172,6 +167,107 @@ class Uni2hEncoder:
                 [self.encode(images[:midpoint]), self.encode(images[midpoint:])]
             )
         return output.float().cpu().numpy()
+
+
+@dataclass(frozen=True, slots=True)
+class _Uni2hRuntime:
+    cache_dir: Path
+    device: str
+    model_fingerprint: str
+    provenance: dict[str, object]
+    torch: Any
+
+
+class _LazyUni2hEncoder:
+    """Patch encoder that materializes UNI2-h only on its first cache miss."""
+
+    def __init__(
+        self,
+        *,
+        cache_dir: Path,
+        device: str,
+        local_only: bool,
+        vips_threads: int | None,
+        runtime: _Uni2hRuntime,
+    ) -> None:
+        self.device = device
+        self.model_fingerprint = runtime.model_fingerprint
+        self.runtime_provenance = runtime.provenance
+        self._cache_dir = cache_dir
+        self._local_only = local_only
+        self._vips_threads = vips_threads
+        self._encoder: Uni2hEncoder | None = None
+
+    def encode(self, images: np.ndarray) -> np.ndarray:
+        if self._encoder is None:
+            self._encoder = Uni2hEncoder.from_cache(
+                self._cache_dir,
+                device=self.device,
+                local_only=self._local_only,
+                vips_threads=self._vips_threads,
+            )
+            if (
+                self._encoder.model_fingerprint != self.model_fingerprint
+                or self._encoder.runtime_provenance != self.runtime_provenance
+            ):
+                raise RuntimeError("UNI2-h runtime changed during lazy model loading")
+        return self._encoder.encode(images)
+
+
+def _prepare_uni2h_runtime(
+    cache_dir: Path | str,
+    *,
+    device: str,
+    local_only: bool,
+    vips_threads: int | None,
+) -> _Uni2hRuntime:
+    _preload_wsi_backend(vips_threads=vips_threads)
+    cache_dir = Path(cache_dir).expanduser().resolve()
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    revision = _cached_model_revision(cache_dir)
+    os.environ["HF_HOME"] = str(cache_dir)
+    if local_only:
+        os.environ["HF_HUB_OFFLINE"] = "1"
+    else:
+        os.environ.pop("HF_HUB_OFFLINE", None)
+    try:
+        import torch
+    except ImportError as exc:
+        raise RuntimeError("UNI2-h extraction requires the 'uni2h' extra") from exc
+    resolved_device = resolve_compute_device(device, torch_module=torch).resolved
+    identity = f"MahmoodLab/UNI2-h@{revision}".encode()
+    provenance: dict[str, object] = {
+        "device": resolved_device,
+        "precision": (
+            "bfloat16-autocast" if resolved_device.startswith("cuda") else "float32"
+        ),
+        "packages": {
+            package: _package_version(package)
+            for package in (
+                "numpy",
+                "pillow",
+                "pyvips",
+                "timm",
+                "torch",
+                "torchvision",
+            )
+        },
+        "libvips": _libvips_version(),
+        "cuda_runtime": str(torch.version.cuda or ""),
+    }
+    if resolved_device.startswith("cuda"):
+        device_index = torch.device(resolved_device).index or 0
+        provenance["accelerator"] = {
+            "name": torch.cuda.get_device_name(device_index),
+            "compute_capability": list(torch.cuda.get_device_capability(device_index)),
+        }
+    return _Uni2hRuntime(
+        cache_dir=cache_dir,
+        device=resolved_device,
+        model_fingerprint=hashlib.sha256(identity).hexdigest(),
+        provenance=provenance,
+        torch=torch,
+    )
 
 
 def _cached_model_revision(cache_dir: Path) -> str:

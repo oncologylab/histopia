@@ -159,6 +159,8 @@ def test_mask_review_builds_full_thumbnail_audit(tmp_path: Path) -> None:
     assert len(manifest["fingerprint"]) == 64
     assert manifest["slides"][0]["method"] == "group_consensus"
     assert (index.parent / manifest["slides"][0]["texture"]).is_file()
+    assert (index.parent / "manifest-data.js").is_file()
+    assert "manifest-data.js" in index.read_text()
     css = (index.parent / "mask-review.css").read_text()
     assert "overflow:hidden" in css
     assert "@media(max-width:600px)" in css
@@ -340,6 +342,8 @@ def test_order_review_builds_fixed_height_fingerprinted_grid(tmp_path: Path) -> 
     assert manifest["fingerprint"] == "abc123"
     assert manifest["slides"][0]["fixed"] is True
     assert "overflow:hidden" in (index.parent / "order-review.css").read_text()
+    assert (index.parent / "manifest-data.js").is_file()
+    assert "manifest-data.js" in index.read_text()
     cache = json.loads((index.parent / ".histopia-order-review-cache.json").read_text())
     assert len(cache["assets"]) == 1
     asset = index.parent / manifest["slides"][0]["texture"]

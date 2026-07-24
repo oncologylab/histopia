@@ -64,7 +64,7 @@ def resolve_compute_device(
                 f"CUDA device {index} was requested, but only {count} device(s) "
                 "are available"
             )
-        resolved = f"cuda:{index}" if ":" in value else "cuda"
+        resolved = f"cuda:{index}"
         name = str(torch.cuda.get_device_name(index))
         return ComputeDevice(requested, resolved, "cuda", name)
 

@@ -427,6 +427,7 @@ def build_mask_review(
         "slides": rows,
     }
     (output_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    _write_review_manifest_script(output_dir, manifest)
     (output_dir / "index.html").write_text(_MASK_REVIEW_HTML)
     (output_dir / "mask-review.js").write_text(_MASK_REVIEW_JS)
     (output_dir / "mask-review.css").write_text(_ORDER_REVIEW_CSS)
@@ -1009,10 +1010,21 @@ def build_section_order_review(
     (output_dir / "manifest.json").write_text(
         json.dumps(review_payload, indent=2) + "\n"
     )
+    _write_review_manifest_script(output_dir, review_payload)
     (output_dir / "index.html").write_text(_ORDER_REVIEW_HTML)
     (output_dir / "order-review.js").write_text(_ORDER_REVIEW_JS)
     (output_dir / "order-review.css").write_text(_ORDER_REVIEW_CSS)
     return output_dir / "index.html"
+
+
+def _write_review_manifest_script(
+    output_dir: Path,
+    manifest: dict[str, object],
+) -> None:
+    encoded = json.dumps(manifest, separators=(",", ":"))
+    (output_dir / "manifest-data.js").write_text(
+        f"globalThis.HISTOPIA_REVIEW_MANIFEST={encoded};\n"
+    )
 
 
 def _tissue_review_crop(image: np.ndarray, mask: np.ndarray) -> np.ndarray:
@@ -1130,7 +1142,8 @@ _ORDER_REVIEW_HTML = """<!doctype html>
     <code id="fingerprint"></code>
   </header>
   <main id="slides"></main>
-  <script type="module" src="order-review.js"></script>
+  <script src="manifest-data.js"></script>
+  <script src="order-review.js"></script>
 </body>
 </html>
 """
@@ -1151,12 +1164,14 @@ _MASK_REVIEW_HTML = """<!doctype html>
     <code id="fingerprint"></code>
   </header>
   <main id="slides"></main>
-  <script type="module" src="mask-review.js"></script>
+  <script src="manifest-data.js"></script>
+  <script src="mask-review.js"></script>
 </body>
 </html>
 """
 
-_MASK_REVIEW_JS = """const data = await (await fetch('manifest.json')).json();
+_MASK_REVIEW_JS = """const data = globalThis.HISTOPIA_REVIEW_MANIFEST;
+if (!data) throw new Error('Missing embedded Histopia review manifest');
 const slides = document.querySelector('#slides');
 const rowCount = innerWidth >= 2400
   ? (data.slides.length <= 18 ? 2 : 3)
@@ -1187,7 +1202,8 @@ for (const slide of data.slides) {
 }
 """
 
-_ORDER_REVIEW_JS = """const data = await (await fetch('manifest.json')).json();
+_ORDER_REVIEW_JS = """const data = globalThis.HISTOPIA_REVIEW_MANIFEST;
+if (!data) throw new Error('Missing embedded Histopia review manifest');
 const slides = document.querySelector('#slides');
 const rowCount = innerWidth >= 2400
   ? (data.slides.length <= 18 ? 2 : 3)

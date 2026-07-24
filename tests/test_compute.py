@@ -41,13 +41,13 @@ def test_auto_prefers_cuda_and_reports_hardware() -> None:
     device = resolve_compute_device("auto", torch_module=torch)
     report = inspect_compute(torch_module=torch)
 
-    assert device.resolved == "cuda"
+    assert device.resolved == "cuda:0"
     assert device.accelerator_name == "Test GPU 0"
     assert [row["name"] for row in report["cuda_devices"]] == [
         "Test GPU 0",
         "Test GPU 1",
     ]
-    assert report["selected_device"]["resolved"] == "cuda"
+    assert report["selected_device"]["resolved"] == "cuda:0"
 
 
 def test_auto_falls_back_from_mps_to_cpu() -> None:
@@ -71,5 +71,5 @@ def test_explicit_unavailable_or_invalid_device_fails() -> None:
 def test_inspection_reports_explicit_cpu_selection_on_gpu_machine() -> None:
     report = inspect_compute("cpu", torch_module=_torch(cuda=True, count=1))
 
-    assert report["automatic_device"]["resolved"] == "cuda"
+    assert report["automatic_device"]["resolved"] == "cuda:0"
     assert report["selected_device"]["resolved"] == "cpu"

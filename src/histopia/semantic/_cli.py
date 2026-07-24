@@ -140,7 +140,7 @@ def main(argv: list[str] | None = None) -> int:
         from histopia.semantic._pipeline import run_semantic_atlas
         from histopia.semantic._uni2h import Uni2hEncoder
 
-        encoder = Uni2hEncoder.from_cache(
+        encoder = Uni2hEncoder.lazy_from_cache(
             config.model_cache_dir,
             device=config.device,
             local_only=not args.allow_model_download,

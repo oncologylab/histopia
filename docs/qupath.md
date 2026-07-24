@@ -62,14 +62,17 @@ The primary **Project workflow** tab supports:
 - automatic or explicit registration reference selection
 - registration resolution and worker controls
 - semantic device, K range, batch-size, patch-reader, and model-cache controls
-- live process output, cancellation, opening the registration QC directory,
-  and reviewer/notes-based approval
+- live process output and descendant-process cancellation
+- one self-contained browser portal for tissue-mask and section-order review,
+  followed by reviewer/notes-based fingerprint approval
 - direct semantic execution from the approved registration workspace
 
 The extension writes runtime-only configs and an exact slide-selection
-manifest under `<workspace>/.histopia`. Selected slides may come from different
-directories, but each must have a unique filename and a single local NDPI, SCN,
-SVS, TIFF, or OME-TIFF source URI.
+manifest under `<workspace>/.histopia`. **Open registration QC** generates the
+review portal there and opens its local `index.html`; it does not start a
+server or make external requests. Selected slides may come from different
+directories, but each must have a unique filename and a single local NDPI,
+SCN, SVS, TIFF, or OME-TIFF source URI.
 
 The **Run analysis** tab retains advanced config-file execution. The **Export
 and import** tab supports:

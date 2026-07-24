@@ -86,6 +86,36 @@ def test_mask_review_command_builds_requested_run(tmp_path: Path, monkeypatch) -
     assert calls == [(run, output)]
 
 
+def test_registration_review_command_passes_worker_count(
+    tmp_path: Path, monkeypatch
+) -> None:
+    calls: list[tuple[Path, Path, int]] = []
+
+    def capture(run: Path, output: Path, *, workers: int) -> Path:
+        calls.append((run, output, workers))
+        return output / "index.html"
+
+    monkeypatch.setattr(
+        "histopia.visualization._review_portal.build_registration_review",
+        capture,
+    )
+    run = tmp_path / "registration"
+    output = tmp_path / "review"
+
+    result = _cli.main(
+        [
+            "registration-review",
+            str(run),
+            str(output),
+            "--workers",
+            "4",
+        ]
+    )
+
+    assert result == 0
+    assert calls == [(run, output, 4)]
+
+
 def test_order_review_command_passes_worker_count(tmp_path: Path, monkeypatch) -> None:
     calls: list[tuple[Path, Path, Path, int]] = []
 
