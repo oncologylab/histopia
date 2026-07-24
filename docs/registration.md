@@ -123,8 +123,12 @@ manifest whose positive one-based positions are fixed anchors. Unassigned
 slides are proposed only for the remaining slots using registration support,
 physical tissue area when slide calibration is available, and mask topology.
 The proposal records adjacent distances, physical areas, a runner-up margin,
-and a fingerprint. Set `require_approved_order = true` to stop before
-registration until the exact fingerprint is approved.
+the largest internal-cavity fraction for each slide, a graded cavity-continuity
+summary, and a fingerprint. Substantial cavities seed continuity blocks,
+neighboring weaker cavities extend them, and a single borderline section may
+bridge a block. Multiple separated blocks are marked for human review. Set
+`require_approved_order = true` to stop before registration until the exact
+fingerprint is approved.
 
 Build a fixed-height visual review from the generated proposal and processed
 images:
@@ -141,7 +145,8 @@ build_section_order_review(
 
 Review cards are cropped around accepted tissue for morphology comparison.
 Physical tissue area remains a separate displayed measurement. Changing masks,
-anchors, pairwise distances, or the proposed sequence invalidates approval.
+cavity topology, anchors, pairwise distances, or the proposed sequence
+invalidates approval.
 
 Set `mask_review_path`, `mask_override_dir`, and
 `require_approved_masks = true` for production runs. Changed thumbnail pixels

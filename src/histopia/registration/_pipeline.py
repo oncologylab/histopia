@@ -298,6 +298,10 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
                 for path in slide_paths
             },
             orientation_quarter_turns=orientation_turns,
+            cavity_fractions={
+                path.name: _largest_internal_cavity_fraction(working_masks[path])
+                for path in slide_paths
+            },
         )
         order_review_path = (
             config.section_order_review_path
@@ -1415,22 +1419,8 @@ def _mask_shape_distance(first: np.ndarray, second: np.ndarray) -> float:
 def _mask_hole_topology_distance(first: np.ndarray, second: np.ndarray) -> float:
     """Compare substantial internal cavities independently of outer shape."""
 
-    from scipy import ndimage as ndi
-
-    def largest_hole_fraction(mask: np.ndarray) -> float:
-        binary = np.asarray(mask, dtype=bool)
-        filled = ndi.binary_fill_holes(binary)
-        filled_area = int(np.count_nonzero(filled))
-        if filled_area == 0:
-            return 0.0
-        labels, count = ndi.label(filled & ~binary)
-        if count == 0:
-            return 0.0
-        sizes = np.bincount(labels.ravel())
-        return float(sizes[1:].max(initial=0) / filled_area)
-
-    first_fraction = largest_hole_fraction(first)
-    second_fraction = largest_hole_fraction(second)
+    first_fraction = _largest_internal_cavity_fraction(first)
+    second_fraction = _largest_internal_cavity_fraction(second)
     first_has_hole = first_fraction >= 0.015
     second_has_hole = second_fraction >= 0.015
     if first_has_hole != second_has_hole:
@@ -1438,6 +1428,23 @@ def _mask_hole_topology_distance(first: np.ndarray, second: np.ndarray) -> float
     if not first_has_hole:
         return 0.0
     return min(1.0, abs(first_fraction - second_fraction) / 0.10)
+
+
+def _largest_internal_cavity_fraction(mask: np.ndarray) -> float:
+    """Return the largest enclosed background component relative to filled tissue."""
+
+    from scipy import ndimage as ndi
+
+    binary = np.asarray(mask, dtype=bool)
+    filled = ndi.binary_fill_holes(binary)
+    filled_area = int(np.count_nonzero(filled))
+    if filled_area == 0:
+        return 0.0
+    labels, count = ndi.label(filled & ~binary)
+    if count == 0:
+        return 0.0
+    sizes = np.bincount(labels.ravel())
+    return float(sizes[1:].max(initial=0) / filled_area)
 
 
 def _read_fixed_positions(
