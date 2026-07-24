@@ -160,8 +160,17 @@ def export_registration_qc_showcase(
     portal_mice = []
     for mouse_id in selected_ids:
         review_root = output / "reviews" / mouse_id
-        shutil.copytree(source / f"{mouse_id}-mask-review", review_root / "mask")
-        shutil.copytree(source / f"{mouse_id}-order-review", review_root / "order")
+        ignore_cache = shutil.ignore_patterns(".histopia-*")
+        shutil.copytree(
+            source / f"{mouse_id}-mask-review",
+            review_root / "mask",
+            ignore=ignore_cache,
+        )
+        shutil.copytree(
+            source / f"{mouse_id}-order-review",
+            review_root / "order",
+            ignore=ignore_cache,
+        )
         stages = {
             "mask": f"reviews/{mouse_id}/mask/",
             "order": f"reviews/{mouse_id}/order/",

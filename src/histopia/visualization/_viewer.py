@@ -919,12 +919,17 @@ def build_section_order_review(
     output_dir = Path(output_dir)
     assets_dir = output_dir / "assets"
     assets_dir.mkdir(parents=True, exist_ok=True)
+    cache_path = output_dir / ".histopia-order-review-cache.json"
+    old_cache = _load_asset_cache(cache_path)
+    new_cache: dict[str, dict[str, object]] = {}
+    cache_stats = {"reused": 0, "encoded": 0}
     payload = json.loads(proposal_path.read_text())
     slides = payload.get("slides", [])
     if not isinstance(slides, list) or not slides:
         raise ValueError("section order proposal contains no slides")
 
     review_slides: list[dict[str, object]] = []
+    expected_assets: set[Path] = set()
     for row in slides:
         slide_name = str(row["slide"])
         stem = Path(slide_name).stem
@@ -934,14 +939,20 @@ def build_section_order_review(
         image = np.rot90(image, turns).copy()
         mask = np.rot90(mask, turns).copy()
         rgba = _tissue_review_crop(image, mask)
-        filename = f"{int(row['order']):03d}-{_safe_name(stem)}.webp"
-        Image.fromarray(rgba).save(
-            assets_dir / filename,
-            "WEBP",
-            lossless=False,
-            quality=86,
-            method=6,
+        slide_digest = hashlib.sha256(slide_name.encode()).hexdigest()[:12]
+        filename = f"{_safe_name(stem)}-{slide_digest}.webp"
+        asset_path = assets_dir / filename
+        _write_cached_webp(
+            Image,
+            rgba,
+            asset_path,
+            output_dir=output_dir,
+            options={"lossless": False, "quality": 86, "method": 6},
+            old_cache=old_cache,
+            new_cache=new_cache,
+            stats=cache_stats,
         )
+        expected_assets.add(asset_path)
         review_slides.append(
             {
                 **row,
@@ -950,6 +961,13 @@ def build_section_order_review(
             }
         )
 
+    for stale_asset in assets_dir.glob("*.webp"):
+        if stale_asset not in expected_assets:
+            stale_asset.unlink()
+    _write_json_atomic(
+        cache_path,
+        {"schema_version": 1, "assets": new_cache},
+    )
     review_payload = {
         "schema_version": 1,
         "approved": bool(payload.get("approved")),

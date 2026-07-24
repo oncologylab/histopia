@@ -55,6 +55,7 @@ def _write_source(root: Path) -> None:
         order.mkdir()
         (order / "index.html").write_text(f"order {mouse_id}\n")
         (order / "manifest.json").write_text(json.dumps({"approved": True}))
+        (order / ".histopia-order-review-cache.json").write_text("{}")
     (root / "manifest.json").write_text(json.dumps({"schema_version": 1, "mice": mice}))
 
 
@@ -80,6 +81,9 @@ def test_export_registration_qc_showcase_selects_sanitized_mice(
     assert (output / "registration" / "vendor" / "three.module.min.js").is_file()
     assert not (output / "registration" / "assets" / "unused").exists()
     assert (output / "reviews" / "4435" / "mask" / "mask.jpg").exists()
+    assert not (
+        output / "reviews" / "4435" / "order" / ".histopia-order-review-cache.json"
+    ).exists()
     assert (output / ".nojekyll").exists()
 
 

@@ -340,6 +340,78 @@ def test_order_review_builds_fixed_height_fingerprinted_grid(tmp_path: Path) -> 
     assert manifest["fingerprint"] == "abc123"
     assert manifest["slides"][0]["fixed"] is True
     assert "overflow:hidden" in (index.parent / "order-review.css").read_text()
+    cache = json.loads((index.parent / ".histopia-order-review-cache.json").read_text())
+    assert len(cache["assets"]) == 1
+    asset = index.parent / manifest["slides"][0]["texture"]
+    original_asset = asset.read_bytes()
+
+    asset.write_bytes(b"corrupt")
+    build_section_order_review(proposal, processed, index.parent)
+    assert asset.read_bytes() == original_asset
+
+    image[5:20, 7:24] = (30, 140, 180)
+    Image.fromarray(image).save(processed / "HE.thumbnail.png")
+    build_section_order_review(proposal, processed, index.parent)
+    assert asset.read_bytes() != original_asset
+
+
+def test_order_review_reuses_assets_across_reordering(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    processed = tmp_path / "processed"
+    processed.mkdir()
+    slides = []
+    for index, name in enumerate(("HE", "CK19")):
+        image = np.full((24, 30, 3), 230, dtype=np.uint8)
+        image[5:20, 7 + index : 24 + index] = (130, 80, 60)
+        mask = np.zeros((24, 30), dtype=np.uint8)
+        mask[5:20, 7 + index : 24 + index] = 255
+        Image.fromarray(image).save(processed / f"{name}.thumbnail.png")
+        Image.fromarray(mask).save(processed / f"{name}.mask.png")
+        slides.append(
+            {
+                "order": index + 1,
+                "slide": f"{name}.ndpi",
+                "distance_from_previous": None if index == 0 else 0.1,
+            }
+        )
+    proposal = tmp_path / "order.json"
+    proposal.write_text(json.dumps({"fingerprint": "first", "slides": slides}))
+    output = tmp_path / "review"
+
+    build_section_order_review(proposal, processed, output)
+    first_manifest = json.loads((output / "manifest.json").read_text())
+    textures = {row["slide"]: row["texture"] for row in first_manifest["slides"]}
+    stale = output / "assets" / "stale.webp"
+    stale.write_bytes(b"stale")
+    proposal.write_text(
+        json.dumps(
+            {
+                "fingerprint": "second",
+                "slides": [
+                    {**slides[1], "order": 1, "distance_from_previous": None},
+                    {**slides[0], "order": 2, "distance_from_previous": 0.1},
+                ],
+            }
+        )
+    )
+
+    def fail_save(*args, **kwargs) -> None:
+        raise AssertionError("reordered unchanged assets must not be encoded")
+
+    monkeypatch.setattr(Image.Image, "save", fail_save)
+    build_section_order_review(proposal, processed, output)
+
+    second_manifest = json.loads((output / "manifest.json").read_text())
+    assert [row["slide"] for row in second_manifest["slides"]] == [
+        "CK19.ndpi",
+        "HE.ndpi",
+    ]
+    assert {
+        row["slide"]: row["texture"] for row in second_manifest["slides"]
+    } == textures
+    assert not stale.exists()
 
 
 def test_order_review_crop_normalizes_scanner_canvas() -> None:

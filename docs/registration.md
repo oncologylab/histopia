@@ -157,6 +157,16 @@ Physical tissue area remains a separate displayed measurement. Changing masks,
 cavity topology, anchors, pairwise distances, or the proposed sequence
 invalidates approval.
 
+Order-review WebPs use stable per-slide names and a local checksum cache.
+Changing only the proposed sequence reuses unchanged image assets; changing
+thumbnail pixels, mask pixels, quarter-turn orientation, or encoder settings
+re-encodes the affected slide. Output checksums are verified before reuse, so
+a missing or modified WebP is regenerated. The cache is performance metadata
+and never changes or bypasses the order fingerprint. On a representative
+24-slide review, a cold build took 30.48 seconds, an exact warm build took
+1.78 seconds, and a reorder-only build took 1.77 seconds while preserving all
+24 WebP checksums.
+
 Build a fixed-viewport audit of every accepted tissue mask before approval:
 
 ```bash
