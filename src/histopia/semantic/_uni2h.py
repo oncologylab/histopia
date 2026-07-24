@@ -150,10 +150,26 @@ class Uni2hEncoder:
             from PIL import Image
         except ImportError as exc:
             raise RuntimeError("UNI2-h extraction requires the 'uni2h' extra") from exc
-        tensors = [
-            self.transform(Image.fromarray(image, mode="RGB")) for image in images
-        ]
-        return self._encode_tensor_batch(torch, torch.stack(tensors))
+        if (
+            images.ndim == 4
+            and images.shape[1:] == (224, 224, 3)
+            and images.dtype == np.uint8
+        ):
+            source = np.ascontiguousarray(images)
+            if not source.flags.writeable:
+                source = source.copy()
+            batch = (
+                torch.from_numpy(source)
+                .permute(0, 3, 1, 2)
+                .to(dtype=torch.float32)
+                .div_(255)
+            )
+            batch = self.transform(batch)
+        else:
+            batch = torch.stack(
+                [self.transform(Image.fromarray(image, mode="RGB")) for image in images]
+            )
+        return self._encode_tensor_batch(torch, batch)
 
     def _encode_tensor_batch(self, torch: Any, batch: Any) -> np.ndarray:
         """Encode one transformed CPU batch, splitting only after device OOM."""

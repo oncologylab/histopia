@@ -98,6 +98,13 @@ patch workers. All feature and coordinate hashes were identical. Vectorized
 mask-grid coverage reduced its 49,533-patch selection stage from 3.33 seconds
 to 0.018 seconds with every fraction identical.
 
+Standard 224-pixel RGB patches are normalized as one tensor batch. On the
+validated A100 runtime, this reduced 64-patch preprocessing from 62.4 to
+14.9 milliseconds and complete preprocessing plus inference from 0.319 to
+0.190 seconds. Normalized tensors and all 64 embeddings were bit-for-bit
+identical to the per-image transform path, which remains the fallback for
+nonstandard input dimensions.
+
 The tested 40 GiB A100 runtime used 3.51 GiB at batch 64 and 6.34 GiB at batch
 256. Batch 256 reached about 35 patches per second and is a useful starting
 point on that class of GPU; keep 64 for portable configurations and benchmark

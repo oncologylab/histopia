@@ -192,6 +192,84 @@ def test_uni2h_encoder_uses_recorded_float16_fallback(monkeypatch) -> None:
     }
 
 
+def test_uni2h_encoder_batches_standard_224_pixel_transform(monkeypatch) -> None:
+    calls: dict[str, object] = {}
+    float32 = object()
+
+    class Batch:
+        def __init__(self, values: np.ndarray) -> None:
+            self.values = values
+
+        def permute(self, *axes: int):
+            self.values = self.values.transpose(axes)
+            return self
+
+        def to(self, *args, **kwargs):
+            if "dtype" in kwargs:
+                assert kwargs["dtype"] is float32
+                self.values = self.values.astype(np.float32)
+            else:
+                calls["transfer"] = (args, kwargs)
+            return self
+
+        def div_(self, value: int):
+            self.values /= value
+            return self
+
+    class Output:
+        def float(self):
+            return self
+
+        def cpu(self):
+            return self
+
+        def numpy(self) -> np.ndarray:
+            return np.ones((2, 3), dtype=np.float32)
+
+    def transform(batch: Batch) -> Batch:
+        calls["transform_shape"] = batch.values.shape
+        calls["transform_range"] = (
+            float(batch.values.min()),
+            float(batch.values.max()),
+        )
+        return batch
+
+    torch = SimpleNamespace(
+        OutOfMemoryError=RuntimeError,
+        autocast=lambda **kwargs: nullcontext(),
+        bfloat16=object(),
+        cuda=SimpleNamespace(),
+        float16=object(),
+        float32=float32,
+        from_numpy=lambda values: Batch(values),
+        inference_mode=nullcontext,
+        stack=lambda tensors: (_ for _ in ()).throw(
+            AssertionError("standard patches must use the batched transform")
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    encoder = Uni2hEncoder(
+        lambda batch: Output(),
+        transform,
+        device="cpu",
+        model_fingerprint="model",
+        runtime_provenance={"device": "cpu", "precision": "float32"},
+    )
+    images = np.stack(
+        [
+            np.zeros((224, 224, 3), dtype=np.uint8),
+            np.full((224, 224, 3), 255, dtype=np.uint8),
+        ]
+    )
+
+    result = encoder.encode(images)
+
+    np.testing.assert_array_equal(result, np.ones((2, 3), dtype=np.float32))
+    assert calls["transform_shape"] == (2, 3, 224, 224)
+    assert calls["transform_range"] == (0.0, 1.0)
+    assert calls["transfer"] == (("cpu",), {"non_blocking": False})
+
+
 def test_uni2h_oom_retry_reuses_transforms_and_preserves_order(monkeypatch) -> None:
     transformed: list[int] = []
     attempts: list[list[int]] = []
