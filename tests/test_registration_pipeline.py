@@ -376,3 +376,69 @@ def test_anchored_order_reuses_exact_distance_cache(
     ) as sequential_cache:
         sequential = sequential_cache["distances"]
     assert np.array_equal(parallel, sequential)
+
+
+def test_hybrid_registration_reuses_features_without_changing_results(
+    tmp_path: Path, monkeypatch
+) -> None:
+    rng = np.random.default_rng(41)
+    base = rng.integers(0, 256, size=(140, 160, 3), dtype=np.uint8)
+    paths = tuple(tmp_path / f"section-{index}.png" for index in range(4))
+    shifts = ((0, 0), (2, -3), (4, -5), (6, -8))
+    crops = {
+        path: _pipeline._Crop(
+            image=np.roll(base, shift=shift, axis=(0, 1)),
+            mask=np.ones(base.shape[:2], dtype=bool),
+            offset_xy=np.zeros(2, dtype=float),
+            scale=1.0,
+        )
+        for path, shift in zip(paths, shifts, strict=True)
+    }
+    config = RegistrationConfig(
+        tmp_path,
+        tmp_path / "output",
+        rigid_method="feature",
+        align_strategy="hybrid",
+        ordering_workers=1,
+        write_processed_images=False,
+    )
+    config.refinement.enabled = False
+    reference = paths[1]
+
+    prepare_crop_features = _pipeline._prepare_crop_features
+    monkeypatch.setattr(_pipeline, "_prepare_crop_features", lambda *_args, **_kw: None)
+    baseline, baseline_parents = _pipeline._estimate_hybrid_transforms(
+        paths,
+        reference,
+        crops,
+        config,
+        tmp_path / "baseline",
+    )
+
+    detections = 0
+    prepare_rigid_features = _pipeline.prepare_rigid_features
+
+    def counted_prepare(image, mask):
+        nonlocal detections
+        detections += 1
+        return prepare_rigid_features(image, mask)
+
+    monkeypatch.setattr(_pipeline, "_prepare_crop_features", prepare_crop_features)
+    monkeypatch.setattr(_pipeline, "prepare_rigid_features", counted_prepare)
+    optimized, optimized_parents = _pipeline._estimate_hybrid_transforms(
+        paths,
+        reference,
+        crops,
+        config,
+        tmp_path / "optimized",
+    )
+
+    assert detections == len(paths)
+    assert optimized_parents == baseline_parents
+    assert optimized.keys() == baseline.keys()
+    for path in optimized:
+        assert np.array_equal(optimized[path].matrix, baseline[path].matrix)
+        assert optimized[path].method == baseline[path].method
+        assert optimized[path].match_count == baseline[path].match_count
+        assert optimized[path].inlier_count == baseline[path].inlier_count
+        assert optimized[path].warnings == baseline[path].warnings

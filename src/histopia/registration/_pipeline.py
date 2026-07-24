@@ -343,8 +343,15 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
         )
         for path in slide_paths
     }
+    prepared_features: dict[Path, PreparedRigidFeatures] | None = None
     if config.section_order_strategy == "similarity":
-        slide_paths = _similarity_section_order(slide_paths, crops, config)
+        prepared_features = _prepare_crop_features(slide_paths, crops, config)
+        slide_paths = _similarity_section_order(
+            slide_paths,
+            crops,
+            config,
+            prepared_features=prepared_features,
+        )
     elif config.section_order_strategy == "anchored_similarity":
         physical_areas = {
             path: _physical_mask_area(working_masks[path], geometries[path])
@@ -370,8 +377,13 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
             expected_size=len(slide_paths),
         )
         if distances is None:
+            prepared_features = _prepare_crop_features(slide_paths, crops, config)
             distances = _section_distance_matrix(
-                slide_paths, crops, config, physical_areas=physical_areas
+                slide_paths,
+                crops,
+                config,
+                physical_areas=physical_areas,
+                prepared_features=prepared_features,
             )
             write_ordering_distance_cache(
                 cache_path,
@@ -410,10 +422,17 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
             raise RegistrationApprovalRequired("order", order_review_path)
         path_by_name = {path.name: path for path in slide_paths}
         slide_paths = tuple(path_by_name[name] for name in proposal.slides)
+    if prepared_features is None:
+        prepared_features = _prepare_crop_features(slide_paths, crops, config)
     if config.reference_slide is not None or config.reference_policy == "explicit":
         reference_path = _select_reference(slide_paths, config.reference_slide)
     else:
-        reference_path = _select_best_connected_reference(slide_paths, crops, config)
+        reference_path = _select_best_connected_reference(
+            slide_paths,
+            crops,
+            config,
+            prepared_features=prepared_features,
+        )
     reference_image = working_thumbnails[reference_path]
     reference_crop = crops[reference_path]
     transforms_to_reference, aligned_to = _estimate_transforms_to_reference(
@@ -422,6 +441,7 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
         crops,
         config,
         alignment_dir,
+        prepared_features=prepared_features,
     )
     _apply_affine_overrides(
         transforms_to_reference,
@@ -745,7 +765,11 @@ def _estimate_transforms_to_reference(
     crops: dict[Path, _Crop],
     config: RegistrationConfig,
     alignment_dir: Path,
+    *,
+    prepared_features: dict[Path, PreparedRigidFeatures] | None = None,
 ) -> tuple[dict[Path, RigidTransformResult], dict[Path, Path]]:
+    if prepared_features is None:
+        prepared_features = _prepare_crop_features(slide_paths, crops, config)
     if config.align_strategy == "reference":
         return _estimate_reference_transforms(
             slide_paths,
@@ -753,6 +777,7 @@ def _estimate_transforms_to_reference(
             crops,
             config,
             alignment_dir,
+            prepared_features=prepared_features,
         )
     if config.align_strategy == "serial":
         return _estimate_serial_transforms(
@@ -761,6 +786,7 @@ def _estimate_transforms_to_reference(
             crops,
             config,
             alignment_dir,
+            prepared_features=prepared_features,
         )
     if config.align_strategy == "hybrid":
         return _estimate_hybrid_transforms(
@@ -769,6 +795,7 @@ def _estimate_transforms_to_reference(
             crops,
             config,
             alignment_dir,
+            prepared_features=prepared_features,
         )
     msg = f"unsupported alignment strategy: {config.align_strategy!r}"
     raise ValueError(msg)
@@ -780,7 +807,11 @@ def _estimate_reference_transforms(
     crops: dict[Path, _Crop],
     config: RegistrationConfig,
     alignment_dir: Path,
+    *,
+    prepared_features: dict[Path, PreparedRigidFeatures] | None = None,
 ) -> tuple[dict[Path, RigidTransformResult], dict[Path, Path]]:
+    if prepared_features is None:
+        prepared_features = _prepare_crop_features(slide_paths, crops, config)
     transforms: dict[Path, RigidTransformResult] = {}
     aligned_to: dict[Path, Path] = {}
     for path in slide_paths:
@@ -791,6 +822,7 @@ def _estimate_reference_transforms(
             path,
             crops,
             config,
+            prepared_features,
         )
         transforms[path] = transform
         aligned_to[path] = reference_path
@@ -811,7 +843,11 @@ def _estimate_serial_transforms(
     crops: dict[Path, _Crop],
     config: RegistrationConfig,
     alignment_dir: Path,
+    *,
+    prepared_features: dict[Path, PreparedRigidFeatures] | None = None,
 ) -> tuple[dict[Path, RigidTransformResult], dict[Path, Path]]:
+    if prepared_features is None:
+        prepared_features = _prepare_crop_features(slide_paths, crops, config)
     reference_index = slide_paths.index(reference_path)
     transforms: dict[Path, RigidTransformResult] = {}
     aligned_to: dict[Path, Path] = {}
@@ -825,6 +861,7 @@ def _estimate_serial_transforms(
             moving_path,
             crops,
             config,
+            prepared_features,
         )
         cumulative[moving_path] = cumulative[fixed_path] @ pair_transform.matrix
         transforms[moving_path] = _composed_transform_result(
@@ -849,6 +886,7 @@ def _estimate_serial_transforms(
             moving_path,
             crops,
             config,
+            prepared_features,
         )
         cumulative[moving_path] = cumulative[fixed_path] @ pair_transform.matrix
         transforms[moving_path] = _composed_transform_result(
@@ -874,13 +912,18 @@ def _estimate_hybrid_transforms(
     crops: dict[Path, _Crop],
     config: RegistrationConfig,
     alignment_dir: Path,
+    *,
+    prepared_features: dict[Path, PreparedRigidFeatures] | None = None,
 ) -> tuple[dict[Path, RigidTransformResult], dict[Path, Path]]:
+    if prepared_features is None:
+        prepared_features = _prepare_crop_features(slide_paths, crops, config)
     reference_transforms, reference_aligned_to = _estimate_reference_transforms(
         slide_paths,
         reference_path,
         crops,
         config,
         alignment_dir,
+        prepared_features=prepared_features,
     )
     serial_transforms, serial_aligned_to = _estimate_serial_transforms(
         slide_paths,
@@ -888,6 +931,7 @@ def _estimate_hybrid_transforms(
         crops,
         config,
         alignment_dir,
+        prepared_features=prepared_features,
     )
 
     transforms: dict[Path, RigidTransformResult] = {}
@@ -1429,9 +1473,13 @@ def _select_best_connected_reference(
     slide_paths: tuple[Path, ...],
     crops: dict[Path, _Crop],
     config: RegistrationConfig,
+    *,
+    prepared_features: dict[Path, PreparedRigidFeatures] | None = None,
 ) -> Path:
     if len(slide_paths) == 1:
         return slide_paths[0]
+    if prepared_features is None:
+        prepared_features = _prepare_crop_features(slide_paths, crops, config)
     midpoint = (len(slide_paths) - 1) / 2
     scored: list[tuple[float, Path]] = []
     for index, candidate in enumerate(slide_paths):
@@ -1450,6 +1498,7 @@ def _select_best_connected_reference(
                     moving,
                     crops,
                     config,
+                    prepared_features,
                 )
             except (ValueError, np.linalg.LinAlgError):
                 continue
@@ -1465,6 +1514,8 @@ def _similarity_section_order(
     slide_paths: tuple[Path, ...],
     crops: dict[Path, _Crop],
     config: RegistrationConfig,
+    *,
+    prepared_features: dict[Path, PreparedRigidFeatures] | None = None,
 ) -> tuple[Path, ...]:
     """Infer an undirected morphology order for registration, not physical z."""
 
@@ -1473,12 +1524,47 @@ def _similarity_section_order(
     from scipy.cluster.hierarchy import leaves_list, linkage, optimal_leaf_ordering
     from scipy.spatial.distance import squareform
 
-    distances = _section_distance_matrix(slide_paths, crops, config)
+    distances = _section_distance_matrix(
+        slide_paths,
+        crops,
+        config,
+        prepared_features=prepared_features,
+    )
     condensed = squareform(distances, checks=False)
     tree = linkage(condensed, method="average")
     ordered_tree = optimal_leaf_ordering(tree, condensed)
     indices = leaves_list(ordered_tree)
     return tuple(slide_paths[int(index)] for index in indices)
+
+
+def _prepare_crop_features(
+    slide_paths: tuple[Path, ...],
+    crops: dict[Path, _Crop],
+    config: RegistrationConfig,
+) -> dict[Path, PreparedRigidFeatures] | None:
+    """Detect each crop's features once for ordering and affine alignment."""
+
+    if config.rigid_method != "feature":
+        return None
+
+    def prepare(path: Path) -> PreparedRigidFeatures:
+        crop = crops[path]
+        return prepare_rigid_features(crop.image, crop.mask)
+
+    if config.ordering_workers == 1:
+        rows = map(prepare, slide_paths)
+        return dict(zip(slide_paths, rows, strict=True))
+    with ThreadPoolExecutor(
+        max_workers=config.ordering_workers,
+        thread_name_prefix="rigid-features",
+    ) as executor:
+        return dict(
+            zip(
+                slide_paths,
+                executor.map(prepare, slide_paths),
+                strict=True,
+            )
+        )
 
 
 def _section_distance_matrix(
@@ -1487,6 +1573,7 @@ def _section_distance_matrix(
     config: RegistrationConfig,
     *,
     physical_areas: dict[Path, float | None] | None = None,
+    prepared_features: dict[Path, PreparedRigidFeatures] | None = None,
 ) -> np.ndarray:
     """Return deterministic pairwise morphology distances for section ordering."""
 
@@ -1496,28 +1583,8 @@ def _section_distance_matrix(
     pairs = tuple(
         (first, second) for first in range(count) for second in range(first + 1, count)
     )
-    prepared_features: dict[Path, PreparedRigidFeatures] | None = None
-    if config.rigid_method == "feature":
-        if config.ordering_workers == 1:
-            prepared_rows = [
-                prepare_rigid_features(crops[path].image, crops[path].mask)
-                for path in slide_paths
-            ]
-        else:
-            with ThreadPoolExecutor(
-                max_workers=config.ordering_workers,
-                thread_name_prefix="order-features",
-            ) as executor:
-                prepared_rows = list(
-                    executor.map(
-                        lambda path: prepare_rigid_features(
-                            crops[path].image,
-                            crops[path].mask,
-                        ),
-                        slide_paths,
-                    )
-                )
-        prepared_features = dict(zip(slide_paths, prepared_rows, strict=True))
+    if prepared_features is None:
+        prepared_features = _prepare_crop_features(slide_paths, crops, config)
 
     def calculate(pair: tuple[int, int]) -> tuple[int, int, float]:
         first, second = pair

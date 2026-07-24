@@ -220,16 +220,24 @@ and 1.29 GB peak RSS to 5.27 seconds and 0.70 GB on a 32-vCPU AMD EPYC
 environment. The old and new distance matrices were element-for-element
 identical, so this optimization does not alter ordering results.
 
+The same run-scoped feature set is reused for automatic reference scoring,
+direct-reference matching, and serial matching. On a 23-slide approved
+brightfield stack, hybrid alignment feature detections fell from 88 to 23 and
+the measured alignment stage fell from 9.43 to 7.23 seconds. All 22
+non-reference matrices, methods, match and inlier counts, warnings, and parent
+links were exactly unchanged. Parallel preparation uses additional transient
+memory, so use a smaller worker count when memory is the limiting resource.
+
 Set `thumbnail_workers` above one to decode independent WSI thumbnails in
 parallel. This usually shortens startup for multi-slide cohorts, but each
 worker temporarily holds another decoded WSI region. Output ordering and image
 values are unchanged. Start with `2` or `4` and measure peak memory.
 
 Set `ordering_workers` above one to evaluate independent slide pairs in
-parallel on CPU. Results are assigned in deterministic pair order and the
-worker count does not change the scientific fingerprint. Start conservatively
-because each worker also invokes native OpenCV routines and holds image crops;
-`1` is the portable default.
+parallel on CPU and to prepare per-slide rigid features concurrently. Results
+are assigned in deterministic order and the worker count does not change the
+scientific fingerprint. Start conservatively because each worker also invokes
+native OpenCV routines and holds image crops; `1` is the portable default.
 
 Set `mask_workers` above one to create per-slide mask candidate sets in
 parallel on CPU. Group consensus still runs after all independent masks are
