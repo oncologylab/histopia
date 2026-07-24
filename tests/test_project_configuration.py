@@ -27,6 +27,18 @@ def test_browser_test_extra_contains_its_test_runner() -> None:
     )
 
 
+def test_uni2h_repro_extra_matches_checked_in_constraints() -> None:
+    metadata = tomllib.loads(Path("pyproject.toml").read_text())
+    requirements = set(metadata["project"]["optional-dependencies"]["uni2h-repro"])
+    constrained = {
+        line
+        for line in Path("constraints/semantic-repro.txt").read_text().splitlines()
+        if line and not line.startswith("#") and "tomli" not in line
+    }
+
+    assert requirements == constrained
+
+
 def test_pages_workflow_uses_fingerprinted_release_artifact() -> None:
     workflow = Path(".github/workflows/pages.yml").read_text()
 

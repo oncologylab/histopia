@@ -43,6 +43,12 @@ python -m pip install -e ".[uni2h]" \
     -c constraints/semantic-repro.txt
 ```
 
+The exact tested UNI2-h runtime is also available directly:
+
+```bash
+python -m pip install -e ".[uni2h-repro]"
+```
+
 Reproducible KPF validation environment:
 
 ```bash
@@ -86,6 +92,8 @@ vips --version
   GPU extraction stack. Validation used Python 3.10, an NVIDIA A100, and the
   PyTorch CUDA 13.0 wheel; use the equivalent platform wheel when CUDA 13.0 is
   unavailable.
+- The `uni2h-repro` extra mirrors that constraint file. The normal `uni2h`
+  extra retains bounded ranges for portable CPU, CUDA, and Apple MPS installs.
 - Do not commit virtual environments, raw slides, generated masks, warped
   images, or registration output directories.
 - Record `histopia-register` config files and `registration_result.json` files

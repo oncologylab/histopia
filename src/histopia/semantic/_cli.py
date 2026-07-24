@@ -7,7 +7,7 @@ import json
 import sys
 from pathlib import Path
 
-from histopia.semantic._config import load_semantic_config
+from histopia.semantic._config import load_semantic_config, override_compute_config
 
 
 def _named_path(value: str) -> tuple[str, Path]:
@@ -19,19 +19,54 @@ def _named_path(value: str) -> tuple[str, Path]:
     return name, Path(raw_path)
 
 
-def main(argv: list[str] | None = None) -> int:
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("value must be positive")
+    return parsed
+
+
+def _add_compute_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--device",
+        help="Override config device: auto, cpu, cuda, cuda:N, or mps.",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=_positive_int,
+        help="Override encoder inference batch size.",
+    )
+    parser.add_argument(
+        "--patch-workers",
+        type=_positive_int,
+        help="Override concurrent WSI patch readers.",
+    )
+    parser.add_argument(
+        "--vips-threads",
+        type=_positive_int,
+        help="Override the native libvips worker limit.",
+    )
+
+
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Extract UNI2-h features and fit a global serial-section atlas."
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
-    subparsers.add_parser(
+    doctor = subparsers.add_parser(
         "doctor",
         help="Report available CPU and accelerator execution backends.",
+    )
+    doctor.add_argument(
+        "--device",
+        default="auto",
+        help="Validate a run device: auto, cpu, cuda, cuda:N, or mps.",
     )
     for command in ("preflight", "extract", "fit", "run"):
         child = subparsers.add_parser(command)
         child.add_argument("--config", type=Path, required=True)
         if command in {"extract", "run"}:
+            _add_compute_arguments(child)
             child.add_argument("--overwrite-features", action="store_true")
             child.add_argument(
                 "--allow-model-download",
@@ -46,12 +81,17 @@ def main(argv: list[str] | None = None) -> int:
     cohort = subparsers.add_parser("cohort-qc")
     cohort.add_argument("--run", type=_named_path, action="append", required=True)
     cohort.add_argument("--output", type=Path, required=True)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = _build_parser()
     args = parser.parse_args(argv)
 
     if args.command == "doctor":
         from histopia.compute import inspect_compute
 
-        print(json.dumps(inspect_compute(), indent=2))
+        print(json.dumps(inspect_compute(args.device), indent=2))
         return 0
     if args.command == "cache-model":
         return _cache_model(args.cache_dir)
@@ -63,6 +103,14 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     config = load_semantic_config(args.config)
+    if args.command in {"extract", "run"}:
+        config = override_compute_config(
+            config,
+            device=args.device,
+            batch_size=args.batch_size,
+            patch_workers=args.patch_workers,
+            vips_threads=args.vips_threads,
+        )
     if args.command == "preflight":
         from histopia.semantic._preflight import (
             preflight_registration,

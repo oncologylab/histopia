@@ -47,6 +47,18 @@ uses bfloat16 autocast and recursively reduces a batch after an out-of-memory
 error; CPU execution remains available for portability and small validation
 runs.
 
+Validate the exact backend intended for a run, then optionally override only
+the machine-level controls without editing the saved scientific configuration:
+
+```bash
+histopia-semantic doctor --device cuda:0
+histopia-semantic extract --config semantic-atlas.toml --device cuda:0 \
+  --batch-size 128 --patch-workers 4 --vips-threads 8
+```
+
+The effective overrides are included in feature provenance and cache identity.
+Use `--device cpu` for portable validation or when GPU memory is unavailable.
+
 Set `patch_workers` above one to read independent WSI patches concurrently
 before each encoder batch. Result order and feature fingerprints remain
 deterministic. Each worker holds a decoded RGB patch and invokes native

@@ -47,6 +47,7 @@ def test_auto_prefers_cuda_and_reports_hardware() -> None:
         "Test GPU 0",
         "Test GPU 1",
     ]
+    assert report["selected_device"]["resolved"] == "cuda"
 
 
 def test_auto_falls_back_from_mps_to_cpu() -> None:
@@ -63,3 +64,12 @@ def test_explicit_unavailable_or_invalid_device_fails() -> None:
         resolve_compute_device("cuda:2", torch_module=_torch(cuda=True, count=1))
     with pytest.raises(ValueError, match="device must be"):
         resolve_compute_device("gpu", torch_module=_torch())
+    with pytest.raises(RuntimeError, match="CUDA was requested"):
+        inspect_compute("cuda", torch_module=_torch())
+
+
+def test_inspection_reports_explicit_cpu_selection_on_gpu_machine() -> None:
+    report = inspect_compute("cpu", torch_module=_torch(cuda=True, count=1))
+
+    assert report["automatic_device"]["resolved"] == "cuda"
+    assert report["selected_device"]["resolved"] == "cpu"

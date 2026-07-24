@@ -29,6 +29,7 @@ Install only the workflow dependencies you need:
 pip install "histopia[registration,wsi]"  # brightfield WSI registration
 pip install "histopia[semantic]"          # atlas fitting from saved features
 pip install "histopia[uni2h]"             # CPU/GPU UNI2-h extraction
+pip install "histopia[uni2h-repro]"       # exact validated UNI2-h runtime
 pip install "histopia[qupath]"            # QuPath extension bridge
 ```
 
@@ -57,7 +58,16 @@ or `"mps"` without importing Torch at base-package import time. Inspect the
 active machine before starting a long extraction:
 
 ```bash
-histopia-semantic doctor
+histopia-semantic doctor --device auto
+histopia-semantic doctor --device cuda:0
+```
+
+Long extraction jobs can override compute settings without editing their
+scientific configuration:
+
+```bash
+histopia-semantic extract --config atlas.toml --device cuda:0 \
+  --batch-size 128 --patch-workers 4 --vips-threads 8
 ```
 
 Registration ordering and viewer assets use exact, checksummed caches. Any

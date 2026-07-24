@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -106,3 +106,26 @@ def load_semantic_config(path: Path | str) -> SemanticAtlasConfig:
         **data,
         sensitivity_clusters=tuple(int(value) for value in sensitivity),
     )
+
+
+def override_compute_config(
+    config: SemanticAtlasConfig,
+    *,
+    device: str | None = None,
+    batch_size: int | None = None,
+    patch_workers: int | None = None,
+    vips_threads: int | None = None,
+) -> SemanticAtlasConfig:
+    """Return a validated config with explicit command-line compute overrides."""
+
+    overrides = {
+        name: value
+        for name, value in {
+            "device": device,
+            "batch_size": batch_size,
+            "patch_workers": patch_workers,
+            "vips_threads": vips_threads,
+        }.items()
+        if value is not None
+    }
+    return replace(config, **overrides)

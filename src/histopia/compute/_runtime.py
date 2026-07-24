@@ -75,17 +75,23 @@ def resolve_compute_device(
     return ComputeDevice(requested, "cpu", "cpu")
 
 
-def inspect_compute(*, torch_module: Any | None = None) -> dict[str, object]:
-    """Return JSON-serializable compute capabilities without requiring Torch."""
+def inspect_compute(
+    requested_device: str = "auto",
+    *,
+    torch_module: Any | None = None,
+) -> dict[str, object]:
+    """Return capabilities and validate the device intended for a run."""
 
     torch = torch_module
     if torch is None:
         try:
             torch = import_module("torch")
         except ImportError:
+            selected = resolve_compute_device(requested_device, torch_module=None)
             return {
                 "torch_available": False,
                 "automatic_device": ComputeDevice("auto", "cpu", "cpu").to_json_dict(),
+                "selected_device": selected.to_json_dict(),
                 "cuda_devices": [],
                 "mps_available": False,
             }
@@ -105,6 +111,9 @@ def inspect_compute(*, torch_module: Any | None = None) -> dict[str, object]:
         "torch_version": str(torch.__version__),
         "automatic_device": resolve_compute_device(
             "auto", torch_module=torch
+        ).to_json_dict(),
+        "selected_device": resolve_compute_device(
+            requested_device, torch_module=torch
         ).to_json_dict(),
         "cuda_devices": cuda_devices,
         "mps_available": _mps_available(torch),
