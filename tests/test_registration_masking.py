@@ -1,4 +1,5 @@
 import numpy as np
+from scipy import ndimage as ndi
 
 from histopia.registration import (
     BrightfieldMaskConfig,
@@ -8,6 +9,8 @@ from histopia.registration import (
 from histopia.registration._masking import (
     TissueMaskResult,
     _augment_with_group_components,
+    _axis_binary_dilation,
+    _axis_binary_opening,
     _carve_large_blank_regions,
     _clean_mask,
     _fill_small_holes,
@@ -19,6 +22,23 @@ from histopia.registration._masking import (
     _remove_scanner_edges,
     clean_external_tissue_mask,
 )
+
+
+def test_linear_axis_morphology_matches_scipy_binary_operations() -> None:
+    mask = np.random.default_rng(17).random((73, 91)) > 0.42
+
+    for axis, size in ((0, 8), (0, 9), (1, 12), (1, 13)):
+        shape = (size, 1) if axis == 0 else (1, size)
+        structure = np.ones(shape, dtype=bool)
+
+        assert np.array_equal(
+            _axis_binary_opening(mask, size, axis=axis),
+            ndi.binary_opening(mask, structure=structure),
+        )
+        assert np.array_equal(
+            _axis_binary_dilation(mask, size, axis=axis),
+            ndi.binary_dilation(mask, structure=structure),
+        )
 
 
 def test_scanner_edge_removal_disconnects_straight_rail_from_tissue() -> None:

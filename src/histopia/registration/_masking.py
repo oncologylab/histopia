@@ -842,9 +842,10 @@ def _remove_straight_border_rails(candidate: np.ndarray) -> np.ndarray:
     )
     thin = distance <= thickness
     tissue_core = distance > thickness
-    protected_perimeter = ndi.binary_dilation(
-        tissue_core,
-        iterations=thickness * 2,
+    protected_perimeter = (
+        ndi.distance_transform_cdt(~tissue_core, metric="taxicab") <= thickness * 2
+        if tissue_core.any()
+        else np.zeros_like(candidate)
     )
     horizontal_zone = np.zeros_like(candidate)
     zone_rows = max(edge_rows, int(round(height * 0.12)))
@@ -854,21 +855,25 @@ def _remove_straight_border_rails(candidate: np.ndarray) -> np.ndarray:
     zone_cols = max(edge_cols, int(round(width * 0.04)))
     vertical_zone[:, :zone_cols] = True
     vertical_zone[:, -zone_cols:] = True
-    horizontal_seed = ndi.binary_opening(
+    horizontal_seed = _axis_binary_opening(
         candidate & thin & ~protected_perimeter & horizontal_zone,
-        structure=np.ones((1, max(12, int(round(width * 0.12)))), dtype=bool),
+        max(12, int(round(width * 0.12))),
+        axis=1,
     )
-    vertical_seed = ndi.binary_opening(
+    vertical_seed = _axis_binary_opening(
         candidate & thin & ~protected_perimeter & vertical_zone,
-        structure=np.ones((max(12, int(round(height * 0.12))), 1), dtype=bool),
+        max(12, int(round(height * 0.12))),
+        axis=0,
     )
-    horizontal = ndi.binary_dilation(
+    horizontal = _axis_binary_dilation(
         horizontal_seed,
-        structure=np.ones((1, max(3, int(round(width * 0.25)))), dtype=bool),
+        max(3, int(round(width * 0.25))),
+        axis=1,
     ) & (candidate & thin & horizontal_zone)
-    vertical = ndi.binary_dilation(
+    vertical = _axis_binary_dilation(
         vertical_seed,
-        structure=np.ones((max(3, int(round(height * 0.25))), 1), dtype=bool),
+        max(3, int(round(height * 0.25))),
+        axis=0,
     ) & (candidate & thin & vertical_zone)
     rails = ndi.binary_dilation(
         horizontal | vertical,
@@ -876,6 +881,35 @@ def _remove_straight_border_rails(candidate: np.ndarray) -> np.ndarray:
     )
     candidate &= ~rails
     return _remove_border_bar_components(candidate)
+
+
+def _axis_binary_opening(mask: np.ndarray, size: int, *, axis: int) -> np.ndarray:
+    """Open a binary mask along one axis in linear time."""
+
+    eroded = ndi.minimum_filter1d(
+        mask, size=size, axis=axis, mode="constant", cval=False
+    )
+    return ndi.maximum_filter1d(
+        eroded,
+        size=size,
+        axis=axis,
+        mode="constant",
+        cval=False,
+        origin=-1 if size % 2 == 0 else 0,
+    )
+
+
+def _axis_binary_dilation(mask: np.ndarray, size: int, *, axis: int) -> np.ndarray:
+    """Dilate a binary mask along one axis in linear time."""
+
+    return ndi.maximum_filter1d(
+        mask,
+        size=size,
+        axis=axis,
+        mode="constant",
+        cval=False,
+        origin=-1 if size % 2 == 0 else 0,
+    )
 
 
 def _remove_border_bar_components(candidate: np.ndarray) -> np.ndarray:
@@ -887,26 +921,28 @@ def _remove_border_bar_components(candidate: np.ndarray) -> np.ndarray:
     height, width = candidate.shape
     keep = np.ones(count + 1, dtype=bool)
     keep[0] = False
-    for label in range(1, count + 1):
-        component = labels == label
-        rows, cols = np.nonzero(component)
-        row_span = rows.max() - rows.min() + 1
-        col_span = cols.max() - cols.min() + 1
+    component_sizes = np.bincount(labels.ravel(), minlength=count + 1)
+    for label, bounds in enumerate(ndi.find_objects(labels), start=1):
+        if bounds is None:
+            continue
+        row_bounds, col_bounds = bounds
+        row_span = row_bounds.stop - row_bounds.start
+        col_span = col_bounds.stop - col_bounds.start
         long_axis = max(row_span / height, col_span / width)
         short_axis = min(row_span / height, col_span / width)
         effective_short_axis = min(
             short_axis,
             (
-                np.count_nonzero(component) / (row_span * width)
+                component_sizes[label] / (row_span * width)
                 if row_span >= col_span
-                else np.count_nonzero(component) / (col_span * height)
+                else component_sizes[label] / (col_span * height)
             ),
         )
         touches_edge = (
-            rows.min() < height * 0.02
-            or rows.max() >= height * 0.98
-            or cols.min() < width * 0.02
-            or cols.max() >= width * 0.98
+            row_bounds.start < height * 0.02
+            or row_bounds.stop - 1 >= height * 0.98
+            or col_bounds.start < width * 0.02
+            or col_bounds.stop - 1 >= width * 0.98
         )
         if touches_edge and long_axis > 0.10 and effective_short_axis < 0.08:
             keep[label] = False
