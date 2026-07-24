@@ -61,7 +61,7 @@ def extract_registration_features(
     output_paths: list[Path] = []
     for order, slide in enumerate(slides, start=1):
         slide_path = Path(slide["path"])
-        output = feature_dir / f"{order:03d}-{_safe_stem(slide_path.stem)}.npz"
+        output = feature_artifact_path(feature_dir, order, slide_path.name)
         output_paths.append(output)
         source = preflight_slides[slide_path.name]
         provenance = {
@@ -227,3 +227,18 @@ def _safe_stem(stem: str) -> str:
         character if character.isalnum() or character in "-_." else "_"
         for character in stem
     )
+
+
+def feature_artifact_path(
+    feature_dir: Path | str,
+    order: int,
+    slide_name: str,
+) -> Path:
+    """Return the deterministic artifact path for one ordered section."""
+
+    if order <= 0:
+        raise ValueError("feature artifact order must be positive")
+    name = Path(slide_name).name
+    if not name:
+        raise ValueError("feature artifact slide name must not be empty")
+    return Path(feature_dir) / f"{order:03d}-{_safe_stem(Path(name).stem)}.npz"

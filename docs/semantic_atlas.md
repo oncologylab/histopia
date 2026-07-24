@@ -134,6 +134,11 @@ single-patch validation inference.
 CLI extraction reports each cached, started, and completed slide, including
 patch count and elapsed time. Feature files are committed atomically, so an
 interrupted campaign resumes only exact, provenance-valid completed slides.
+Fitting reads only the deterministic artifact path for every slide in
+`preflight.json`, in that recorded order. It validates slide identity,
+source/mask/transform checksums, extraction scale, and common model provenance
+before starting PCA or clustering; unrelated stale NPZ files are never admitted
+to the atlas.
 
 By default, independent five-seed fits are evaluated for K=5 through K=15.
 Selection balances silhouette, seed stability, within-section coherence, and

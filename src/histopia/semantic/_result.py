@@ -46,6 +46,23 @@ def write_atlas_result(
     """Write labels, model metadata, and an unapproved review record."""
 
     output_dir = Path(output_dir)
+    common_provenance = _common_feature_provenance(sections, output_dir)
+    patch_widths = {
+        float(section.patch_size_px * section.analysis_mpp) for section in sections
+    }
+    if len(patch_widths) != 1:
+        raise ValueError("semantic sections must use one physical patch width")
+    if primary_clusters not in atlas.clusterings:
+        raise ValueError("primary cluster count is missing from the atlas")
+    expected_slide_ids = tuple(section.slide_id for section in sections)
+    if atlas.slide_ids != expected_slide_ids:
+        raise ValueError("atlas slide order differs from semantic sections")
+    expected_offsets = np.concatenate(
+        [[0], np.cumsum([len(section.features) for section in sections])]
+    )
+    if not np.array_equal(atlas.section_offsets, expected_offsets):
+        raise ValueError("atlas section offsets differ from semantic sections")
+
     label_root = output_dir / "labels"
     label_root.mkdir(parents=True, exist_ok=True)
     model_path = output_dir / "atlas_model.npz"
@@ -134,15 +151,9 @@ def write_atlas_result(
             }
         )
 
-    patch_widths = {
-        float(section.patch_size_px * section.analysis_mpp) for section in sections
-    }
-    if len(patch_widths) != 1:
-        raise ValueError("semantic sections must use one physical patch width")
     correspondence = asdict(
         CorrespondenceConfig(patch_width_um=next(iter(patch_widths)))
     )
-    common_provenance = _common_feature_provenance(sections, output_dir)
     core = {
         "schema_version": 3,
         "primary_clusters": primary_clusters,
@@ -208,6 +219,11 @@ def _common_feature_provenance(
         "patch_reader",
     )
     provenance_rows = tuple(section.provenance for section in sections)
+    if any(
+        any(key not in provenance for key in required_keys)
+        for provenance in provenance_rows
+    ):
+        raise ValueError("semantic feature provenance is incomplete")
     if any(
         any(key in provenance for key in execution_keys)
         and not all(key in provenance for key in execution_keys)

@@ -243,9 +243,12 @@ def test_result_rejects_feature_sections_incomplete_against_preflight(
         pca_basis=np.zeros((2, 3), dtype=np.float32),
         clusterings={2: AtlasClustering(2, labels, labels, np.zeros((2, 2)), None)},
     )
+    model = tmp_path / "atlas_model.npz"
+    model.write_bytes(b"accepted-model")
 
     with pytest.raises(ValueError, match="preflight slide order"):
         write_atlas_result(atlas, (section,), tmp_path, primary_clusters=2)
+    assert model.read_bytes() == b"accepted-model"
 
 
 @pytest.mark.parametrize("artifact", ["/tmp/model.npz", "../model.npz"])
