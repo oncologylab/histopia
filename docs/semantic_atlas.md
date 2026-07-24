@@ -22,6 +22,8 @@ the reported raw and corrected batch diagnostics remain meaningful.
   mask are encoded.
 - Each patch stores one float16 UNI2-h vector plus source-grid, native-pixel,
   and registered-reference micrometre coordinates in a compressed NPZ file.
+- Schema-3 feature artifacts carry a canonical SHA-256 seal over slide
+  identity, extraction provenance, metadata, and every stored array.
 - Model weights, source slides, compact features, and generated results remain
   outside the package repository.
 
@@ -85,6 +87,13 @@ precision, accelerator identity, and relevant package versions. Switching
 between CPU and GPU, changing batch size, or changing the numerical runtime
 therefore creates a distinct cache identity.
 
+Feature cache reuse additionally requires a valid schema-3 content seal.
+Historical schema-1 and schema-2 files remain readable for fitting, but they
+are intentionally treated as cache misses during extraction because they
+cannot prove that stored feature or coordinate arrays are unchanged.
+On a validated 18-section corpus with 17,482 patches, checking the seals added
+about 40 milliseconds to a cached local load (0.318 versus 0.358 seconds).
+
 The model fingerprint binds to the exact cached Hugging Face commit. Histopia
 passes that commit explicitly to timm for both model configuration and weights,
 including when authenticated model downloads are allowed.
@@ -138,7 +147,8 @@ Fitting reads only the deterministic artifact path for every slide in
 `preflight.json`, in that recorded order. It validates slide identity,
 source/mask/transform checksums, extraction scale, and common model provenance
 before starting PCA or clustering; unrelated stale NPZ files are never admitted
-to the atlas.
+to the atlas. New results record the ordered content seals for all schema-3
+features; a mixed sealed/unsealed campaign is rejected.
 
 By default, independent five-seed fits are evaluated for K=5 through K=15.
 Selection balances silhouette, seed stability, within-section coherence, and

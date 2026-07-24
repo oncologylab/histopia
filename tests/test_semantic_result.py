@@ -8,7 +8,11 @@ import pytest
 
 from histopia.semantic import PatchFeatures
 from histopia.semantic._atlas import AtlasClustering, JointAtlas
-from histopia.semantic._result import validate_semantic_result, write_atlas_result
+from histopia.semantic._result import (
+    _common_feature_provenance,
+    validate_semantic_result,
+    write_atlas_result,
+)
 
 
 def test_write_atlas_result_is_review_gated_and_keeps_per_slide_grids(
@@ -153,7 +157,30 @@ def test_result_records_and_checks_expected_preflight_slide_order(
     ]
     assert payload["feature_provenance"]["batch_size"] == 128
     assert payload["feature_provenance"]["encoder_runtime"]["device"] == "cuda"
+    assert payload["feature_provenance"]["feature_integrity"] == "legacy-unsealed"
     assert set(payload["fit_runtime"]) == {"numpy", "scikit-learn", "scipy"}
+
+    sealed_root = tmp_path / "sealed"
+    sealed_root.mkdir()
+    (sealed_root / "preflight.json").write_text(
+        (tmp_path / "preflight.json").read_text()
+    )
+    sealed_sections = tuple(
+        PatchFeatures.load(section.save(sealed_root / "features" / f"{index:03d}.npz"))
+        for index, section in enumerate(sections, start=1)
+    )
+    sealed = _common_feature_provenance(sealed_sections, sealed_root)
+
+    assert sealed is not None
+    assert sealed["feature_integrity"] == "content-sha256-v1"
+    assert sealed["feature_content_fingerprints"] == [
+        section.content_fingerprint for section in sealed_sections
+    ]
+    with pytest.raises(ValueError, match="content sealing is inconsistent"):
+        _common_feature_provenance(
+            (sealed_sections[0], sections[1]),
+            sealed_root,
+        )
 
 
 def test_result_rejects_partial_execution_provenance(tmp_path: Path) -> None:

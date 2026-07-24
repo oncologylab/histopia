@@ -50,6 +50,7 @@ class PatchFeatures:
     analysis_mpp: float
     provenance: dict[str, object] | None = None
     fingerprint: str | None = None
+    content_fingerprint: str | None = None
 
     def __post_init__(self) -> None:
         arrays = (
@@ -80,12 +81,18 @@ class PatchFeatures:
         if self.fingerprint is not None and self.fingerprint != expected:
             raise ValueError("feature provenance fingerprint does not match")
         object.__setattr__(self, "fingerprint", expected)
+        if self.content_fingerprint is not None:
+            expected_content = _content_fingerprint(self)
+            if self.content_fingerprint != expected_content:
+                raise ValueError("feature content fingerprint does not match")
 
     def save(self, path: Path | str) -> Path:
         """Write a compressed, portable artifact without repeated tile vectors."""
 
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
+        stored = _stored_arrays(self)
+        content_fingerprint = _content_fingerprint(self)
         with tempfile.NamedTemporaryFile(
             dir=path.parent, prefix=f".{path.name}.", suffix=".tmp.npz", delete=False
         ) as stream:
@@ -93,18 +100,15 @@ class PatchFeatures:
         try:
             np.savez_compressed(
                 temporary,
-                schema_version=np.int16(2),
+                schema_version=np.int16(3),
                 slide_id=np.asarray(self.slide_id),
-                features=np.asarray(self.features, dtype=np.float16),
-                grid_rc=np.asarray(self.grid_rc, dtype=np.int32),
-                native_xy=np.asarray(self.native_xy, dtype=np.float64),
-                reference_um_xy=np.asarray(self.reference_um_xy, dtype=np.float64),
-                tissue_fraction=np.asarray(self.tissue_fraction, dtype=np.float32),
+                **stored,
                 grid_shape=np.asarray(self.grid_shape, dtype=np.int32),
                 patch_size_px=np.int32(self.patch_size_px),
                 analysis_mpp=np.float64(self.analysis_mpp),
                 provenance_json=np.asarray(_canonical_json(self.provenance)),
                 fingerprint=np.asarray(self.fingerprint or ""),
+                content_fingerprint=np.asarray(content_fingerprint),
             )
             self.load(temporary)
             temporary.replace(path)
@@ -118,11 +122,11 @@ class PatchFeatures:
 
         with np.load(Path(path), allow_pickle=False) as data:
             schema_version = int(data["schema_version"])
-            if schema_version not in {1, 2}:
+            if schema_version not in {1, 2, 3}:
                 raise ValueError("unsupported patch feature schema")
             provenance = (
                 json.loads(str(data["provenance_json"]))
-                if schema_version == 2
+                if schema_version >= 2
                 else None
             )
             return cls(
@@ -137,7 +141,10 @@ class PatchFeatures:
                 analysis_mpp=float(data["analysis_mpp"]),
                 provenance=provenance,
                 fingerprint=(str(data["fingerprint"]) or None)
-                if schema_version == 2
+                if schema_version >= 2
+                else None,
+                content_fingerprint=str(data["content_fingerprint"])
+                if schema_version == 3
                 else None,
             )
 
@@ -150,6 +157,48 @@ def _provenance_fingerprint(provenance: dict[str, object] | None) -> str | None:
     if provenance is None:
         return None
     return hashlib.sha256(_canonical_json(provenance).encode()).hexdigest()
+
+
+def _stored_arrays(features: PatchFeatures) -> dict[str, np.ndarray]:
+    return {
+        "features": np.asarray(features.features, dtype=np.float16),
+        "grid_rc": np.asarray(features.grid_rc, dtype=np.int32),
+        "native_xy": np.asarray(features.native_xy, dtype=np.float64),
+        "reference_um_xy": np.asarray(
+            features.reference_um_xy,
+            dtype=np.float64,
+        ),
+        "tissue_fraction": np.asarray(
+            features.tissue_fraction,
+            dtype=np.float32,
+        ),
+    }
+
+
+def _content_fingerprint(features: PatchFeatures) -> str:
+    digest = hashlib.sha256(b"histopia-patch-features-content-v1\0")
+    metadata = {
+        "slide_id": features.slide_id,
+        "grid_shape": list(features.grid_shape),
+        "patch_size_px": features.patch_size_px,
+        "analysis_mpp": features.analysis_mpp,
+        "provenance": features.provenance,
+    }
+    digest.update(_canonical_json(metadata).encode())
+    canonical_dtypes = {
+        "features": "<f2",
+        "grid_rc": "<i4",
+        "native_xy": "<f8",
+        "reference_um_xy": "<f8",
+        "tissue_fraction": "<f4",
+    }
+    for name, stored in _stored_arrays(features).items():
+        array = np.ascontiguousarray(stored, dtype=canonical_dtypes[name])
+        digest.update(name.encode())
+        digest.update(array.dtype.str.encode())
+        digest.update(np.asarray(array.shape, dtype="<i8").tobytes())
+        digest.update(memoryview(array).cast("B"))
+    return digest.hexdigest()
 
 
 def map_native_to_reference_um(

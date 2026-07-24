@@ -7,6 +7,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from zipfile import BadZipFile
 
 import numpy as np
 
@@ -129,10 +130,12 @@ def feature_cache_matches(
 
     try:
         artifact = PatchFeatures.load(path)
-    except (KeyError, OSError, ValueError):
+    except (BadZipFile, EOFError, KeyError, OSError, ValueError):
         return False
     return (
-        artifact.fingerprint is not None and artifact.provenance == expected_provenance
+        artifact.fingerprint is not None
+        and artifact.content_fingerprint is not None
+        and artifact.provenance == expected_provenance
     )
 
 

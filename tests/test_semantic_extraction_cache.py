@@ -52,6 +52,55 @@ def test_feature_cache_rejects_legacy_artifact(tmp_path: Path) -> None:
     assert not feature_cache_matches(path, {"unused": True})
 
 
+def test_feature_cache_rejects_unsealed_schema_two_artifact(tmp_path: Path) -> None:
+    path = tmp_path / "schema-two.npz"
+    artifact = _artifact({"preflight": "a", "model": "m"})
+    np.savez_compressed(
+        path,
+        schema_version=np.int16(2),
+        slide_id=np.asarray(artifact.slide_id),
+        features=np.asarray(artifact.features, dtype=np.float16),
+        grid_rc=np.asarray(artifact.grid_rc, dtype=np.int32),
+        native_xy=np.asarray(artifact.native_xy, dtype=np.float64),
+        reference_um_xy=np.asarray(artifact.reference_um_xy, dtype=np.float64),
+        tissue_fraction=np.asarray(artifact.tissue_fraction, dtype=np.float32),
+        grid_shape=np.asarray(artifact.grid_shape, dtype=np.int32),
+        patch_size_px=np.int32(artifact.patch_size_px),
+        analysis_mpp=np.float64(artifact.analysis_mpp),
+        provenance_json=np.asarray('{"model":"m","preflight":"a"}'),
+        fingerprint=np.asarray(artifact.fingerprint),
+    )
+
+    loaded = PatchFeatures.load(path)
+
+    assert loaded.content_fingerprint is None
+    assert not feature_cache_matches(path, artifact.provenance)
+
+
+def test_feature_cache_rejects_changed_sealed_content(tmp_path: Path) -> None:
+    provenance = {"preflight": "a", "model": "m"}
+    path = _artifact(provenance).save(tmp_path / "feature.npz")
+    with np.load(path, allow_pickle=False) as data:
+        arrays = {name: data[name] for name in data.files}
+    changed = arrays["native_xy"].copy()
+    changed[0, 0] += 1
+    arrays["native_xy"] = changed
+    np.savez_compressed(path, **arrays)
+
+    assert not feature_cache_matches(path, provenance)
+
+
+@pytest.mark.parametrize("contents", [b"", b"PK\x03\x04truncated"])
+def test_feature_cache_rejects_truncated_artifact(
+    tmp_path: Path,
+    contents: bytes,
+) -> None:
+    path = tmp_path / "truncated.npz"
+    path.write_bytes(contents)
+
+    assert not feature_cache_matches(path, {})
+
+
 @pytest.mark.integration
 def test_patch_reader_composites_grayscale_alpha_onto_white(
     tmp_path: Path,

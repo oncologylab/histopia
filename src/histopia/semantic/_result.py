@@ -260,5 +260,13 @@ def _common_feature_provenance(
         or expected_slide_ids != actual_slide_ids
     ):
         raise ValueError("semantic sections differ from preflight slide order")
+    content_fingerprints = tuple(section.content_fingerprint for section in sections)
+    if any(content_fingerprints) and not all(content_fingerprints):
+        raise ValueError("semantic feature content sealing is inconsistent")
+    if all(content_fingerprints):
+        common["feature_integrity"] = "content-sha256-v1"
+        common["feature_content_fingerprints"] = list(content_fingerprints)
+    else:
+        common["feature_integrity"] = "legacy-unsealed"
     common["expected_slide_ids"] = expected_slide_ids
     return common

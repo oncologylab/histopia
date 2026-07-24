@@ -41,7 +41,72 @@ def test_patch_features_round_trip_compact_npz(tmp_path: Path) -> None:
     np.testing.assert_allclose(loaded.reference_um_xy, artifact.reference_um_xy)
     assert loaded.provenance == artifact.provenance
     assert loaded.fingerprint == artifact.fingerprint
+    assert loaded.content_fingerprint is not None
+    assert len(loaded.content_fingerprint) == 64
     assert not tuple(tmp_path.glob("*.tmp*"))
+
+    second_path = artifact.save(tmp_path / "features-copy.npz")
+    assert second_path.read_bytes() == path.read_bytes()
+
+
+def test_patch_features_rejects_changed_content_with_preserved_seal(
+    tmp_path: Path,
+) -> None:
+    artifact = PatchFeatures(
+        slide_id="section.ndpi",
+        features=np.arange(8, dtype=np.float32).reshape(2, 4),
+        grid_rc=np.array([[0, 0], [0, 1]], dtype=np.int32),
+        native_xy=np.array([[10, 20], [30, 20]], dtype=np.float64),
+        reference_um_xy=np.array([[5, 10], [15, 10]], dtype=np.float64),
+        tissue_fraction=np.array([0.9, 0.8], dtype=np.float32),
+        grid_shape=(1, 2),
+        patch_size_px=224,
+        analysis_mpp=0.5,
+        provenance={"model_fingerprint": "model-a"},
+    )
+    path = artifact.save(tmp_path / "features.npz")
+    with np.load(path, allow_pickle=False) as data:
+        arrays = {name: data[name] for name in data.files}
+    changed = arrays["features"].copy()
+    changed[0, 0] += 1
+    arrays["features"] = changed
+    np.savez_compressed(path, **arrays)
+
+    with np.testing.assert_raises_regex(ValueError, "content fingerprint"):
+        PatchFeatures.load(path)
+
+
+def test_content_seal_is_layout_independent_and_serialization_preserves_layout(
+    tmp_path: Path,
+) -> None:
+    common = {
+        "slide_id": "section.ndpi",
+        "features": np.arange(8, dtype=np.float32).reshape(2, 4),
+        "grid_rc": np.array([[0, 0], [0, 1]], dtype=np.int32),
+        "native_xy": np.array([[10, 20], [30, 20]], dtype=np.float64),
+        "tissue_fraction": np.array([0.9, 0.8], dtype=np.float32),
+        "grid_shape": (1, 2),
+        "patch_size_px": 224,
+        "analysis_mpp": 0.5,
+        "provenance": {"model_fingerprint": "model-a"},
+    }
+    coordinates = np.array([[5, 10], [15, 10]], dtype=np.float64)
+    c_order = PatchFeatures.load(
+        PatchFeatures(
+            **common,
+            reference_um_xy=np.ascontiguousarray(coordinates),
+        ).save(tmp_path / "c-order.npz")
+    )
+    fortran_order = PatchFeatures.load(
+        PatchFeatures(
+            **common,
+            reference_um_xy=np.asfortranarray(coordinates),
+        ).save(tmp_path / "fortran-order.npz")
+    )
+
+    assert c_order.reference_um_xy.flags.c_contiguous
+    assert fortran_order.reference_um_xy.flags.f_contiguous
+    assert c_order.content_fingerprint == fortran_order.content_fingerprint
 
 
 def test_patch_features_loads_legacy_schema_without_campaign_fingerprint(
@@ -66,6 +131,7 @@ def test_patch_features_loads_legacy_schema_without_campaign_fingerprint(
 
     assert artifact.provenance is None
     assert artifact.fingerprint is None
+    assert artifact.content_fingerprint is None
 
 
 def test_native_centers_map_through_thumbnail_registration_to_reference_um() -> None:
