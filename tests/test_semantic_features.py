@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+import time
 from pathlib import Path
 
 import numpy as np
@@ -7,6 +9,8 @@ import numpy as np
 from histopia.registration import SlideGeometry
 from histopia.semantic import PatchFeatures
 from histopia.semantic._features import (
+    _grid_mask_coverage,
+    _mask_coverage,
     extract_patch_features,
     map_native_to_reference_um,
 )
@@ -142,6 +146,43 @@ def test_extract_patch_features_filters_grid_with_registered_tissue_mask() -> No
     assert calls == [(0, 0, 224, 224, 224), (224, 0, 224, 224, 224)]
 
 
+def test_vectorized_grid_coverage_exactly_matches_scalar_reference() -> None:
+    rng = np.random.default_rng(17)
+    mask = rng.random((37, 53)) > 0.41
+    native_to_thumbnail = np.array(
+        [[0.071, 0.0, -1.3], [0.0, 0.083, -2.1], [0.0, 0.0, 1.0]]
+    )
+    origin = (19, 31)
+    grid_shape = (11, 13)
+    patch_shape = (47, 43)
+
+    vectorized = _grid_mask_coverage(
+        mask,
+        native_to_thumbnail=native_to_thumbnail,
+        content_origin_xy=origin,
+        grid_shape=grid_shape,
+        patch_shape=patch_shape,
+    )
+    scalar = np.asarray(
+        [
+            [
+                _mask_coverage(
+                    mask,
+                    native_to_thumbnail,
+                    origin[0] + col * patch_shape[1],
+                    origin[1] + row * patch_shape[0],
+                    patch_shape[1],
+                    patch_shape[0],
+                )
+                for col in range(grid_shape[1])
+            ]
+            for row in range(grid_shape[0])
+        ]
+    )
+
+    np.testing.assert_array_equal(vectorized, scalar)
+
+
 def test_parallel_patch_reads_match_sequential_features() -> None:
     geometry = SlideGeometry(
         native_shape=(896, 896),
@@ -224,3 +265,59 @@ def test_batch_patch_reader_is_used_without_changing_patch_order() -> None:
 
     assert [len(batch) for batch in reader.batches] == [3, 3, 3, 3, 3, 1]
     np.testing.assert_array_equal(result.features[:, 0], np.tile(range(4), 4))
+
+
+def test_batch_patch_reader_prefetch_is_parallel_bounded_and_ordered() -> None:
+    geometry = SlideGeometry(
+        native_shape=(1344, 1344),
+        content_bbox_xywh=(0, 0, 1344, 1344),
+        thumbnail_shape=(12, 12),
+        bounds_source="test",
+        mpp_xy=(0.5, 0.5),
+    )
+
+    class ObservedReader:
+        def __init__(self) -> None:
+            self.active = 0
+            self.max_active = 0
+            self.lock = threading.Lock()
+
+        def __call__(
+            self, x: int, y: int, width: int, height: int, output_px: int
+        ) -> np.ndarray:
+            raise AssertionError("individual reader should not be called")
+
+        def read_many(
+            self, requests: tuple[tuple[int, int, int, int, int], ...]
+        ) -> tuple[np.ndarray, ...]:
+            with self.lock:
+                self.active += 1
+                self.max_active = max(self.max_active, self.active)
+            time.sleep(0.01)
+            patches = tuple(
+                np.full((output_px, output_px, 3), x // width, dtype=np.uint8)
+                for x, _, width, _, output_px in requests
+            )
+            with self.lock:
+                self.active -= 1
+            return patches
+
+    class MeanEncoder:
+        def encode(self, images: np.ndarray) -> np.ndarray:
+            return images.mean(axis=(1, 2, 3), dtype=np.float32)[:, None]
+
+    reader = ObservedReader()
+    result = extract_patch_features(
+        slide_id="section.ndpi",
+        geometry=geometry,
+        tissue_mask=np.ones((12, 12), dtype=bool),
+        moving_to_reference_thumbnail=np.eye(3),
+        reference_geometry=geometry,
+        reader=reader,
+        encoder=MeanEncoder(),
+        batch_size=5,
+        patch_workers=3,
+    )
+
+    assert reader.max_active == 3
+    np.testing.assert_array_equal(result.features[:, 0], np.tile(range(6), 6))

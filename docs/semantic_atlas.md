@@ -59,9 +59,10 @@ histopia-semantic extract --config semantic-atlas.toml --device cuda:0 \
 The effective overrides are included in feature provenance and cache identity.
 Use `--device cpu` for portable validation or when GPU memory is unavailable.
 
-Set `patch_workers` above one to read independent WSI patches concurrently
-before each encoder batch. Result order and feature fingerprints remain
-deterministic. Each worker holds a decoded RGB patch and invokes native
+Set `patch_workers` above one to prefetch complete WSI batches concurrently
+before they are consumed in order by the encoder. Result order and feature
+fingerprints remain deterministic, and strip geometry is unchanged across
+worker counts. Each worker can hold one decoded RGB batch and invoke native
 libvips, so `1` is the portable default; benchmark `2` or `4` with the intended
 storage and batch size.
 
@@ -85,6 +86,19 @@ Set `vips_threads` to cap libvips' native process-wide worker pool separately
 from `patch_workers`. The setting is applied before pyvips is imported and
 therefore cannot be changed later in the same process. Leave it unset to use
 libvips' adaptive default.
+
+On the validated server, a representative 57,600 by 50,944 NDPI with 9,213
+accepted patches took 9.98, 7.48, and 6.91 seconds with one, two, and four
+patch workers. All feature and coordinate hashes were identical. Vectorized
+mask-grid coverage reduced its 49,533-patch selection stage from 3.33 seconds
+to 0.018 seconds with every fraction identical.
+
+The tested 40 GiB A100 runtime used 3.51 GiB at batch 64 and 6.34 GiB at batch
+256. Batch 256 reached about 35 patches per second and is a useful starting
+point on that class of GPU; keep 64 for portable configurations and benchmark
+the target hardware. The real CPU path is supported but substantially slower:
+the same model required about 5.8 GiB peak process memory and 2.7 seconds for a
+single-patch validation inference.
 
 CLI extraction reports each cached, started, and completed slide, including
 patch count and elapsed time. Feature files are committed atomically, so an

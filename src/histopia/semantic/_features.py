@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import tempfile
+from collections import deque
 from collections.abc import Callable, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
@@ -206,21 +207,23 @@ def extract_patch_features(
     x0, y0, content_width, content_height = geometry.content_bbox_xywh
     rows = content_height // native_height
     cols = content_width // native_width
-    accepted: list[tuple[int, int, int, int, float]] = []
-    for row in range(rows):
-        top = y0 + row * native_height
-        for col in range(cols):
-            left = x0 + col * native_width
-            fraction = _mask_coverage(
-                mask,
-                geometry.native_to_thumbnail,
-                left,
-                top,
-                native_width,
-                native_height,
-            )
-            if fraction >= min_tissue_fraction:
-                accepted.append((row, col, left, top, fraction))
+    coverage = _grid_mask_coverage(
+        mask,
+        native_to_thumbnail=geometry.native_to_thumbnail,
+        content_origin_xy=(x0, y0),
+        grid_shape=(rows, cols),
+        patch_shape=(native_height, native_width),
+    )
+    accepted = [
+        (
+            int(row),
+            int(col),
+            x0 + int(col) * native_width,
+            y0 + int(row) * native_height,
+            float(coverage[row, col]),
+        )
+        for row, col in np.argwhere(coverage >= min_tissue_fraction)
+    ]
     if not accepted:
         raise ValueError(f"no tissue patches passed coverage for {slide_id}")
 
@@ -252,20 +255,21 @@ def extract_patch_features(
         accepted[start : start + batch_size]
         for start in range(0, len(accepted), batch_size)
     )
-    prefetch_executor = ThreadPoolExecutor(max_workers=1)
+    prefetch_depth = patch_workers if callable(read_many) else 1
+    prefetch_executor = ThreadPoolExecutor(max_workers=prefetch_depth)
     feature_batches: list[np.ndarray] = []
-    pending: Future[tuple[np.ndarray, ...]] | None = prefetch_executor.submit(
-        read_batch, batches[0]
+    pending: deque[Future[tuple[np.ndarray, ...]]] = deque(
+        prefetch_executor.submit(read_batch, batch)
+        for batch in batches[:prefetch_depth]
     )
     try:
-        for index in range(len(batches)):
-            assert pending is not None
-            patches = pending.result()
-            pending = (
-                prefetch_executor.submit(read_batch, batches[index + 1])
-                if index + 1 < len(batches)
-                else None
-            )
+        for index, _ in enumerate(batches):
+            patches = pending.popleft().result()
+            next_index = index + prefetch_depth
+            if next_index < len(batches):
+                pending.append(
+                    prefetch_executor.submit(read_batch, batches[next_index])
+                )
             images = np.stack(patches)
             if images.shape[1:] != (patch_size_px, patch_size_px, 3):
                 raise ValueError("patch reader must return output_px square RGB arrays")
@@ -274,8 +278,8 @@ def extract_patch_features(
                 raise ValueError("encoder must return one feature vector per image")
             feature_batches.append(encoded)
     finally:
-        if pending is not None:
-            pending.cancel()
+        for future in pending:
+            future.cancel()
         prefetch_executor.shutdown(cancel_futures=True)
         if patch_executor is not None:
             patch_executor.shutdown(cancel_futures=True)
@@ -324,6 +328,55 @@ def _mask_coverage(
     x0, x1 = np.clip((x0, x1), 0, mask.shape[1])
     y0, y1 = np.clip((y0, y1), 0, mask.shape[0])
     return float(np.mean(mask[y0:y1, x0:x1])) if x1 > x0 and y1 > y0 else 0.0
+
+
+def _grid_mask_coverage(
+    mask: np.ndarray,
+    *,
+    native_to_thumbnail: np.ndarray,
+    content_origin_xy: tuple[int, int],
+    grid_shape: tuple[int, int],
+    patch_shape: tuple[int, int],
+) -> np.ndarray:
+    """Compute exact mask fractions for a regular native-pixel patch grid."""
+
+    rows, cols = grid_shape
+    patch_height, patch_width = patch_shape
+    if rows <= 0 or cols <= 0:
+        return np.zeros((max(0, rows), max(0, cols)), dtype=np.float64)
+    origin_x, origin_y = content_origin_xy
+    grid_rows, grid_cols = np.indices((rows, cols), dtype=np.int64)
+    top_left = np.column_stack(
+        [
+            (origin_x + grid_cols.ravel() * patch_width),
+            (origin_y + grid_rows.ravel() * patch_height),
+        ]
+    )
+    bottom_right = top_left + np.array([patch_width, patch_height])
+    mapped_start = _apply_homogeneous(top_left, native_to_thumbnail)
+    mapped_end = _apply_homogeneous(bottom_right, native_to_thumbnail)
+    x0 = np.floor(mapped_start[:, 0]).astype(np.int64)
+    y0 = np.floor(mapped_start[:, 1]).astype(np.int64)
+    x1 = np.ceil(mapped_end[:, 0]).astype(np.int64)
+    y1 = np.ceil(mapped_end[:, 1]).astype(np.int64)
+    x0 = np.clip(x0, 0, mask.shape[1])
+    x1 = np.clip(x1, 0, mask.shape[1])
+    y0 = np.clip(y0, 0, mask.shape[0])
+    y1 = np.clip(y1, 0, mask.shape[0])
+
+    integral = np.pad(
+        np.asarray(mask, dtype=np.int64).cumsum(axis=0).cumsum(axis=1),
+        ((1, 0), (1, 0)),
+    )
+    tissue = integral[y1, x1] - integral[y0, x1] - integral[y1, x0] + integral[y0, x0]
+    area = (x1 - x0) * (y1 - y0)
+    coverage = np.divide(
+        tissue,
+        area,
+        out=np.zeros(tissue.shape, dtype=np.float64),
+        where=area > 0,
+    )
+    return coverage.reshape(rows, cols)
 
 
 def _apply_homogeneous(points: np.ndarray, matrix: np.ndarray) -> np.ndarray:
