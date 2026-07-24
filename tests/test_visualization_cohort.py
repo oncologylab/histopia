@@ -118,6 +118,8 @@ def test_viewer_reuses_checksum_verified_mouse(
     assert report["mice_reused"] == 1
     assert report["mice_rendered"] == 0
     assert asset.stat().st_mtime_ns == original_mtime
+    viewer_js = (output / "viewer.js").read_text()
+    assert "showLinks.disabled = !linksAvailable" in viewer_js
 
 
 def test_viewer_rerenders_mouse_when_topology_output_is_changed(

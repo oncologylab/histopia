@@ -21,16 +21,17 @@ semantic results, and writes:
 - `showcase.json`, which records each semantic fingerprint and the SHA-256
   digest of every inventoried file.
 
-The current public artifact contains 12 reviewed registration stacks spanning
-321 serial sections. Seven stacks also contain fingerprint-approved semantic
+The current public artifact contains 16 reviewed registration stacks spanning
+401 serial sections. Seven stacks also contain fingerprint-approved semantic
 atlases. The viewer permits specimen switching, slide-by-slide navigation,
 select-all/deselect-all visibility, histology/semantic/blended rendering, K=5
 through K=15 exploration, and adjacent-section topology links.
 
 ## Registration QC Portal
 
-The same release may contain a separate `/qc/` portal for approved workflow
-diagnostics:
+The same release contains a separate `/qc/` portal for approved workflow
+diagnostics. The current portal presents the mask/orientation, section-order,
+and 3D registration evidence for four recently sealed cohorts:
 
 ```bash
 histopia-visualize qc-showcase \

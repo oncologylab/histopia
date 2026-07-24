@@ -1435,7 +1435,11 @@ async function loadMouse(mouse) {
     const right = mouse.slides[pair.target_section].label;
     pairSelect.add(new Option(`${left} to ${right} (${pair.displayed_links})`, index));
   });
-  pairSelect.disabled = !(mouse.semantic?.links || []).length;
+  const linksAvailable = Boolean((mouse.semantic?.links || []).length);
+  pairSelect.disabled = !linksAvailable;
+  const showLinks = document.querySelector('#show-links');
+  showLinks.disabled = !linksAvailable;
+  showLinks.checked = linksAvailable;
   const scale = 320 / Math.max(mouse.width, mouse.height);
   mouse.slides.forEach((slide, index) => {
     const texture = textures[index];
