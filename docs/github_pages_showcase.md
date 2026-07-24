@@ -54,6 +54,11 @@ registration views. Semantic textures, raw slides, source paths, and unrelated
 specimens are excluded. The exporter rejects missing reviews, unsafe texture
 paths, local absolute paths, and non-empty output directories.
 
+QC portals accept shareable `mouse` and `stage` query parameters, for example
+`?mouse=sample-a&stage=order`. Changing the selected specimen or review stage
+updates the URL without reloading the portal. Unknown specimens and unavailable
+stages fall back to available review evidence.
+
 Mask and order reviews may be exported before a cohort is promoted into the
 source viewer manifest. The portal then disables 3D registration for that
 cohort, preserving review-before-promotion. Use a separately generated

@@ -174,15 +174,28 @@ def test_registration_qc_portal_switches_embedded_mouse(tmp_path: Path) -> None:
             )
             page.on("requestfailed", lambda request: errors.append(request.url))
             page.goto(
-                f"http://127.0.0.1:{server.server_port}/histopia/qc/",
+                f"http://127.0.0.1:{server.server_port}/histopia/qc/"
+                "?mouse=4943&stage=order",
                 wait_until="networkidle",
             )
-            page.select_option("#mouse", "4943")
+            assert page.locator("#mouse").input_value() == "4943"
+            page.wait_for_function(
+                """() => document.querySelector('#review')
+                  .contentWindow.location.href.includes('/4943/order/')"""
+            )
+            assert (
+                page.locator('button[data-stage="order"]').get_attribute("class")
+                == "active"
+            )
             page.locator('button[data-stage="registration"]').click()
             page.wait_for_function(
                 """id => document.querySelector('#review')
                   .contentDocument.querySelector('#mouse')?.value === id""",
                 arg="4943",
+            )
+            assert (
+                page.evaluate("new URL(location.href).searchParams.get('stage')")
+                == "registration"
             )
             dimensions = page.evaluate(
                 """() => ({

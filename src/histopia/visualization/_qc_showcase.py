@@ -72,12 +72,24 @@ _PORTAL_JS = """const data = await (await fetch('qc-manifest.json')).json();
 const mouse = document.querySelector('#mouse');
 const frame = document.querySelector('#review');
 const buttons = [...document.querySelectorAll('[data-stage]')];
-let stage = 'mask';
+const validStages = new Set(buttons.map(button => button.dataset.stage));
+const requested = new URLSearchParams(location.search);
+let stage = validStages.has(requested.get('stage')) ? requested.get('stage') : 'mask';
 
 data.mice.forEach(item => mouse.add(new Option(item.id, item.id)));
+if (data.mice.some(item => item.id === requested.get('mouse'))) {
+  mouse.value = requested.get('mouse');
+}
 
 function current() {
   return data.mice.find(item => item.id === mouse.value);
+}
+
+function syncLocation() {
+  const url = new URL(location.href);
+  url.searchParams.set('mouse', mouse.value);
+  url.searchParams.set('stage', stage);
+  history.replaceState(null, '', url);
 }
 
 function selectRegistrationMouse(attempt = 0) {
@@ -99,13 +111,14 @@ function selectRegistrationMouse(attempt = 0) {
 
 function render() {
   const item = current();
-  if (!item.stages[stage]) stage = 'mask';
+  if (!item.stages[stage]) stage = Object.keys(item.stages)[0];
   buttons.forEach(button => {
     button.disabled = !item.stages[button.dataset.stage];
   });
   buttons.forEach(button =>
     button.classList.toggle('active', button.dataset.stage === stage));
   frame.src = item.stages[stage];
+  syncLocation();
 }
 
 mouse.addEventListener('change', () => {
