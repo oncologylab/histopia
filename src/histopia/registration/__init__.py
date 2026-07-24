@@ -1,8 +1,12 @@
 """Registration utilities for serial-section histology images."""
 
 from histopia.registration._approval import (
+    MaskReviewApproval,
     RegistrationApproval,
+    SectionOrderApproval,
+    approve_mask_review,
     approve_registration_run,
+    approve_section_order,
     validate_registration_approval,
 )
 from histopia.registration._config import (
@@ -65,7 +69,9 @@ def __getattr__(name: str):
 
 __all__ = [
     "BrightfieldMaskConfig",
+    "MaskReviewApproval",
     "RegistrationApproval",
+    "SectionOrderApproval",
     "AlignmentMetrics",
     "MaskRefinementConfig",
     "MaskReviewEntry",
@@ -84,7 +90,9 @@ __all__ = [
     "CavityContinuitySummary",
     "WsiWarpResult",
     "build_kpf_manifest",
+    "approve_mask_review",
     "approve_registration_run",
+    "approve_section_order",
     "build_section_viewer",
     "build_section_order_review",
     "apply_quarter_turn",

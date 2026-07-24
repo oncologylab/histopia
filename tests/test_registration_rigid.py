@@ -5,7 +5,10 @@ from histopia.registration import (
     estimate_rigid_transform,
     refine_rigid_transform,
 )
-from histopia.registration._rigid import _feature_or_mask_fallback
+from histopia.registration._rigid import (
+    _feature_or_mask_fallback,
+    prepare_rigid_features,
+)
 
 
 def test_phase_correlation_recovers_integer_translation() -> None:
@@ -106,3 +109,33 @@ def test_feature_fallback_accepts_confident_mask_transform() -> None:
     assert result.method == "mask_moments"
     assert result.inlier_count > 900
     assert result.warnings[-1].endswith("used mask moments")
+
+
+def test_prepared_features_preserve_exact_pair_result() -> None:
+    rng = np.random.default_rng(7)
+    fixed = rng.integers(0, 256, size=(120, 140, 3), dtype=np.uint8)
+    moving = np.roll(fixed, shift=(3, -5), axis=(0, 1))
+    mask = np.ones(fixed.shape[:2], dtype=bool)
+
+    direct = estimate_rigid_transform(
+        fixed,
+        moving,
+        fixed_mask=mask,
+        moving_mask=mask,
+        method="feature",
+    )
+    prepared = estimate_rigid_transform(
+        fixed,
+        moving,
+        fixed_mask=mask,
+        moving_mask=mask,
+        method="feature",
+        fixed_features=prepare_rigid_features(fixed, mask),
+        moving_features=prepare_rigid_features(moving, mask),
+    )
+
+    assert prepared.method == direct.method
+    assert prepared.match_count == direct.match_count
+    assert prepared.inlier_count == direct.inlier_count
+    assert prepared.warnings == direct.warnings
+    assert np.array_equal(prepared.matrix, direct.matrix)

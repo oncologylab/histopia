@@ -12,7 +12,8 @@ ordering_workers = 1
 preprocessing_cache = true
 # Optional CSV or JSON with exact slide names and physical section order.
 # section_order_path = "/path/to/section_order.csv"
-require_approved_masks = false
+require_approved_masks = true
+require_approved_order = true
 wsi_only = true
 max_processed_image_dim_px = 1200
 crop_mode = "reference"

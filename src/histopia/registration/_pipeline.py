@@ -15,6 +15,7 @@ from typing import Any
 import numpy as np
 
 from histopia.registration._config import RegistrationConfig
+from histopia.registration._errors import RegistrationApprovalRequired
 from histopia.registration._io import (
     blend_rgb,
     checkerboard_rgb,
@@ -66,8 +67,10 @@ from histopia.registration._review import (
     write_mask_review,
 )
 from histopia.registration._rigid import (
+    PreparedRigidFeatures,
     RigidTransformResult,
     estimate_rigid_transform,
+    prepare_rigid_features,
 )
 from histopia.registration._slides import (
     SlideGeometry,
@@ -202,7 +205,8 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
         cache_dir=preprocessing_cache_dir,
     )
     masks: dict[Path, TissueMaskResult] = {}
-    review_entries = load_mask_review(config.mask_review_path)
+    review_path = config.mask_review_path or config.output_dir / "mask_review.json"
+    review_entries = load_mask_review(review_path)
     resolved_reviews: dict[Path, MaskReviewEntry] = {}
     warnings: list[str] = []
     artifact_manifest_path = (
@@ -298,7 +302,6 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
     if artifact_manifest_path is not None:
         _write_mask_artifact_manifest(artifact_manifest_path, artifact_manifest)
 
-    review_path = config.mask_review_path or config.output_dir / "mask_review.json"
     write_mask_review(review_path, review_entries)
     invalid_masks = [path.name for path in slide_paths if not masks[path].accepted]
     unapproved_masks = [
@@ -308,8 +311,11 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
         msg = "automatic tissue masks failed: " + ", ".join(invalid_masks)
         raise ValueError(msg)
     if config.require_approved_masks and unapproved_masks:
-        msg = "registration requires approved masks: " + ", ".join(unapproved_masks)
-        raise ValueError(msg)
+        raise RegistrationApprovalRequired(
+            "masks",
+            review_path,
+            pending_slides=tuple(unapproved_masks),
+        )
 
     orientation_turns = load_orientation_overrides(
         config.section_orientation_path,
@@ -373,6 +379,12 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
                 fingerprint=distance_fingerprint,
             )
         fixed_positions = _read_fixed_positions(slide_paths, config.section_order_path)
+        if config.section_order_path is None and config.reference_slide is not None:
+            explicit_reference = _select_reference(
+                slide_paths,
+                config.reference_slide,
+            )
+            fixed_positions = {explicit_reference.name: 1}
         proposal = propose_anchored_order(
             tuple(path.name for path in slide_paths),
             distances,
@@ -395,10 +407,7 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
         if config.require_approved_order and not order_is_approved(
             order_review_path, proposal.fingerprint
         ):
-            raise ValueError(
-                "registration requires approval of the current section order: "
-                f"{order_review_path}"
-            )
+            raise RegistrationApprovalRequired("order", order_review_path)
         path_by_name = {path.name: path for path in slide_paths}
         slide_paths = tuple(path_by_name[name] for name in proposal.slides)
     if config.reference_slide is not None or config.reference_policy == "explicit":
@@ -925,6 +934,7 @@ def _estimate_pair_transform(
     moving_path: Path,
     crops: dict[Path, _Crop],
     config: RegistrationConfig,
+    prepared_features: dict[Path, PreparedRigidFeatures] | None = None,
 ) -> tuple[RigidTransformResult, RigidTransformResult]:
     fixed_crop = crops[fixed_path]
     moving_crop = crops[moving_path]
@@ -939,6 +949,12 @@ def _estimate_pair_transform(
         min_dice_improvement=config.refinement.min_dice_improvement,
         max_relative_scale_change=config.refinement.max_relative_scale_change,
         max_relative_anisotropy=config.refinement.max_relative_anisotropy,
+        fixed_features=(
+            prepared_features[fixed_path] if prepared_features is not None else None
+        ),
+        moving_features=(
+            prepared_features[moving_path] if prepared_features is not None else None
+        ),
     )
     full_transform = RigidTransformResult(
         matrix=_compose_crop_transform(
@@ -1480,6 +1496,28 @@ def _section_distance_matrix(
     pairs = tuple(
         (first, second) for first in range(count) for second in range(first + 1, count)
     )
+    prepared_features: dict[Path, PreparedRigidFeatures] | None = None
+    if config.rigid_method == "feature":
+        if config.ordering_workers == 1:
+            prepared_rows = [
+                prepare_rigid_features(crops[path].image, crops[path].mask)
+                for path in slide_paths
+            ]
+        else:
+            with ThreadPoolExecutor(
+                max_workers=config.ordering_workers,
+                thread_name_prefix="order-features",
+            ) as executor:
+                prepared_rows = list(
+                    executor.map(
+                        lambda path: prepare_rigid_features(
+                            crops[path].image,
+                            crops[path].mask,
+                        ),
+                        slide_paths,
+                    )
+                )
+        prepared_features = dict(zip(slide_paths, prepared_rows, strict=True))
 
     def calculate(pair: tuple[int, int]) -> tuple[int, int, float]:
         first, second = pair
@@ -1489,6 +1527,7 @@ def _section_distance_matrix(
                 slide_paths[second],
                 crops,
                 config,
+                prepared_features,
             )
             dice = _final_mask_dice(
                 crops[slide_paths[first]],
@@ -1568,7 +1607,7 @@ def _ordering_distance_settings(config: RegistrationConfig) -> dict[str, object]
     """Return only settings that affect pairwise morphology distances."""
 
     return {
-        "algorithm": "morphology-distance-v2",
+        "algorithm": "morphology-distance-v3",
         "max_processed_image_dim_px": config.max_processed_image_dim_px,
         "rigid_method": config.rigid_method,
         "refinement": asdict(config.refinement),

@@ -23,6 +23,145 @@ class RegistrationApproval:
     registration_result_sha256: str
 
 
+@dataclass(frozen=True, slots=True)
+class MaskReviewApproval:
+    """Approval metadata for one exact mask-review stage."""
+
+    run_dir: Path
+    slide_count: int
+    mask_fingerprint: str
+    reviewer: str
+    reviewed_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class SectionOrderApproval:
+    """Approval metadata for one exact section-order proposal."""
+
+    run_dir: Path
+    slide_count: int
+    order_fingerprint: str
+    reviewer: str
+    reviewed_at: str
+
+
+def approve_mask_review(
+    run_dir: Path | str,
+    *,
+    reviewer: str,
+    notes: str,
+    reviewed_at: str | None = None,
+) -> MaskReviewApproval:
+    """Approve every exact mask fingerprint in a prepared review stage."""
+
+    root = Path(run_dir)
+    reviewer, notes, timestamp = _validated_review_metadata(
+        reviewer, notes, reviewed_at
+    )
+    review_path = root / "mask_review.json"
+    payload = _load_object(review_path)
+    if payload.get("schema_version") != 2:
+        raise ValueError("mask review must use schema version 2")
+    rows = _object_rows(payload, "slides", review_path)
+    indexed = _unique_rows_by_name(rows, "slide", review_path)
+    digest = hashlib.sha256(b"histopia-mask-review-approval-v1")
+    for name in sorted(indexed):
+        row = indexed[name]
+        fingerprint = _required_string(row, "thumbnail_sha256", review_path)
+        status = row.get("status")
+        if status == "rejected":
+            raise ValueError(f"mask review is rejected: {name}")
+        if status not in {"pending", "auto_pass", "override_pass"}:
+            raise ValueError(f"mask review has invalid status: {name}")
+        _require_processed_review_artifacts(root, name)
+        override_path = _resolved_override_path(root, row, review_path)
+        row["status"] = "override_pass" if override_path is not None else "auto_pass"
+        row["reviewer"] = reviewer
+        row["notes"] = notes
+        digest.update(name.encode())
+        digest.update(b"\0")
+        digest.update(fingerprint.encode())
+        digest.update(b"\0")
+    payload["reviewer"] = reviewer
+    payload["reviewed_at"] = timestamp
+    payload["notes"] = notes
+    payload["fingerprint"] = digest.hexdigest()
+    _write_json_atomic(review_path, payload)
+    return MaskReviewApproval(
+        run_dir=root,
+        slide_count=len(rows),
+        mask_fingerprint=digest.hexdigest(),
+        reviewer=reviewer,
+        reviewed_at=timestamp,
+    )
+
+
+def approve_section_order(
+    run_dir: Path | str,
+    *,
+    reviewer: str,
+    notes: str,
+    reviewed_at: str | None = None,
+) -> SectionOrderApproval:
+    """Approve one exact prepared section-order fingerprint."""
+
+    root = Path(run_dir)
+    reviewer, notes, timestamp = _validated_review_metadata(
+        reviewer, notes, reviewed_at
+    )
+    mask_path = root / "mask_review.json"
+    mask_payload = _load_object(mask_path)
+    mask_rows = _object_rows(mask_payload, "slides", mask_path)
+    masks_by_name = _unique_rows_by_name(mask_rows, "slide", mask_path)
+    unapproved = [
+        name
+        for name, row in masks_by_name.items()
+        if row.get("status") not in {"auto_pass", "override_pass"}
+    ]
+    if unapproved:
+        raise ValueError(
+            "section order requires approved masks: " + ", ".join(sorted(unapproved))
+        )
+
+    order_path = root / "section_order_review.json"
+    payload = _load_object(order_path)
+    if payload.get("schema_version") != 3:
+        raise ValueError("section order review must use schema version 3")
+    fingerprint = _required_string(payload, "fingerprint", order_path)
+    rows = _object_rows(payload, "slides", order_path)
+    ordered_names: list[str] = []
+    for expected_order, row in enumerate(rows, start=1):
+        if row.get("order") != expected_order:
+            raise ValueError("section order review positions must be consecutive")
+        name = _required_string(row, "slide", order_path)
+        if name in ordered_names:
+            raise ValueError(f"section order review contains duplicate slide: {name}")
+        ordered_names.append(name)
+        _require_processed_review_artifacts(root, name)
+    if set(ordered_names) != set(masks_by_name):
+        raise ValueError("section order slides do not exactly match approved masks")
+    inputs = payload.get("input_fingerprints")
+    if (
+        not isinstance(inputs, dict)
+        or set(inputs) != set(ordered_names)
+        or any(not isinstance(value, str) or not value for value in inputs.values())
+    ):
+        raise ValueError("section order input fingerprints are incomplete")
+
+    payload["approved"] = True
+    payload["reviewer"] = reviewer
+    payload["reviewed_at"] = timestamp
+    payload["notes"] = notes
+    _write_json_atomic(order_path, payload)
+    return SectionOrderApproval(
+        run_dir=root,
+        slide_count=len(rows),
+        order_fingerprint=fingerprint,
+        reviewer=reviewer,
+        reviewed_at=timestamp,
+    )
+
+
 def approve_registration_run(
     run_dir: Path | str,
     *,
@@ -33,19 +172,9 @@ def approve_registration_run(
     """Approve exact masks and order, then seal a completed run atomically."""
 
     root = Path(run_dir)
-    reviewer = reviewer.strip()
-    notes = notes.strip()
-    if not reviewer:
-        raise ValueError("reviewer must not be blank")
-    if not notes:
-        raise ValueError("approval notes must not be blank")
-    timestamp = reviewed_at or datetime.now(timezone.utc).isoformat(timespec="seconds")
-    try:
-        parsed_timestamp = datetime.fromisoformat(timestamp)
-    except ValueError as error:
-        raise ValueError("reviewed_at must be an ISO-8601 timestamp") from error
-    if parsed_timestamp.tzinfo is None:
-        raise ValueError("reviewed_at must include a timezone")
+    reviewer, notes, timestamp = _validated_review_metadata(
+        reviewer, notes, reviewed_at
+    )
 
     result_path = root / "registration_result.json"
     mask_path = root / "mask_review.json"
@@ -233,6 +362,54 @@ def _required_string(row: dict[str, object], key: str, path: Path) -> str:
     if not isinstance(value, str) or not value:
         raise ValueError(f"{path.name} contains an invalid {key}")
     return value
+
+
+def _validated_review_metadata(
+    reviewer: str,
+    notes: str,
+    reviewed_at: str | None,
+) -> tuple[str, str, str]:
+    reviewer = reviewer.strip()
+    notes = notes.strip()
+    if not reviewer:
+        raise ValueError("reviewer must not be blank")
+    if not notes:
+        raise ValueError("approval notes must not be blank")
+    timestamp = reviewed_at or datetime.now(timezone.utc).isoformat(timespec="seconds")
+    try:
+        parsed_timestamp = datetime.fromisoformat(timestamp)
+    except ValueError as error:
+        raise ValueError("reviewed_at must be an ISO-8601 timestamp") from error
+    if parsed_timestamp.tzinfo is None:
+        raise ValueError("reviewed_at must include a timezone")
+    return reviewer, notes, timestamp
+
+
+def _require_processed_review_artifacts(root: Path, slide: str) -> None:
+    stem = Path(slide).stem
+    for suffix in ("thumbnail.png", "mask.png"):
+        artifact = root / "processed" / f"{stem}.{suffix}"
+        if not artifact.is_file():
+            raise FileNotFoundError(f"mask review artifact is missing: {artifact}")
+
+
+def _resolved_override_path(
+    root: Path,
+    row: dict[str, object],
+    review_path: Path,
+) -> Path | None:
+    value = row.get("override_path")
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{review_path.name} contains an invalid override_path")
+    path = Path(value)
+    if not path.is_absolute():
+        path = root / path
+    if not path.is_file():
+        name = _required_string(row, "slide", review_path)
+        raise FileNotFoundError(f"approved mask override is missing: {name}")
+    return path
 
 
 def _write_json_atomic(path: Path, payload: dict[str, object]) -> None:

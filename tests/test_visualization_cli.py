@@ -116,6 +116,45 @@ def test_registration_review_command_passes_worker_count(
     assert calls == [(run, output, 4)]
 
 
+def test_registration_cohort_review_command_passes_named_runs(
+    tmp_path: Path, monkeypatch
+) -> None:
+    calls: list[tuple[dict[str, Path], Path, int]] = []
+
+    def capture(
+        runs: dict[str, Path],
+        output: Path,
+        *,
+        workers: int,
+    ) -> Path:
+        calls.append((runs, output, workers))
+        return output / "index.html"
+
+    monkeypatch.setattr(
+        "histopia.visualization._review_portal.build_registration_cohort_review",
+        capture,
+    )
+    output = tmp_path / "review"
+    first = tmp_path / "run-4845"
+    second = tmp_path / "run-8471"
+
+    result = _cli.main(
+        [
+            "registration-cohort-review",
+            str(output),
+            "--run",
+            f"4845={first}",
+            "--run",
+            f"8471={second}",
+            "--workers",
+            "4",
+        ]
+    )
+
+    assert result == 0
+    assert calls == [({"4845": first, "8471": second}, output, 4)]
+
+
 def test_order_review_command_passes_worker_count(tmp_path: Path, monkeypatch) -> None:
     calls: list[tuple[Path, Path, Path, int]] = []
 

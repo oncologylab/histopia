@@ -6,7 +6,9 @@ from pathlib import Path
 import pytest
 
 from histopia.registration._approval import (
+    approve_mask_review,
     approve_registration_run,
+    approve_section_order,
     validate_registration_approval,
 )
 
@@ -81,8 +83,77 @@ def test_approve_registration_run_rejects_timestamp_without_timezone(
         )
 
 
+def test_approve_prepared_masks_and_order_in_sequence(tmp_path: Path) -> None:
+    _write_run(tmp_path)
+
+    with pytest.raises(ValueError, match="requires approved masks"):
+        approve_section_order(
+            tmp_path,
+            reviewer="Test Reviewer",
+            notes="Order reviewed.",
+        )
+
+    masks = approve_mask_review(
+        tmp_path,
+        reviewer="Test Reviewer",
+        notes="All tissue masks reviewed.",
+        reviewed_at="2026-07-24T10:00:00+00:00",
+    )
+    order = approve_section_order(
+        tmp_path,
+        reviewer="Test Reviewer",
+        notes="Morphology and physical order reviewed.",
+        reviewed_at="2026-07-24T10:05:00+00:00",
+    )
+
+    mask_payload = json.loads((tmp_path / "mask_review.json").read_text())
+    order_payload = json.loads((tmp_path / "section_order_review.json").read_text())
+    assert masks.slide_count == 2
+    assert len(masks.mask_fingerprint) == 64
+    assert {row["status"] for row in mask_payload["slides"]} == {"auto_pass"}
+    assert {row["reviewer"] for row in mask_payload["slides"]} == {"Test Reviewer"}
+    assert order.slide_count == 2
+    assert order.order_fingerprint == "order-fingerprint"
+    assert order_payload["approved"] is True
+    assert order_payload["reviewed_at"] == "2026-07-24T10:05:00+00:00"
+
+
+def test_mask_stage_approval_rejects_rejected_mask(tmp_path: Path) -> None:
+    _write_run(tmp_path)
+    payload = json.loads((tmp_path / "mask_review.json").read_text())
+    payload["slides"][0]["status"] = "rejected"
+    (tmp_path / "mask_review.json").write_text(json.dumps(payload))
+
+    with pytest.raises(ValueError, match="mask review is rejected"):
+        approve_mask_review(
+            tmp_path,
+            reviewer="Test Reviewer",
+            notes="Reviewed.",
+        )
+
+
+def test_mask_stage_approval_requires_visual_review_artifacts(
+    tmp_path: Path,
+) -> None:
+    _write_run(tmp_path)
+    (tmp_path / "processed" / "HE.mask.png").unlink()
+
+    with pytest.raises(FileNotFoundError, match="review artifact is missing"):
+        approve_mask_review(
+            tmp_path,
+            reviewer="Test Reviewer",
+            notes="Reviewed.",
+        )
+
+
 def _write_run(root: Path) -> None:
     names = ("HE.ndpi", "CK19.ndpi")
+    processed = root / "processed"
+    processed.mkdir()
+    for name in names:
+        stem = Path(name).stem
+        (processed / f"{stem}.thumbnail.png").write_bytes(b"thumbnail")
+        (processed / f"{stem}.mask.png").write_bytes(b"mask")
     reviews = [
         {
             "slide": name,
@@ -113,6 +184,9 @@ def _write_run(root: Path) -> None:
         "schema_version": 3,
         "approved": False,
         "fingerprint": "order-fingerprint",
+        "input_fingerprints": {
+            name: f"order-input-{index}" for index, name in enumerate(names)
+        },
         "slides": [
             {"order": index + 1, "slide": name} for index, name in enumerate(names)
         ],

@@ -54,6 +54,8 @@ def test_registration_review_builds_path_free_fixed_viewport_portal(
 
     monkeypatch.setattr(_review_portal, "build_mask_review", build_mask)
     monkeypatch.setattr(_review_portal, "build_section_order_review", build_order)
+    run.mkdir()
+    (run / "section_order_review.json").write_text("{}")
 
     index = _review_portal.build_registration_review(
         run,
@@ -75,6 +77,86 @@ def test_registration_review_builds_path_free_fixed_viewport_portal(
     assert "manifest-data.js" in (output / "index.html").read_text()
     assert "overflow:hidden" in (output / "registration-review.css").read_text()
     assert "stage" in (output / "registration-review.js").read_text()
+
+
+def test_registration_review_supports_mask_only_preparation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    run = tmp_path / "registration"
+    output = tmp_path / "review"
+
+    def build_mask(registration_run: Path, destination: Path) -> Path:
+        assert registration_run == run
+        destination.mkdir(parents=True)
+        (destination / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "approved": False,
+                    "fingerprint": "mask-only",
+                    "slides": [{}],
+                }
+            )
+        )
+        return destination / "index.html"
+
+    def reject_order(*args, **kwargs) -> Path:
+        raise AssertionError("order review must not run before order preparation")
+
+    monkeypatch.setattr(_review_portal, "build_mask_review", build_mask)
+    monkeypatch.setattr(_review_portal, "build_section_order_review", reject_order)
+
+    _review_portal.build_registration_review(run, output)
+
+    manifest = json.loads((output / "manifest.json").read_text())
+    assert manifest["mask"]["slide_count"] == 1
+    assert "order" not in manifest
+    script = (output / "registration-review.js").read_text()
+    assert "button.hidden" in script
+
+
+def test_registration_cohort_review_builds_one_path_free_entrypoint(
+    tmp_path: Path, monkeypatch
+) -> None:
+    output = tmp_path / "review"
+    runs = {"4845": tmp_path / "run-4845", "8471": tmp_path / "run-8471"}
+
+    def build(run: Path, destination: Path, *, workers: int) -> Path:
+        assert run in runs.values()
+        assert workers == 3
+        destination.mkdir(parents=True)
+        (destination / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "mask": {},
+                    "order": {},
+                }
+            )
+        )
+        (destination / "index.html").write_text("<p>review</p>")
+        return destination / "index.html"
+
+    monkeypatch.setattr(_review_portal, "build_registration_review", build)
+
+    index = _review_portal.build_registration_cohort_review(
+        runs,
+        output,
+        workers=3,
+    )
+
+    manifest = json.loads((output / "manifest.json").read_text())
+    assert index == output / "index.html"
+    assert [row["id"] for row in manifest["reviews"]] == ["4845", "8471"]
+    assert manifest["reviews"][0]["stages"] == ["mask", "order"]
+    assert str(tmp_path) not in index.read_text()
+    assert "overflow:hidden" in (output / "cohort-review.css").read_text()
+
+
+def test_registration_cohort_review_rejects_unsafe_name(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="invalid registration review name"):
+        _review_portal.build_registration_cohort_review(
+            {"../escape": tmp_path / "run"},
+            tmp_path / "review",
+        )
 
 
 @pytest.mark.browser
@@ -103,6 +185,16 @@ def test_registration_review_opens_directly_without_server(tmp_path: Path) -> No
                     "warnings": [],
                 },
                 "mask_review": {"status": "pending"},
+                "transform": {"matrix": np.eye(3).tolist()},
+                "alignment_metrics": (
+                    {"dice": 1.0, "coverage": 1.0, "status": "reference"}
+                    if index == 1
+                    else {
+                        "dice": 0.9,
+                        "coverage": None,
+                        "status": "pass",
+                    }
+                ),
             }
         )
         order_slides.append(
@@ -153,6 +245,14 @@ def test_registration_review_opens_directly_without_server(tmp_path: Path) -> No
         page.get_by_role("button", name="Section order").click()
         page.frame_locator("#review").locator("article").first.wait_for()
         assert page.frame_locator("#review").locator("article").count() == 2
+        page.get_by_role("button", name="Registered stack").click()
+        page.frame_locator("#review").locator("article").first.wait_for()
+        assert page.frame_locator("#review").locator("article").count() == 2
+        alignment = page.frame_locator("#review")
+        assert alignment.locator("#summary").inner_text().endswith("median Dice 0.900")
+        metrics = alignment.locator("article .metrics").all_inner_texts()
+        assert metrics == ["reference", "Dice 0.900 | pass"]
+        assert "0.000" not in " ".join(metrics)
         dimensions = page.evaluate(
             """() => ({
               x: document.documentElement.scrollWidth > innerWidth,

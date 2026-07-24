@@ -53,6 +53,43 @@ def test_order_approval_is_bound_to_fingerprint(tmp_path: Path) -> None:
     assert json.loads(path.read_text())["approved"] is True
 
 
+def test_order_proposal_preserves_review_metadata_only_for_same_fingerprint(
+    tmp_path: Path,
+) -> None:
+    first = propose_anchored_order(
+        ("HE.ndpi", "IHC.ndpi"),
+        np.array([[0.0, 0.2], [0.2, 0.0]]),
+        {"HE.ndpi": 1},
+    )
+    path = tmp_path / "order.json"
+    write_order_proposal(path, first)
+    payload = json.loads(path.read_text())
+    payload.update(
+        {
+            "approved": True,
+            "reviewer": "Reviewer",
+            "reviewed_at": "2026-07-24T10:00:00+00:00",
+            "notes": "Reviewed.",
+        }
+    )
+    path.write_text(json.dumps(payload))
+
+    write_order_proposal(path, first)
+    preserved = json.loads(path.read_text())
+    assert preserved["approved"] is True
+    assert preserved["reviewer"] == "Reviewer"
+
+    changed = propose_anchored_order(
+        ("HE.ndpi", "IHC.ndpi"),
+        np.array([[0.0, 0.3], [0.3, 0.0]]),
+        {"HE.ndpi": 1},
+    )
+    write_order_proposal(path, changed)
+    invalidated = json.loads(path.read_text())
+    assert invalidated["approved"] is False
+    assert "reviewer" not in invalidated
+
+
 def test_anchored_order_optimizes_across_fixed_middle_slot() -> None:
     names = ("A", "B", "ANCHOR", "C", "D")
     positions = {name: index for index, name in enumerate(names)}

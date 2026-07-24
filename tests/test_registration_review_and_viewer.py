@@ -13,6 +13,7 @@ from histopia.registration._slides import SlideGeometry, discover_slides
 from histopia.semantic._result import _seal_semantic_result
 from histopia.visualization._viewer import (
     _tissue_review_crop,
+    build_alignment_review,
     build_mask_review,
     build_section_order_review,
     build_section_viewer,
@@ -204,6 +205,59 @@ def test_mask_review_builds_at_pre_registration_approval_gate(
     assert manifest["slides"][0]["method"] == "object_aware_fusion"
     assert manifest["slides"][0]["foreground_fraction"] == pytest.approx(255 / 720)
     assert (index.parent / manifest["slides"][0]["texture"]).is_file()
+
+
+def test_alignment_review_builds_direct_file_checkerboards(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "run"
+    processed = run_dir / "processed"
+    processed.mkdir(parents=True)
+    slides = []
+    for index, name in enumerate(("HE.ndpi", "CK19.ndpi")):
+        image = np.full((30, 40, 3), 240, dtype=np.uint8)
+        image[6:25, 8 + index : 31 + index] = (130, 80, 60)
+        Image.fromarray(image).save(processed / f"{Path(name).stem}.thumbnail.png")
+        slides.append(
+            {
+                "path": str(tmp_path / name),
+                "is_reference": index == 0,
+                "transform": {"matrix": np.eye(3).tolist()},
+                "alignment_metrics": (
+                    None
+                    if index == 0
+                    else {
+                        "dice": 0.91,
+                        "coverage": 0.94,
+                        "status": "pass",
+                    }
+                ),
+            }
+        )
+    (run_dir / "registration_result.json").write_text(
+        json.dumps({"reference_slide": slides[0]["path"], "slides": slides})
+    )
+
+    serial = tmp_path / "serial"
+    parallel = tmp_path / "parallel"
+    build_alignment_review(run_dir, serial, workers=1)
+    index = build_alignment_review(run_dir, parallel, workers=2)
+
+    manifest = json.loads((index.parent / "manifest.json").read_text())
+    assert manifest["approved"] is False
+    assert len(manifest["slides"]) == 2
+    assert manifest["slides"][1]["dice"] == 0.91
+    assert (index.parent / manifest["slides"][1]["texture"]).is_file()
+    assert 'type="module"' not in index.read_text()
+    assert {
+        path.relative_to(serial): path.read_bytes()
+        for path in serial.rglob("*")
+        if path.is_file()
+    } == {
+        path.relative_to(parallel): path.read_bytes()
+        for path in parallel.rglob("*")
+        if path.is_file()
+    }
 
 
 def test_viewer_adds_lazy_semantic_and_blend_modes(tmp_path: Path) -> None:

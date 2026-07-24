@@ -20,17 +20,17 @@ and interactive 3D reconstruction across tissue sections.
 ## Installation
 
 ```bash
-pip install histopia
+pip install "histopia @ git+https://github.com/oncologylab/histopia.git@main"
 ```
 
 Install only the workflow dependencies you need:
 
 ```bash
-pip install "histopia[registration,wsi]"  # brightfield WSI registration
-pip install "histopia[semantic]"          # atlas fitting from saved features
-pip install "histopia[uni2h]"             # CPU/GPU UNI2-h extraction
-pip install "histopia[uni2h-repro]"       # exact validated UNI2-h runtime
-pip install "histopia[qupath]"            # QuPath extension bridge
+pip install "histopia[registration,wsi] @ git+https://github.com/oncologylab/histopia.git@main"
+pip install "histopia[semantic] @ git+https://github.com/oncologylab/histopia.git@main"
+pip install "histopia[uni2h] @ git+https://github.com/oncologylab/histopia.git@main"
+pip install "histopia[uni2h-repro] @ git+https://github.com/oncologylab/histopia.git@main"
+pip install "histopia[qupath] @ git+https://github.com/oncologylab/histopia.git@main"
 ```
 
 ## Workflows

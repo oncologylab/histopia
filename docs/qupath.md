@@ -63,8 +63,10 @@ The primary **Project workflow** tab supports:
 - registration resolution and worker controls
 - semantic device, K range, batch-size, patch-reader, and model-cache controls
 - live process output and descendant-process cancellation
-- one self-contained browser portal for tissue-mask and section-order review,
-  followed by reviewer/notes-based fingerprint approval
+- one self-contained browser portal that opens at the mask-only preparation
+  stage, then adds section order and registered-stack QC when available
+- separate fingerprint-bound mask and order approvals, followed by final
+  sealing of the registered result
 - direct semantic execution from the approved registration workspace
 
 The extension writes runtime-only configs and an exact slide-selection
@@ -73,6 +75,22 @@ review portal there and opens its local `index.html`; it does not start a
 server or make external requests. Selected slides may come from different
 directories, but each must have a unique filename and a single local NDPI,
 SCN, SVS, TIFF, or OME-TIFF source URI.
+
+The project workflow is deliberately staged:
+
+1. **Run registration** prepares masks and stops at the mask gate.
+2. Review the mask tab, enter reviewer metadata, and choose **Approve masks**.
+3. **Run registration** prepares morphology-aware order and stops at the order
+   gate.
+4. Review both tabs and choose **Approve order**.
+5. **Run registration** computes alignment; review it and choose **Seal
+   reviewed run**.
+6. Run the semantic atlas. The extension refuses semantic execution before the
+   registration seal exists.
+
+The same button is used for each computational stage because preprocessing and
+pairwise-distance caches make unchanged work resumable. Review-required stages
+are reported as successful structured statuses rather than failed processes.
 
 The **Run analysis** tab retains advanced config-file execution. The **Export
 and import** tab supports:

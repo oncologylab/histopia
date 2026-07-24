@@ -80,10 +80,10 @@ registered_output_dir = "/tmp/histopia-registration-runs/4577/registered"
 wsi_compression = "jpeg"
 wsi_jpeg_quality = 95
 wsi_tile_size = 512
-mask_review_path = "/path/to/reviews/mask_review.json"
 mask_override_dir = "/path/to/reviews/mask_overrides"
 automatic_mask_snapshot_path = "/path/to/reviews/automatic_masks/snapshot.json"
 require_approved_masks = true
+require_approved_order = true
 
 [mask]
 mode = "auto_tissue"
@@ -131,6 +131,8 @@ For semi-automatic ordering, set
 manifest whose positive one-based positions are fixed anchors. Unassigned
 slides are proposed only for the remaining slots using registration support,
 physical tissue area when slide calibration is available, and mask topology.
+When no anchor manifest is supplied, an explicit registration reference is
+fixed at position 1. Supply a manifest to place one or more anchors elsewhere.
 The proposal records adjacent distances, physical areas, a runner-up margin,
 the largest internal-cavity fraction for each slide, a graded cavity-continuity
 summary, and a fingerprint. Pairwise cavity distance is continuous after a
@@ -211,6 +213,13 @@ distance algorithm/version and weights match exactly. A stale, incomplete, or
 checksum-invalid cache is ignored and rebuilt; it never bypasses order
 fingerprint approval.
 
+The v3 ordering implementation prepares immutable rigid features once per
+slide and reuses them across every pair. On an 11-slide validation cohort at
+1200 processed pixels, this reduced a cold distance build from 85.16 seconds
+and 1.29 GB peak RSS to 5.27 seconds and 0.70 GB on a 32-vCPU AMD EPYC
+environment. The old and new distance matrices were element-for-element
+identical, so this optimization does not alter ordering results.
+
 Set `thumbnail_workers` above one to decode independent WSI thumbnails in
 parallel. This usually shortens startup for multi-slide cohorts, but each
 worker temporarily holds another decoded WSI region. Output ordering and image
@@ -235,10 +244,45 @@ configuration, physical calibration, and algorithm schema match. Missing or
 corrupt entries are regenerated. Set it to `false` for an intentionally cold
 run; review approval fingerprints are enforced independently of this cache.
 
-Set `mask_review_path`, `mask_override_dir`, and
-`require_approved_masks = true` for production runs. Changed thumbnail pixels
-or geometry invalidate the saved approval fingerprint. Candidate overlays and
-binary masks are written under `qc/mask_candidates/` for adjudication.
+Set `mask_override_dir` when manual corrections are required and
+`require_approved_masks = true` for production runs. Keep the generated
+`mask_review.json` under the run directory so the final approval can seal it.
+Changed thumbnail pixels or geometry invalidate the saved approval fingerprint.
+Candidate overlays and binary masks are written under `qc/mask_candidates/`
+for adjudication.
+
+For a strict production run, keep the review manifests in the registration
+run directory and advance the workflow explicitly:
+
+```bash
+# 1. Prepare masks. This returns a review_required JSON status.
+histopia-register --config registration.toml --staged
+histopia-visualize registration-review run/ run-review/ --workers 4
+
+# 2. After reviewing every mask, record the exact mask fingerprints.
+histopia-register \
+  --approve-masks run/ \
+  --reviewer "Reviewer name" \
+  --review-notes "Every tissue mask visually reviewed."
+
+# 3. Re-run to prepare morphology-aware order, then review and approve it.
+histopia-register --config registration.toml --staged
+histopia-visualize registration-review run/ run-review/ --workers 4
+histopia-register \
+  --approve-order run/ \
+  --reviewer "Reviewer name" \
+  --review-notes "Section morphology and physical order visually reviewed."
+
+# 4. Re-run to compute registration.
+histopia-register --config registration.toml --staged
+```
+
+`--staged` changes only CLI handling of an expected review gate: it returns
+exit code zero with `status = "review_required"`. Direct library calls and CLI
+runs without `--staged` still raise `RegistrationApprovalRequired`. Mask and
+order approvals are written atomically and survive a rerun only when their
+exact fingerprints remain current. The combined review portal supports a
+mask-only first stage and adds the order tab after the proposal exists.
 
 After reviewing the completed mask, order, and registration views, seal the
 exact artifacts without recomputing unchanged transforms:

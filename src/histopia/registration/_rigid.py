@@ -32,6 +32,43 @@ class RigidTransformResult:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedRigidFeatures:
+    """Immutable feature detection output reusable across slide pairs."""
+
+    keypoints: tuple[Any, ...]
+    descriptors: np.ndarray | None
+    matcher_norm: int
+    detector_name: str
+
+
+def prepare_rigid_features(
+    image: np.ndarray,
+    mask: np.ndarray | None = None,
+) -> PreparedRigidFeatures:
+    """Detect one slide's rigid-registration features exactly once."""
+
+    try:
+        import cv2
+    except ImportError as exc:
+        raise OptionalDependencyError(
+            "opencv-contrib-python-headless",
+            "registration",
+        ) from exc
+
+    detector, matcher_norm, detector_name = _create_detector(cv2)
+    keypoints, descriptors = detector.detectAndCompute(
+        _to_gray_u8(image),
+        _mask_to_u8(mask),
+    )
+    return PreparedRigidFeatures(
+        keypoints=tuple(keypoints),
+        descriptors=descriptors,
+        matcher_norm=matcher_norm,
+        detector_name=detector_name,
+    )
+
+
 def estimate_rigid_transform(
     fixed: np.ndarray,
     moving: np.ndarray,
@@ -44,6 +81,8 @@ def estimate_rigid_transform(
     min_dice_improvement: float = 0.01,
     max_relative_scale_change: float = 0.35,
     max_relative_anisotropy: float = 1.30,
+    fixed_features: PreparedRigidFeatures | None = None,
+    moving_features: PreparedRigidFeatures | None = None,
 ) -> RigidTransformResult:
     """Estimate a rigid transform from ``moving`` into ``fixed`` coordinates."""
 
@@ -52,7 +91,18 @@ def estimate_rigid_transform(
     elif method == "mask_moments":
         result = _estimate_mask_moments_transform(fixed_mask, moving_mask)
     elif method == "feature":
-        result = _estimate_feature_transform(fixed, moving, fixed_mask, moving_mask)
+        if (fixed_features is None) != (moving_features is None):
+            raise ValueError("fixed and moving features must be supplied together")
+        result = (
+            _estimate_feature_transform(fixed, moving, fixed_mask, moving_mask)
+            if fixed_features is None
+            else _estimate_prepared_feature_transform(
+                fixed_features,
+                moving_features,
+                fixed_mask,
+                moving_mask,
+            )
+        )
     else:
         msg = f"unsupported rigid registration method: {method!r}"
         raise ValueError(msg)
@@ -262,6 +312,20 @@ def _estimate_feature_transform(
     fixed_mask: np.ndarray | None,
     moving_mask: np.ndarray | None,
 ) -> RigidTransformResult:
+    return _estimate_prepared_feature_transform(
+        prepare_rigid_features(fixed, fixed_mask),
+        prepare_rigid_features(moving, moving_mask),
+        fixed_mask,
+        moving_mask,
+    )
+
+
+def _estimate_prepared_feature_transform(
+    fixed: PreparedRigidFeatures,
+    moving: PreparedRigidFeatures,
+    fixed_mask: np.ndarray | None,
+    moving_mask: np.ndarray | None,
+) -> RigidTransformResult:
     try:
         import cv2
     except ImportError as exc:
@@ -270,18 +334,15 @@ def _estimate_feature_transform(
             "registration",
         ) from exc
 
-    fixed_u8 = _to_gray_u8(fixed)
-    moving_u8 = _to_gray_u8(moving)
-    fixed_mask_u8 = _mask_to_u8(fixed_mask)
-    moving_mask_u8 = _mask_to_u8(moving_mask)
-
-    detector, matcher_norm, detector_name = _create_detector(cv2)
-    fixed_keypoints, fixed_descriptors = detector.detectAndCompute(
-        fixed_u8, fixed_mask_u8
-    )
-    moving_keypoints, moving_descriptors = detector.detectAndCompute(
-        moving_u8, moving_mask_u8
-    )
+    if (
+        fixed.matcher_norm != moving.matcher_norm
+        or fixed.detector_name != moving.detector_name
+    ):
+        raise ValueError("prepared rigid features use incompatible detectors")
+    fixed_keypoints = fixed.keypoints
+    moving_keypoints = moving.keypoints
+    fixed_descriptors = fixed.descriptors
+    moving_descriptors = moving.descriptors
     if fixed_descriptors is None or moving_descriptors is None:
         return _feature_or_mask_fallback(
             "not enough descriptors",
@@ -289,7 +350,7 @@ def _estimate_feature_transform(
             moving_mask,
         )
 
-    matcher = cv2.BFMatcher(matcher_norm)
+    matcher = cv2.BFMatcher(fixed.matcher_norm)
     raw_matches = matcher.knnMatch(moving_descriptors, fixed_descriptors, k=2)
     good_matches = [
         pair[0]
@@ -343,7 +404,7 @@ def _estimate_feature_transform(
         )
     return RigidTransformResult(
         matrix=matrix,
-        method=f"feature:{detector_name}",
+        method=f"feature:{fixed.detector_name}",
         match_count=len(good_matches),
         inlier_count=inlier_count,
         warnings=[],

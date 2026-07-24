@@ -295,14 +295,22 @@ def write_order_proposal(path: Path, proposal: SectionOrderProposal) -> None:
     """Write a proposal while retaining approval only for the same fingerprint."""
 
     approved = False
+    review_metadata: dict[str, object] = {}
     if path.exists():
-        payload = json.loads(path.read_text())
-        approved = bool(payload.get("approved")) and (
-            payload.get("fingerprint") == proposal.fingerprint
+        previous = json.loads(path.read_text())
+        approved = bool(previous.get("approved")) and (
+            previous.get("fingerprint") == proposal.fingerprint
         )
+        if approved:
+            review_metadata = {
+                key: previous[key]
+                for key in ("reviewer", "reviewed_at", "notes")
+                if key in previous
+            }
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = json.dumps(proposal.to_json_dict(approved=approved), indent=2)
-    path.write_text(payload + "\n")
+    payload = proposal.to_json_dict(approved=approved)
+    payload.update(review_metadata)
+    path.write_text(json.dumps(payload, indent=2) + "\n")
 
 
 def order_is_approved(path: Path, fingerprint: str) -> bool:

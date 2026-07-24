@@ -46,6 +46,18 @@ def main(argv: list[str] | None = None) -> int:
     registration_review.add_argument("registration_run", type=Path)
     registration_review.add_argument("output", type=Path)
     registration_review.add_argument("--workers", type=int, default=1)
+    cohort_review = commands.add_parser(
+        "registration-cohort-review",
+        help="Build one local portal for multiple registration reviews.",
+    )
+    cohort_review.add_argument("output", type=Path)
+    cohort_review.add_argument(
+        "--run",
+        type=_named_path,
+        action="append",
+        required=True,
+    )
+    cohort_review.add_argument("--workers", type=int, default=1)
     order_review = commands.add_parser(
         "order-review",
         help="Build a fixed-viewport section-order review.",
@@ -91,6 +103,18 @@ def main(argv: list[str] | None = None) -> int:
 
         index = build_registration_review(
             args.registration_run,
+            args.output,
+            workers=args.workers,
+        )
+        print(index)
+        return 0
+    if args.command == "registration-cohort-review":
+        from histopia.visualization._review_portal import (
+            build_registration_cohort_review,
+        )
+
+        index = build_registration_cohort_review(
+            dict(args.run),
             args.output,
             workers=args.workers,
         )

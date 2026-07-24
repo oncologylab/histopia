@@ -4,9 +4,17 @@ import threading
 from pathlib import Path
 
 import numpy as np
+import pytest
 from PIL import Image
 
-from histopia.registration import RegistrationConfig, _pipeline, register_sections
+from histopia.registration import (
+    RegistrationConfig,
+    _pipeline,
+    approve_mask_review,
+    approve_section_order,
+    register_sections,
+)
+from histopia.registration._errors import RegistrationApprovalRequired
 from histopia.registration._masking import TissueMaskResult
 from histopia.registration._pipeline import (
     _create_tissue_masks,
@@ -50,6 +58,64 @@ def test_register_sections_writes_thumbnail_result(tmp_path: Path) -> None:
     assert payload["slides"][1]["alignment_metrics"]["dice"] > 0.9
     assert (output_dir / "qc" / "[#001] fixed.mask_overlay.png").exists()
     assert (output_dir / "validation_report.md").exists()
+
+
+def test_strict_registration_advances_through_exact_review_stages(
+    tmp_path: Path,
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    image = np.full((90, 100, 3), 255, dtype=np.uint8)
+    image[18:72, 22:78] = np.array([185, 100, 120], dtype=np.uint8)
+    for index, shift in enumerate((0, 2, 4), start=1):
+        Image.fromarray(np.roll(image, shift=(shift, 0), axis=(0, 1))).save(
+            input_dir / f"[#{index:03d}] section.png"
+        )
+    config = RegistrationConfig(
+        input_dir=input_dir,
+        output_dir=output_dir,
+        reference_slide="[#001] section.png",
+        reference_policy="explicit",
+        rigid_method="phase_correlation",
+        section_order_strategy="anchored_similarity",
+        require_approved_masks=True,
+        require_approved_order=True,
+        max_processed_image_dim_px=100,
+    )
+
+    with pytest.raises(RegistrationApprovalRequired) as mask_gate:
+        register_sections(config)
+    assert mask_gate.value.stage == "masks"
+    assert len(mask_gate.value.pending_slides) == 3
+    approve_mask_review(
+        output_dir,
+        reviewer="Test Reviewer",
+        notes="Masks visually reviewed.",
+    )
+
+    with pytest.raises(RegistrationApprovalRequired) as order_gate:
+        register_sections(config)
+    assert order_gate.value.stage == "order"
+    order_payload = json.loads((output_dir / "section_order_review.json").read_text())
+    assert order_payload["slides"][0]["slide"] == "[#001] section.png"
+    assert order_payload["slides"][0]["fixed"] is True
+    approve_section_order(
+        output_dir,
+        reviewer="Test Reviewer",
+        notes="Order visually reviewed.",
+    )
+
+    result = register_sections(config)
+
+    assert len(result.slides) == 3
+    assert (output_dir / "registration_result.json").is_file()
+    mask_payload = json.loads((output_dir / "mask_review.json").read_text())
+    assert len(mask_payload["fingerprint"]) == 64
+    assert mask_payload["reviewer"] == "Test Reviewer"
+    assert json.loads((output_dir / "section_order_review.json").read_text())[
+        "approved"
+    ]
 
 
 def test_mask_artifact_manifest_requires_exact_complete_bundle(

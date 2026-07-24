@@ -85,14 +85,38 @@ def write_mask_review(
     path: Path | str,
     entries: dict[str, MaskReviewEntry],
 ) -> Path:
-    """Write a deterministic mask review manifest."""
+    """Write a deterministic mask review, retaining exact current approval."""
 
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    review_metadata: dict[str, object] = {}
+    if path.is_file():
+        try:
+            previous = json.loads(path.read_text())
+            previous_rows = {row["slide"]: row for row in previous.get("slides", [])}
+            approval_is_current = (
+                set(previous_rows) == set(entries)
+                and all(entry.approved for entry in entries.values())
+                and all(
+                    previous_rows[name].get("thumbnail_sha256")
+                    == entry.thumbnail_sha256
+                    and previous_rows[name].get("status") in APPROVED_MASK_STATUSES
+                    for name, entry in entries.items()
+                )
+            )
+            if approval_is_current:
+                review_metadata = {
+                    key: previous[key]
+                    for key in ("reviewer", "reviewed_at", "notes", "fingerprint")
+                    if key in previous
+                }
+        except (AttributeError, json.JSONDecodeError, KeyError, TypeError):
+            review_metadata = {}
     payload = {
         "schema_version": 2,
         "slides": [entries[key].to_json_dict() for key in sorted(entries)],
     }
+    payload.update(review_metadata)
     path.write_text(json.dumps(payload, indent=2) + "\n")
     return path
 

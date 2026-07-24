@@ -18,6 +18,7 @@ import numpy as np
 from histopia.registration._approval import validate_registration_approval
 from histopia.registration._errors import OptionalDependencyError
 from histopia.registration._io import (
+    checkerboard_rgb,
     overlay_mask,
     warp_mask_thumbnail,
     warp_rgb_thumbnail,
@@ -431,6 +432,110 @@ def build_mask_review(
     (output_dir / "index.html").write_text(_MASK_REVIEW_HTML)
     (output_dir / "mask-review.js").write_text(_MASK_REVIEW_JS)
     (output_dir / "mask-review.css").write_text(_ORDER_REVIEW_CSS)
+    return output_dir / "index.html"
+
+
+def build_alignment_review(
+    registration_run: Path | str,
+    output_dir: Path | str,
+    *,
+    workers: int = 1,
+) -> Path:
+    """Build a direct-file visual audit of every registered section."""
+
+    try:
+        from PIL import Image
+    except ImportError as exc:
+        raise OptionalDependencyError("pillow", "wsi") from exc
+
+    registration_run = Path(registration_run)
+    output_dir = Path(output_dir)
+    if workers <= 0:
+        raise ValueError("alignment-review workers must be positive")
+    payload = json.loads((registration_run / "registration_result.json").read_text())
+    slides = payload.get("slides", [])
+    if not isinstance(slides, list) or not slides:
+        raise ValueError("registration result contains no slides")
+    reference_row = next(
+        (row for row in slides if isinstance(row, dict) and row.get("is_reference")),
+        None,
+    )
+    if reference_row is None:
+        raise ValueError("registration result contains no reference slide")
+    reference_path = Path(str(reference_row["path"]))
+    reference = _read_rgb(
+        registration_run / "processed" / f"{reference_path.stem}.thumbnail.png"
+    )
+    assets_dir = output_dir / "assets"
+    assets_dir.mkdir(parents=True, exist_ok=True)
+    tile_px = max(12, int(round(max(reference.shape[:2]) / 12)))
+
+    def render_slide(
+        indexed_row: tuple[int, dict[str, object]],
+    ) -> dict[str, object]:
+        order, row = indexed_row
+        source_path = Path(str(row["path"]))
+        source = _read_rgb(
+            registration_run / "processed" / f"{source_path.stem}.thumbnail.png"
+        )
+        matrix = np.asarray(row["transform"]["matrix"], dtype=float)
+        registered = warp_rgb_thumbnail(source, matrix, reference.shape[:2])
+        comparison = (
+            reference
+            if bool(row.get("is_reference"))
+            else checkerboard_rgb(reference, registered, tile_px=tile_px)
+        )
+        filename = f"{order:03d}-{_safe_name(source_path.stem)}.webp"
+        Image.fromarray(comparison).save(
+            assets_dir / filename,
+            "WEBP",
+            lossless=False,
+            quality=88,
+            method=6,
+        )
+        metrics = row.get("alignment_metrics")
+        metrics = metrics if isinstance(metrics, dict) else {}
+        return {
+            "order": order,
+            "slide": source_path.name,
+            "label": _marker_label(source_path.stem),
+            "texture": f"assets/{filename}",
+            "reference": bool(row.get("is_reference")),
+            "dice": metrics.get("dice"),
+            "coverage": metrics.get("coverage"),
+            "status": metrics.get("status"),
+        }
+
+    indexed_rows = [
+        (index, row)
+        for index, row in enumerate(slides, start=1)
+        if isinstance(row, dict)
+    ]
+    if len(indexed_rows) != len(slides):
+        raise ValueError("registration result slides must contain objects")
+    if workers == 1:
+        review_slides = [render_slide(row) for row in indexed_rows]
+    else:
+        with ThreadPoolExecutor(
+            max_workers=workers,
+            thread_name_prefix="alignment-review",
+        ) as executor:
+            review_slides = list(executor.map(render_slide, indexed_rows))
+    approval = _registration_approval_payload(registration_run)
+    digest = hashlib.sha256(
+        (registration_run / "registration_result.json").read_bytes()
+    ).hexdigest()
+    manifest = {
+        "schema_version": 1,
+        "approved": approval is not None,
+        "fingerprint": digest,
+        "slides": review_slides,
+    }
+    (output_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    _write_review_manifest_script(output_dir, manifest)
+    (output_dir / "index.html").write_text(_ALIGNMENT_REVIEW_HTML)
+    (output_dir / "alignment-review.js").write_text(_ALIGNMENT_REVIEW_JS)
+    (output_dir / "alignment-review.css").write_text(_ORDER_REVIEW_CSS)
     return output_dir / "index.html"
 
 
@@ -1170,6 +1275,28 @@ _MASK_REVIEW_HTML = """<!doctype html>
 </html>
 """
 
+_ALIGNMENT_REVIEW_HTML = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Histopia Registration Alignment Review</title>
+  <link rel="stylesheet" href="alignment-review.css">
+</head>
+<body>
+  <header>
+    <strong>Histopia registered stack</strong>
+    <span id="status"></span>
+    <span id="summary"></span>
+    <code id="fingerprint"></code>
+  </header>
+  <main id="slides"></main>
+  <script src="manifest-data.js"></script>
+  <script src="alignment-review.js"></script>
+</body>
+</html>
+"""
+
 _MASK_REVIEW_JS = """const data = globalThis.HISTOPIA_REVIEW_MANIFEST;
 if (!data) throw new Error('Missing embedded Histopia review manifest');
 const slides = document.querySelector('#slides');
@@ -1197,6 +1324,53 @@ for (const slide of data.slides) {
   metrics.className = 'metrics';
   metrics.textContent =
     `${slide.method} | tissue ${(100 * slide.foreground_fraction).toFixed(1)}%`;
+  card.append(image, label, metrics);
+  slides.append(card);
+}
+"""
+
+_ALIGNMENT_REVIEW_JS = """const data = globalThis.HISTOPIA_REVIEW_MANIFEST;
+if (!data) throw new Error('Missing embedded Histopia review manifest');
+const slides = document.querySelector('#slides');
+const rowCount = innerWidth >= 2400
+  ? (data.slides.length <= 18 ? 2 : 3)
+  : (data.slides.length <= 18 ? 3 : 4);
+slides.style.setProperty('--rows', rowCount);
+slides.style.setProperty('--columns', Math.ceil(data.slides.length / rowCount));
+document.querySelector('#status').textContent =
+  data.approved ? 'Sealed registration' : 'Final review required';
+const measured = data.slides.filter(
+  slide => !slide.reference && slide.dice != null);
+const median = values => {
+  values = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(values.length / 2);
+  return values.length % 2 ? values[middle] : (values[middle - 1] + values[middle]) / 2;
+};
+document.querySelector('#summary').textContent = measured.length
+  ? `${data.slides.length} sections | median Dice ${median(measured.map(
+      slide => Number(slide.dice))).toFixed(3)}`
+  : `${data.slides.length} sections`;
+document.querySelector('#fingerprint').textContent = data.fingerprint.slice(0, 16);
+for (const slide of data.slides) {
+  const card = document.createElement('article');
+  if (slide.reference) card.classList.add('fixed');
+  const image = document.createElement('img');
+  image.src = slide.texture;
+  image.alt = `Registered checkerboard for ${slide.slide}`;
+  const label = document.createElement('div');
+  label.className = 'label';
+  label.textContent = `${String(slide.order).padStart(2, '0')} ${slide.label}`;
+  const metrics = document.createElement('div');
+  metrics.className = 'metrics';
+  const values = [];
+  if (slide.dice != null) values.push(`Dice ${Number(slide.dice).toFixed(3)}`);
+  if (slide.coverage != null) {
+    values.push(`coverage ${Number(slide.coverage).toFixed(3)}`);
+  }
+  if (slide.status) values.push(slide.status);
+  metrics.textContent = slide.reference
+    ? 'reference'
+    : (values.length ? values.join(' | ') : 'metrics unavailable');
   card.append(image, label, metrics);
   slides.append(card);
 }

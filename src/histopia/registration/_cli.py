@@ -28,6 +28,16 @@ def main(argv: list[str] | None = None) -> int:
         help="Seal exact reviewed masks and section order for a completed run.",
     )
     parser.add_argument(
+        "--approve-masks",
+        type=Path,
+        help="Approve exact prepared tissue masks before registration.",
+    )
+    parser.add_argument(
+        "--approve-order",
+        type=Path,
+        help="Approve the exact prepared section-order proposal.",
+    )
+    parser.add_argument(
         "--reviewer",
         help="Reviewer name required with --approve-run.",
     )
@@ -66,6 +76,14 @@ def main(argv: list[str] | None = None) -> int:
         help="Overwrite existing registered TIFFs used with --warp-run.",
     )
     parser.add_argument(
+        "--staged",
+        action="store_true",
+        help=(
+            "Return review-required stages as successful JSON statuses instead "
+            "of exceptions."
+        ),
+    )
+    parser.add_argument(
         "--warp-crop-mode",
         choices=("reference", "overlap"),
         default="reference",
@@ -102,6 +120,72 @@ def main(argv: list[str] | None = None) -> int:
         help="Mark a viewer mouse as having provisional physical order.",
     )
     args = parser.parse_args(argv)
+
+    approval_actions = tuple(
+        path
+        for path in (args.approve_masks, args.approve_order, args.approve_run)
+        if path is not None
+    )
+    if len(approval_actions) > 1:
+        parser.error(
+            "--approve-masks, --approve-order, and --approve-run are mutually exclusive"
+        )
+
+    if args.approve_masks is not None:
+        if not args.reviewer or not args.review_notes:
+            parser.error(
+                "--reviewer and --review-notes are required with --approve-masks"
+            )
+        from histopia.registration._approval import approve_mask_review
+
+        approval = approve_mask_review(
+            args.approve_masks,
+            reviewer=args.reviewer,
+            notes=args.review_notes,
+        )
+        print(
+            json.dumps(
+                {
+                    "status": "approved",
+                    "stage": "masks",
+                    "run_dir": str(approval.run_dir),
+                    "slide_count": approval.slide_count,
+                    "mask_fingerprint": approval.mask_fingerprint,
+                    "reviewer": approval.reviewer,
+                    "reviewed_at": approval.reviewed_at,
+                },
+                indent=2,
+            )
+        )
+        return 0
+
+    if args.approve_order is not None:
+        if not args.reviewer or not args.review_notes:
+            parser.error(
+                "--reviewer and --review-notes are required with --approve-order"
+            )
+        from histopia.registration._approval import approve_section_order
+
+        approval = approve_section_order(
+            args.approve_order,
+            reviewer=args.reviewer,
+            notes=args.review_notes,
+        )
+        print(
+            json.dumps(
+                {
+                    "status": "approved",
+                    "stage": "order",
+                    "run_dir": str(approval.run_dir),
+                    "slide_count": approval.slide_count,
+                    "order_fingerprint": approval.order_fingerprint,
+                    "reviewer": approval.reviewer,
+                    "reviewed_at": approval.reviewed_at,
+                },
+                indent=2,
+            )
+        )
+        return 0
 
     if args.approve_run is not None:
         if not args.reviewer or not args.review_notes:
@@ -195,14 +279,21 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.config is None:
         parser.error(
-            "--config, --approve-run, --manifest, --warp-run, or --viewer-run "
-            "is required"
+            "--config, --approve-masks, --approve-order, --approve-run, --manifest, "
+            "--warp-run, or --viewer-run is required"
         )
 
+    from histopia.registration._errors import RegistrationApprovalRequired
     from histopia.registration._pipeline import register_sections
 
     config = _load_config(args.config)
-    result = register_sections(config)
+    try:
+        result = register_sections(config)
+    except RegistrationApprovalRequired as error:
+        if not args.staged:
+            raise
+        print(json.dumps(error.to_json_dict(), indent=2))
+        return 0
     print(json.dumps(result.to_json_dict(), indent=2))
     return 0
 
