@@ -3,10 +3,11 @@ from __future__ import annotations
 import sys
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import numpy as np
 
+import histopia.semantic._uni2h as uni2h
 from histopia.semantic._uni2h import (
     Uni2hEncoder,
     _autocast_dtype,
@@ -33,6 +34,61 @@ def test_cached_model_revision_reads_pinned_snapshot(tmp_path) -> None:
     (model / "refs" / "main").write_text("abc123\n")
 
     assert _cached_model_revision(tmp_path) == "abc123"
+
+
+def test_uni2h_loads_config_and_weights_from_fingerprinted_revision(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    model_ids: list[str] = []
+
+    class Model:
+        pretrained_cfg = {}
+
+        def eval(self):
+            return self
+
+        def to(self, device: str):
+            assert device == "cuda:0"
+            return self
+
+    timm = ModuleType("timm")
+    timm.layers = SimpleNamespace(SwiGLUPacked=object())
+
+    def create_model(model_id: str, *, pretrained: bool, **kwargs):
+        assert pretrained
+        assert kwargs["cache_dir"] == str(tmp_path)
+        model_ids.append(model_id)
+        return Model()
+
+    timm.create_model = create_model
+    timm_data = ModuleType("timm.data")
+    timm_data.resolve_data_config = lambda config, *, model: {}
+    timm_transforms = ModuleType("timm.data.transforms_factory")
+    timm_transforms.create_transform = lambda **kwargs: object()
+    monkeypatch.setitem(sys.modules, "timm", timm)
+    monkeypatch.setitem(sys.modules, "timm.data", timm_data)
+    monkeypatch.setitem(sys.modules, "timm.data.transforms_factory", timm_transforms)
+    monkeypatch.setattr(
+        uni2h,
+        "_prepare_uni2h_runtime",
+        lambda *args, **kwargs: _Uni2hRuntime(
+            cache_dir=tmp_path,
+            device="cuda:0",
+            revision="abc123",
+            model_fingerprint="model",
+            provenance={
+                "device": "cuda:0",
+                "precision": "bfloat16-autocast",
+            },
+            torch=SimpleNamespace(nn=SimpleNamespace(SiLU=object())),
+        ),
+    )
+
+    encoder = Uni2hEncoder.from_cache(tmp_path)
+
+    assert model_ids == ["hf-hub:MahmoodLab/UNI2-h@abc123"]
+    assert encoder.model_fingerprint == "model"
 
 
 class _CudaPrecision:
@@ -144,6 +200,7 @@ def test_lazy_encoder_loads_weights_only_for_first_encode(
     runtime = _Uni2hRuntime(
         cache_dir=tmp_path,
         device="cuda:0",
+        revision="abc123",
         model_fingerprint="model",
         provenance={"device": "cuda:0"},
         torch=object(),

@@ -97,7 +97,9 @@ class Uni2hEncoder:
         }
         try:
             model = timm.create_model(
-                "hf-hub:MahmoodLab/UNI2-h", pretrained=True, **kwargs
+                f"hf-hub:MahmoodLab/UNI2-h@{runtime.revision}",
+                pretrained=True,
+                **kwargs,
             )
         except Exception as exc:
             mode = "local cache" if local_only else "Hugging Face access"
@@ -180,6 +182,7 @@ class Uni2hEncoder:
 class _Uni2hRuntime:
     cache_dir: Path
     device: str
+    revision: str
     model_fingerprint: str
     provenance: dict[str, object]
     torch: Any
@@ -270,6 +273,7 @@ def _prepare_uni2h_runtime(
     return _Uni2hRuntime(
         cache_dir=cache_dir,
         device=resolved_device,
+        revision=revision,
         model_fingerprint=hashlib.sha256(identity).hexdigest(),
         provenance=provenance,
         torch=torch,

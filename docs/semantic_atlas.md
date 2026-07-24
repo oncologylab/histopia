@@ -79,6 +79,10 @@ precision, accelerator identity, and relevant package versions. Switching
 between CPU and GPU, changing batch size, or changing the numerical runtime
 therefore creates a distinct cache identity.
 
+The model fingerprint binds to the exact cached Hugging Face commit. Histopia
+passes that commit explicitly to timm for both model configuration and weights,
+including when authenticated model downloads are allowed.
+
 The WSI provenance includes pyvips and native libvips versions. Result
 provenance separately records the NumPy, SciPy, and scikit-learn versions used
 for PCA, correspondence correction, K optimization, and regularization.
