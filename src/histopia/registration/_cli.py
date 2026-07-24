@@ -23,6 +23,19 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--config", type=Path, help="JSON or TOML registration config.")
     parser.add_argument(
+        "--approve-run",
+        type=Path,
+        help="Seal exact reviewed masks and section order for a completed run.",
+    )
+    parser.add_argument(
+        "--reviewer",
+        help="Reviewer name required with --approve-run.",
+    )
+    parser.add_argument(
+        "--review-notes",
+        help="Review notes required with --approve-run.",
+    )
+    parser.add_argument(
         "--manifest",
         type=Path,
         help="Build a KPF manifest for a mouse dir.",
@@ -90,6 +103,33 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    if args.approve_run is not None:
+        if not args.reviewer or not args.review_notes:
+            parser.error(
+                "--reviewer and --review-notes are required with --approve-run"
+            )
+        from histopia.registration._approval import approve_registration_run
+
+        approval = approve_registration_run(
+            args.approve_run,
+            reviewer=args.reviewer,
+            notes=args.review_notes,
+        )
+        print(
+            json.dumps(
+                {
+                    "run_dir": str(approval.run_dir),
+                    "slide_count": approval.slide_count,
+                    "order_fingerprint": approval.order_fingerprint,
+                    "reviewer": approval.reviewer,
+                    "reviewed_at": approval.reviewed_at,
+                    "registration_result_sha256": (approval.registration_result_sha256),
+                },
+                indent=2,
+            )
+        )
+        return 0
+
     if args.viewer_run:
         if args.viewer_output_dir is None:
             parser.error("--viewer-output-dir is required with --viewer-run")
@@ -154,7 +194,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if manifest.is_complete else 1
 
     if args.config is None:
-        parser.error("--config, --manifest, --warp-run, or --viewer-run is required")
+        parser.error(
+            "--config, --approve-run, --manifest, --warp-run, or --viewer-run "
+            "is required"
+        )
 
     from histopia.registration._pipeline import register_sections
 

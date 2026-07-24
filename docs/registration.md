@@ -191,6 +191,22 @@ Set `mask_review_path`, `mask_override_dir`, and
 or geometry invalidate the saved approval fingerprint. Candidate overlays and
 binary masks are written under `qc/mask_candidates/` for adjudication.
 
+After reviewing the completed mask, order, and registration views, seal the
+exact artifacts without recomputing unchanged transforms:
+
+```bash
+histopia-register \
+  --approve-run /path/to/completed-run \
+  --reviewer "Reviewer name" \
+  --review-notes "Masks, order, and registration visually reviewed."
+```
+
+The command refuses mismatched slide sets, reordered results, changed mask
+fingerprints, rejected masks, and missing overrides. It updates review metadata
+with atomic per-file replacement, then writes `registration_approval.json`
+last with SHA-256 digests for the registration result, mask review, and order
+review. Any later artifact change invalidates that approval.
+
 Use `automatic_mask_snapshot_path` when a complete set of automatically
 generated masks has already passed visual review. The JSON snapshot must use
 schema version 1 and contain exactly one row per input slide:
@@ -256,6 +272,13 @@ histopia-register \
 
 Serve the output directory over HTTP. Browser module imports do not work
 reliably when opening `index.html` directly from the filesystem.
+
+Repeated builds maintain checksum-verified asset and mouse caches. An unchanged
+mouse is reused only when its ordered transforms, geometry, reviewed thumbnail
+fingerprints, semantic fingerprint, and cohort QC all match and every
+referenced output still matches its saved checksum. The build report separates
+reused/rendered mice and reused/encoded assets so incremental performance is
+auditable.
 
 ## Non-Rigid Refinement
 

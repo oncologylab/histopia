@@ -13,6 +13,7 @@ from pathlib import Path
 
 import numpy as np
 
+from histopia.registration._approval import validate_registration_approval
 from histopia.registration._errors import OptionalDependencyError
 from histopia.registration._io import (
     overlay_mask,
@@ -23,6 +24,7 @@ from histopia.semantic._result import validate_semantic_result
 
 THREE_VERSION = "0.170.0"
 MAX_DISPLAY_LINKS = 500
+VIEWER_MOUSE_CACHE_VERSION = 1
 _VIEWER_QC_FIELDS = frozenset(
     {
         "fingerprint",
@@ -69,8 +71,12 @@ def build_section_viewer(
     assets_dir.mkdir(parents=True, exist_ok=True)
     build_started = time.perf_counter()
     old_asset_cache = _load_asset_cache(output_dir / ".histopia-asset-cache.json")
+    old_mouse_cache = _load_mouse_cache(output_dir / ".histopia-mouse-cache.json")
+    old_mice = _load_previous_mice(output_dir / "manifest.json")
     new_asset_cache: dict[str, dict[str, object]] = {}
+    new_mouse_cache: dict[str, dict[str, object]] = {}
     cache_stats = {"reused": 0, "encoded": 0}
+    mouse_stats = {"reused": 0, "rendered": 0}
     provisional_mice = provisional_mice or set()
     semantic_runs = semantic_runs or {}
     cohort_rows = _load_cohort_rows(cohort_qc)
@@ -100,6 +106,38 @@ def build_section_viewer(
         if semantic_qc is not None and semantic_payload is not None:
             if semantic_qc.get("fingerprint") != semantic_payload.get("fingerprint"):
                 raise ValueError(f"cohort QC fingerprint does not match {mouse_id}")
+        registration_approval = _registration_approval_payload(run_dir)
+        mouse_fingerprint = _viewer_mouse_fingerprint(
+            run_dir,
+            payload,
+            semantic_payload=semantic_payload,
+            semantic_qc=semantic_qc,
+        )
+        previous_mouse = old_mice.get(mouse_id)
+        previous_cache = old_mouse_cache.get(mouse_id)
+        if (
+            previous_mouse is not None
+            and previous_cache is not None
+            and previous_cache.get("fingerprint") == mouse_fingerprint
+            and _reuse_mouse_assets(
+                previous_mouse,
+                previous_cache,
+                output_dir,
+                old_asset_cache,
+                new_asset_cache,
+                cache_stats,
+            )
+        ):
+            previous_mouse["provisional_order"] = mouse_id in provisional_mice
+            previous_mouse["registration_approval"] = registration_approval
+            if previous_mouse.get("semantic") is not None:
+                previous_mouse["semantic"]["review"] = semantic_review
+                previous_mouse["semantic"]["qc"] = semantic_qc
+            mouse_payloads.append(previous_mouse)
+            new_mouse_cache[mouse_id] = previous_cache
+            mouse_stats["reused"] += 1
+            continue
+        mouse_stats["rendered"] += 1
         semantic_slides = (
             {row["id"]: row for row in semantic_payload["slides"]}
             if semantic_payload is not None
@@ -235,32 +273,36 @@ def build_section_viewer(
                     f"assets/{_safe_name(mouse_id)}/{blend_name}"
                 )
             slides.append(slide_payload)
-        mouse_payloads.append(
-            {
-                "id": mouse_id,
-                "provisional_order": mouse_id in provisional_mice,
-                "width": int(reference_image.shape[1]),
-                "height": int(reference_image.shape[0]),
-                "slides": slides,
-                "semantic": (
-                    {
-                        "cluster_count": cluster_count,
-                        "selected_k": cluster_count,
-                        "cluster_counts": cluster_counts,
-                        "palette": palette,
-                        "batch_correction": semantic_payload.get("batch_correction"),
-                        "k_selection": semantic_payload.get("k_selection"),
-                        "fingerprint": semantic_payload.get("fingerprint"),
-                        "review": semantic_review,
-                        "qc": semantic_qc,
-                        "links_url": topology_url,
-                        "link_pair_count": len(topology_links),
-                    }
-                    if semantic_payload is not None
-                    else None
-                ),
-            }
-        )
+        mouse_payload = {
+            "id": mouse_id,
+            "provisional_order": mouse_id in provisional_mice,
+            "registration_approval": registration_approval,
+            "width": int(reference_image.shape[1]),
+            "height": int(reference_image.shape[0]),
+            "slides": slides,
+            "semantic": (
+                {
+                    "cluster_count": cluster_count,
+                    "selected_k": cluster_count,
+                    "cluster_counts": cluster_counts,
+                    "palette": palette,
+                    "batch_correction": semantic_payload.get("batch_correction"),
+                    "k_selection": semantic_payload.get("k_selection"),
+                    "fingerprint": semantic_payload.get("fingerprint"),
+                    "review": semantic_review,
+                    "qc": semantic_qc,
+                    "links_url": topology_url,
+                    "link_pair_count": len(topology_links),
+                }
+                if semantic_payload is not None
+                else None
+            ),
+        }
+        mouse_payloads.append(mouse_payload)
+        new_mouse_cache[mouse_id] = {
+            "fingerprint": mouse_fingerprint,
+            "outputs": _mouse_output_hashes(mouse_payload, output_dir),
+        }
 
     (output_dir / "manifest.json").write_text(
         json.dumps({"schema_version": 1, "mice": mouse_payloads}, indent=2) + "\n"
@@ -277,6 +319,13 @@ def build_section_viewer(
         {"schema_version": 1, "assets": new_asset_cache},
     )
     _write_json_atomic(
+        output_dir / ".histopia-mouse-cache.json",
+        {
+            "schema_version": VIEWER_MOUSE_CACHE_VERSION,
+            "mice": new_mouse_cache,
+        },
+    )
+    _write_json_atomic(
         output_dir / "build-report.json",
         {
             "schema_version": 1,
@@ -284,6 +333,8 @@ def build_section_viewer(
             "slide_count": sum(len(mouse["slides"]) for mouse in mouse_payloads),
             "assets_reused": cache_stats["reused"],
             "assets_encoded": cache_stats["encoded"],
+            "mice_reused": mouse_stats["reused"],
+            "mice_rendered": mouse_stats["rendered"],
             "elapsed_seconds": round(time.perf_counter() - build_started, 3),
         },
     )
@@ -374,6 +425,168 @@ def _load_asset_cache(path: Path) -> dict[str, dict[str, object]]:
         for name, entry in assets.items()
         if isinstance(name, str) and isinstance(entry, dict)
     }
+
+
+def _load_mouse_cache(path: Path) -> dict[str, dict[str, object]]:
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if (
+        not isinstance(payload, dict)
+        or payload.get("schema_version") != VIEWER_MOUSE_CACHE_VERSION
+    ):
+        return {}
+    mice = payload.get("mice")
+    if not isinstance(mice, dict):
+        return {}
+    return {
+        str(mouse_id): entry
+        for mouse_id, entry in mice.items()
+        if isinstance(mouse_id, str) and isinstance(entry, dict)
+    }
+
+
+def _load_previous_mice(path: Path) -> dict[str, dict[str, object]]:
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    mice = payload.get("mice") if isinstance(payload, dict) else None
+    if not isinstance(mice, list):
+        return {}
+    result: dict[str, dict[str, object]] = {}
+    for mouse in mice:
+        if not isinstance(mouse, dict):
+            continue
+        mouse_id = mouse.get("id")
+        if isinstance(mouse_id, str) and mouse_id not in result:
+            result[mouse_id] = mouse
+    return result
+
+
+def _viewer_mouse_fingerprint(
+    run_dir: Path,
+    registration: dict[str, object],
+    *,
+    semantic_payload: dict[str, object] | None,
+    semantic_qc: dict[str, object] | None,
+) -> str:
+    slides = []
+    for slide in registration.get("slides", []):
+        source = Path(str(slide["path"]))
+        review = slide.get("mask_review")
+        review_fingerprint = (
+            review.get("thumbnail_sha256") if isinstance(review, dict) else None
+        )
+        if not isinstance(review_fingerprint, str) or not review_fingerprint:
+            stem = source.stem
+            review_fingerprint = hashlib.sha256(
+                (
+                    _file_sha256(run_dir / "processed" / f"{stem}.thumbnail.png")
+                    + _file_sha256(run_dir / "processed" / f"{stem}.mask.png")
+                ).encode()
+            ).hexdigest()
+        slides.append(
+            {
+                "source": source.name,
+                "is_reference": bool(slide.get("is_reference")),
+                "transform": slide.get("transform"),
+                "geometry": slide.get("geometry"),
+                "thumbnail_fingerprint": review_fingerprint,
+            }
+        )
+    core = {
+        "version": VIEWER_MOUSE_CACHE_VERSION,
+        "reference_slide": Path(str(registration["reference_slide"])).name,
+        "slides": slides,
+        "semantic_fingerprint": (
+            semantic_payload.get("fingerprint")
+            if semantic_payload is not None
+            else None
+        ),
+        "semantic_qc": semantic_qc,
+    }
+    return hashlib.sha256(
+        json.dumps(core, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def _registration_approval_payload(run_dir: Path) -> dict[str, object] | None:
+    if not (run_dir / "registration_approval.json").is_file():
+        return None
+    approval = validate_registration_approval(run_dir)
+    return {
+        "approved": True,
+        "reviewer": approval.reviewer,
+        "reviewed_at": approval.reviewed_at,
+        "order_fingerprint": approval.order_fingerprint,
+        "registration_result_sha256": approval.registration_result_sha256,
+    }
+
+
+def _reuse_mouse_assets(
+    mouse: dict[str, object],
+    mouse_cache: dict[str, object],
+    output_dir: Path,
+    old_cache: dict[str, dict[str, object]],
+    new_cache: dict[str, dict[str, object]],
+    stats: dict[str, int],
+) -> bool:
+    paths = _mouse_asset_paths(mouse)
+    outputs = mouse_cache.get("outputs")
+    if not isinstance(outputs, dict) or set(outputs) != set(paths):
+        return False
+    verified: dict[str, dict[str, object]] = {}
+    for relative in paths:
+        path = output_dir / relative
+        if (
+            not path.is_file()
+            or not isinstance(outputs.get(relative), str)
+            or _file_sha256(path) != outputs[relative]
+        ):
+            return False
+        if path.suffix == ".webp":
+            previous = old_cache.get(relative)
+            if previous is None or previous.get("output_sha256") != outputs[relative]:
+                return False
+            verified[relative] = previous
+    new_cache.update(verified)
+    stats["reused"] += len(verified)
+    return True
+
+
+def _mouse_output_hashes(
+    mouse: dict[str, object],
+    output_dir: Path,
+) -> dict[str, str]:
+    return {
+        relative: _file_sha256(output_dir / relative)
+        for relative in _mouse_asset_paths(mouse)
+    }
+
+
+def _mouse_asset_paths(mouse: dict[str, object]) -> tuple[str, ...]:
+    paths: set[str] = set()
+    slides = mouse.get("slides")
+    if not isinstance(slides, list):
+        return ()
+    for slide in slides:
+        if not isinstance(slide, dict):
+            continue
+        for key in ("texture", "semantic_texture", "blend_texture"):
+            value = slide.get(key)
+            if isinstance(value, str):
+                paths.add(value)
+        semantic_textures = slide.get("semantic_textures")
+        if isinstance(semantic_textures, dict):
+            paths.update(
+                value for value in semantic_textures.values() if isinstance(value, str)
+            )
+    semantic = mouse.get("semantic")
+    if isinstance(semantic, dict) and isinstance(semantic.get("links_url"), str):
+        paths.add(semantic["links_url"])
+    return tuple(sorted(paths))
 
 
 def _write_cached_webp(
@@ -1211,7 +1424,10 @@ async function loadMouse(mouse) {
   clusterSelect.value = currentK ?? '';
   clusterSelect.disabled = !mouse.semantic;
   if (!mouse.semantic) currentMode = 'histology';
-  document.querySelector('#order-status').textContent = mouse.provisional_order ? 'Provisional section order' : 'Confirmed section order';
+  const approval = mouse.registration_approval;
+  document.querySelector('#order-status').textContent = approval
+    ? `Approved registration · ${approval.reviewed_at.slice(0, 10)}`
+    : (mouse.provisional_order ? 'Provisional section order' : 'Confirmed section order');
   const pairSelect = document.querySelector('#link-pair');
   pairSelect.replaceChildren();
   (mouse.semantic?.links || []).forEach((pair, index) => {
