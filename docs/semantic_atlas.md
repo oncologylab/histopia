@@ -104,16 +104,18 @@ patch workers. All feature and coordinate hashes were identical. Vectorized
 mask-grid coverage reduced its 49,533-patch selection stage from 3.33 seconds
 to 0.018 seconds with every fraction identical.
 
-On a second real 30,720 by 29,440 H&E NDPI with 6,379 accepted patches and two
-patch workers, the context-padded reader took 6.11-6.67, 3.91-4.30,
-3.23-3.35, 3.46-3.52, and 4.05-4.09 seconds with native libvips caps of
-1, 2, 4, 8, and 16 threads, respectively; the adaptive default took
-4.39-4.40 seconds. Every feature, coordinate, and coverage hash was identical.
-Four threads was the stable optimum on that host, but Histopia leaves the cap
-unset because storage, libvips, and host concurrency determine the optimum.
-At four libvips threads, inference batch sizes 32, 64, and 128 took 3.71, 3.15,
-and 2.86 seconds with an identical feature hash, confirming that strip
-interpolation no longer depends on batch boundaries.
+In a reader benchmark using a lightweight deterministic summary encoder, a
+second real 30,720 by 29,440 H&E NDPI with 6,379 accepted patches and two patch
+workers took 6.11-6.67, 3.91-4.30, 3.23-3.35, 3.46-3.52, and 4.05-4.09
+seconds with native libvips caps of 1, 2, 4, 8, and 16 threads, respectively;
+the adaptive default took 4.39-4.40 seconds. Every feature, coordinate, and
+coverage hash was identical. Four threads was the stable optimum on that host,
+but Histopia leaves the cap unset because storage, libvips, and host
+concurrency determine the optimum. At four libvips threads, feature batch sizes
+32, 64, and 128 took 3.71, 3.15, and 2.86 seconds with an identical feature
+hash, confirming that strip interpolation no longer depends on batch
+boundaries. These timings isolate WSI reading and preprocessing; the separate
+UNI2-h measurements below include model inference.
 
 Standard 224-pixel RGB patches are normalized as one tensor batch. On the
 validated A100 runtime, this reduced 64-patch preprocessing from 62.4 to
