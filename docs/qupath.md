@@ -61,7 +61,10 @@ The primary **Project workflow** tab supports:
   selected reference fixed at position 1
 - automatic or explicit registration reference selection
 - registration resolution and worker controls
-- semantic device, K range, batch-size, patch-reader, and model-cache controls
+- semantic device including explicit `cuda:N`, K range, batch-size,
+  patch-reader, and model-cache controls
+- an in-panel compute check that reports the resolved Python/Torch backend and
+  accelerator before extraction
 - live process output and descendant-process cancellation
 - one self-contained browser portal that opens at the mask-only preparation
   stage, then adds section order and registered-stack QC when available
@@ -88,6 +91,9 @@ The project workflow is deliberately staged:
 6. Run the semantic atlas. The extension refuses semantic execution before the
    registration seal exists and its artifact checksums, order fingerprint,
    slide count, embedded mask statuses, reviewer, and timestamp still match.
+   It also requires the current QuPath slide selection to equal the sealed
+   registration cohort. Every approval action is similarly bound to the
+   prepared selection manifest.
 
 The same button is used for each computational stage because preprocessing and
 pairwise-distance caches make unchanged work resumable. Review-required stages
