@@ -414,6 +414,56 @@ def test_order_review_reuses_assets_across_reordering(
     assert not stale.exists()
 
 
+def test_order_review_workers_preserve_exact_output(tmp_path: Path) -> None:
+    processed = tmp_path / "processed"
+    processed.mkdir()
+    slides = []
+    for index in range(4):
+        stem = f"slide-{index}"
+        image = np.full((28, 36, 3), 220, dtype=np.uint8)
+        image[4 + index : 22, 6:30] = (80 + index * 20, 90, 120)
+        mask = np.zeros((28, 36), dtype=np.uint8)
+        mask[4 + index : 22, 6:30] = 255
+        Image.fromarray(image).save(processed / f"{stem}.thumbnail.png")
+        Image.fromarray(mask).save(processed / f"{stem}.mask.png")
+        slides.append(
+            {
+                "order": index + 1,
+                "slide": f"{stem}.ndpi",
+                "quarter_turns_ccw": index % 2,
+            }
+        )
+    proposal = tmp_path / "proposal.json"
+    proposal.write_text(json.dumps({"fingerprint": "workers", "slides": slides}))
+    serial = tmp_path / "serial"
+    parallel = tmp_path / "parallel"
+
+    build_section_order_review(proposal, processed, serial, workers=1)
+    build_section_order_review(proposal, processed, parallel, workers=4)
+
+    serial_files = {
+        path.relative_to(serial): path.read_bytes()
+        for path in serial.rglob("*")
+        if path.is_file()
+    }
+    parallel_files = {
+        path.relative_to(parallel): path.read_bytes()
+        for path in parallel.rglob("*")
+        if path.is_file()
+    }
+    assert parallel_files == serial_files
+
+
+def test_order_review_rejects_nonpositive_workers(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="workers must be positive"):
+        build_section_order_review(
+            tmp_path / "proposal.json",
+            tmp_path / "processed",
+            tmp_path / "review",
+            workers=0,
+        )
+
+
 def test_order_review_crop_normalizes_scanner_canvas() -> None:
     image = np.full((100, 160, 3), 240, dtype=np.uint8)
     mask = np.zeros((100, 160), dtype=bool)

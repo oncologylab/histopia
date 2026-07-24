@@ -9,6 +9,7 @@ import math
 import os
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from importlib import resources
 from pathlib import Path
 
@@ -906,6 +907,8 @@ def build_section_order_review(
     proposal_path: Path | str,
     processed_dir: Path | str,
     output_dir: Path | str,
+    *,
+    workers: int = 1,
 ) -> Path:
     """Build a non-scrolling review grid for a fingerprinted order proposal."""
 
@@ -917,6 +920,8 @@ def build_section_order_review(
     proposal_path = Path(proposal_path)
     processed_dir = Path(processed_dir)
     output_dir = Path(output_dir)
+    if workers <= 0:
+        raise ValueError("order-review workers must be positive")
     assets_dir = output_dir / "assets"
     assets_dir.mkdir(parents=True, exist_ok=True)
     cache_path = output_dir / ".histopia-order-review-cache.json"
@@ -928,9 +933,9 @@ def build_section_order_review(
     if not isinstance(slides, list) or not slides:
         raise ValueError("section order proposal contains no slides")
 
-    review_slides: list[dict[str, object]] = []
-    expected_assets: set[Path] = set()
-    for row in slides:
+    def render_slide(
+        row: dict[str, object],
+    ) -> tuple[dict[str, object], Path, dict[str, dict[str, object]], dict[str, int]]:
         slide_name = str(row["slide"])
         stem = Path(slide_name).stem
         image = _read_rgb(processed_dir / f"{stem}.thumbnail.png")
@@ -942,6 +947,8 @@ def build_section_order_review(
         slide_digest = hashlib.sha256(slide_name.encode()).hexdigest()[:12]
         filename = f"{_safe_name(stem)}-{slide_digest}.webp"
         asset_path = assets_dir / filename
+        slide_cache: dict[str, dict[str, object]] = {}
+        slide_stats = {"reused": 0, "encoded": 0}
         _write_cached_webp(
             Image,
             rgba,
@@ -949,17 +956,38 @@ def build_section_order_review(
             output_dir=output_dir,
             options={"lossless": False, "quality": 86, "method": 6},
             old_cache=old_cache,
-            new_cache=new_cache,
-            stats=cache_stats,
+            new_cache=slide_cache,
+            stats=slide_stats,
         )
-        expected_assets.add(asset_path)
-        review_slides.append(
-            {
-                **row,
-                "label": _marker_label(stem),
-                "texture": f"assets/{filename}",
-            }
-        )
+        review_slide = {
+            **row,
+            "label": _marker_label(stem),
+            "texture": f"assets/{filename}",
+        }
+        return review_slide, asset_path, slide_cache, slide_stats
+
+    review_slides: list[dict[str, object]] = []
+    expected_assets: set[Path] = set()
+    executor = (
+        None
+        if workers == 1
+        else ThreadPoolExecutor(max_workers=workers, thread_name_prefix="order-review")
+    )
+    results = (
+        map(render_slide, slides)
+        if executor is None
+        else executor.map(render_slide, slides)
+    )
+    try:
+        for review_slide, asset_path, slide_cache, slide_stats in results:
+            review_slides.append(review_slide)
+            expected_assets.add(asset_path)
+            new_cache.update(slide_cache)
+            cache_stats["reused"] += slide_stats["reused"]
+            cache_stats["encoded"] += slide_stats["encoded"]
+    finally:
+        if executor is not None:
+            executor.shutdown()
 
     for stale_asset in assets_dir.glob("*.webp"):
         if stale_asset not in expected_assets:

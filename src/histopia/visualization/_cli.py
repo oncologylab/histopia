@@ -39,6 +39,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     mask_review.add_argument("registration_run", type=Path)
     mask_review.add_argument("output", type=Path)
+    order_review = commands.add_parser(
+        "order-review",
+        help="Build a fixed-viewport section-order review.",
+    )
+    order_review.add_argument("proposal", type=Path)
+    order_review.add_argument("processed", type=Path)
+    order_review.add_argument("output", type=Path)
+    order_review.add_argument("--workers", type=int, default=1)
     showcase = commands.add_parser(
         "showcase",
         help="Export selected viewer mice as a static site.",
@@ -69,6 +77,17 @@ def main(argv: list[str] | None = None) -> int:
         from histopia.visualization._viewer import build_mask_review
 
         index = build_mask_review(args.registration_run, args.output)
+        print(index)
+        return 0
+    if args.command == "order-review":
+        from histopia.visualization._viewer import build_section_order_review
+
+        index = build_section_order_review(
+            args.proposal,
+            args.processed,
+            args.output,
+            workers=args.workers,
+        )
         print(index)
         return 0
     if args.command == "build":

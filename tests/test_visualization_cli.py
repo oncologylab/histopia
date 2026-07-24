@@ -86,6 +86,42 @@ def test_mask_review_command_builds_requested_run(tmp_path: Path, monkeypatch) -
     assert calls == [(run, output)]
 
 
+def test_order_review_command_passes_worker_count(tmp_path: Path, monkeypatch) -> None:
+    calls: list[tuple[Path, Path, Path, int]] = []
+
+    def capture(
+        proposal: Path,
+        processed: Path,
+        output: Path,
+        *,
+        workers: int,
+    ) -> Path:
+        calls.append((proposal, processed, output, workers))
+        return output / "index.html"
+
+    monkeypatch.setattr(
+        "histopia.visualization._viewer.build_section_order_review",
+        capture,
+    )
+    proposal = tmp_path / "proposal.json"
+    processed = tmp_path / "processed"
+    output = tmp_path / "review"
+
+    result = _cli.main(
+        [
+            "order-review",
+            str(proposal),
+            str(processed),
+            str(output),
+            "--workers",
+            "4",
+        ]
+    )
+
+    assert result == 0
+    assert calls == [(proposal, processed, output, 4)]
+
+
 def test_showcase_command_exports_selected_static_mice(
     tmp_path: Path, monkeypatch
 ) -> None:

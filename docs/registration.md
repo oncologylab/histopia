@@ -152,6 +152,16 @@ build_section_order_review(
 )
 ```
 
+The equivalent CLI supports bounded parallel encoding:
+
+```bash
+histopia-visualize order-review \
+    run/section_order_review.json \
+    run/processed \
+    order-review \
+    --workers 4
+```
+
 Review cards are cropped around accepted tissue for morphology comparison.
 Physical tissue area remains a separate displayed measurement. Changing masks,
 cavity topology, anchors, pairwise distances, or the proposed sequence
@@ -165,7 +175,13 @@ a missing or modified WebP is regenerated. The cache is performance metadata
 and never changes or bypasses the order fingerprint. On a representative
 24-slide review, a cold build took 30.48 seconds, an exact warm build took
 1.78 seconds, and a reorder-only build took 1.77 seconds while preserving all
-24 WebP checksums.
+24 WebP checksums. `workers = 1` remains the memory-conservative library and
+CLI default; increase it only after measuring cold-build memory on
+representative slides. Worker count does not alter cache keys, manifests, or
+encoded bytes. On the same cold review, one, two, four, and eight workers took
+30.77, 15.68, 8.16, and 4.66 seconds with peak RSS of approximately 125, 176,
+273, and 448 MiB. Four workers is a balanced server setting; eight favors
+throughput when memory is available.
 
 Build a fixed-viewport audit of every accepted tissue mask before approval:
 
