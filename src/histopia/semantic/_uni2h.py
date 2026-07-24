@@ -153,10 +153,16 @@ class Uni2hEncoder:
         tensors = [
             self.transform(Image.fromarray(image, mode="RGB")) for image in images
         ]
+        return self._encode_tensor_batch(torch, torch.stack(tensors))
+
+    def _encode_tensor_batch(self, torch: Any, batch: Any) -> np.ndarray:
+        """Encode one transformed CPU batch, splitting only after device OOM."""
+
         uses_cuda = self.device.startswith("cuda")
-        batch = torch.stack(tensors).to(self.device, non_blocking=uses_cuda)
         autocast_dtype = _autocast_dtype(torch, self.precision)
+        device_batch = None
         try:
+            device_batch = batch.to(self.device, non_blocking=uses_cuda)
             with (
                 torch.inference_mode(),
                 torch.autocast(
@@ -165,17 +171,20 @@ class Uni2hEncoder:
                     enabled=uses_cuda and autocast_dtype is not None,
                 ),
             ):
-                output = self.model(batch)
+                output = self.model(device_batch)
+            return output.float().cpu().numpy()
         except torch.OutOfMemoryError:
-            if len(images) == 1:
+            if len(batch) == 1:
                 raise
-            midpoint = len(images) // 2
-            if uses_cuda:
-                torch.cuda.empty_cache()
-            return np.concatenate(
-                [self.encode(images[:midpoint]), self.encode(images[midpoint:])]
-            )
-        return output.float().cpu().numpy()
+        del device_batch
+        _empty_accelerator_cache(torch, self.device)
+        midpoint = len(batch) // 2
+        return np.concatenate(
+            [
+                self._encode_tensor_batch(torch, batch[:midpoint]),
+                self._encode_tensor_batch(torch, batch[midpoint:]),
+            ]
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -302,6 +311,15 @@ def _autocast_dtype(torch: Any, precision: str) -> Any | None:
     if precision == "float32":
         return None
     raise ValueError(f"unsupported UNI2-h inference precision: {precision}")
+
+
+def _empty_accelerator_cache(torch: Any, device: str) -> None:
+    """Release allocator cache after a failed accelerator batch."""
+
+    if device.startswith("cuda"):
+        torch.cuda.empty_cache()
+    elif device == "mps":
+        torch.mps.empty_cache()
 
 
 def _cached_model_revision(cache_dir: Path) -> str:

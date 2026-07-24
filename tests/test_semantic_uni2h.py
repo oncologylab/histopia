@@ -192,6 +192,86 @@ def test_uni2h_encoder_uses_recorded_float16_fallback(monkeypatch) -> None:
     }
 
 
+def test_uni2h_oom_retry_reuses_transforms_and_preserves_order(monkeypatch) -> None:
+    transformed: list[int] = []
+    attempts: list[list[int]] = []
+    cache_clears = 0
+
+    class OutOfMemoryError(RuntimeError):
+        pass
+
+    class Batch:
+        def __init__(self, values: list[int]) -> None:
+            self.values = values
+
+        def __len__(self) -> int:
+            return len(self.values)
+
+        def __getitem__(self, index):
+            return Batch(self.values[index])
+
+        def to(self, device: str, *, non_blocking: bool):
+            assert (device, non_blocking) == ("cuda:0", True)
+            return self
+
+    class Output:
+        def __init__(self, values: list[int]) -> None:
+            self.values = values
+
+        def float(self):
+            return self
+
+        def cpu(self):
+            return self
+
+        def numpy(self) -> np.ndarray:
+            return np.asarray(self.values, dtype=np.float32)[:, None]
+
+    def model(batch: Batch) -> Output:
+        attempts.append(batch.values)
+        if len(batch) > 2:
+            raise OutOfMemoryError
+        return Output(batch.values)
+
+    def transform(image) -> int:
+        value = image.getpixel((0, 0))[0]
+        transformed.append(value)
+        return value
+
+    def empty_cache() -> None:
+        nonlocal cache_clears
+        cache_clears += 1
+
+    torch = SimpleNamespace(
+        OutOfMemoryError=OutOfMemoryError,
+        autocast=lambda **kwargs: nullcontext(),
+        bfloat16=object(),
+        cuda=SimpleNamespace(empty_cache=empty_cache),
+        float16=object(),
+        inference_mode=nullcontext,
+        stack=lambda tensors: Batch(list(tensors)),
+    )
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    encoder = Uni2hEncoder(
+        model,
+        transform,
+        device="cuda:0",
+        model_fingerprint="model",
+        runtime_provenance={
+            "device": "cuda:0",
+            "precision": "bfloat16-autocast",
+        },
+    )
+    images = np.stack([np.full((4, 4, 3), value, dtype=np.uint8) for value in range(5)])
+
+    result = encoder.encode(images)
+
+    np.testing.assert_array_equal(result[:, 0], np.arange(5, dtype=np.float32))
+    assert transformed == [0, 1, 2, 3, 4]
+    assert attempts == [[0, 1, 2, 3, 4], [0, 1], [2, 3, 4], [2], [3, 4]]
+    assert cache_clears == 2
+
+
 def test_lazy_encoder_loads_weights_only_for_first_encode(
     tmp_path: Path,
     monkeypatch,
