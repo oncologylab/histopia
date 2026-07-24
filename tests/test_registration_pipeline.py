@@ -120,6 +120,7 @@ def test_anchored_order_reuses_exact_distance_cache(
         output_dir=output_dir,
         rigid_method="phase_correlation",
         section_order_strategy="anchored_similarity",
+        ordering_workers=2,
         max_processed_image_dim_px=80,
     )
 
@@ -131,3 +132,26 @@ def test_anchored_order_reuses_exact_distance_cache(
     assert calls == 1
     assert first["fingerprint"] == second["fingerprint"]
     assert (output_dir / ".cache" / "section-order-distances.npz").is_file()
+
+    sequential_output = tmp_path / "sequential"
+    register_sections(
+        RegistrationConfig(
+            input_dir=input_dir,
+            output_dir=sequential_output,
+            rigid_method="phase_correlation",
+            section_order_strategy="anchored_similarity",
+            ordering_workers=1,
+            max_processed_image_dim_px=80,
+        )
+    )
+    with np.load(
+        output_dir / ".cache" / "section-order-distances.npz",
+        allow_pickle=False,
+    ) as parallel_cache:
+        parallel = parallel_cache["distances"]
+    with np.load(
+        sequential_output / ".cache" / "section-order-distances.npz",
+        allow_pickle=False,
+    ) as sequential_cache:
+        sequential = sequential_cache["distances"]
+    assert np.array_equal(parallel, sequential)

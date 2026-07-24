@@ -65,8 +65,10 @@ def test_viewer_embeds_seven_mouse_qc_and_exact_review_state(tmp_path: Path) -> 
         "approved": False,
         "fingerprint_matches": True,
     }
-    assert semantic["links"][0]["accepted_links"] == 600
-    assert semantic["links"][0]["displayed_links"] == 500
+    assert semantic["link_pair_count"] == 1
+    topology = json.loads((index.parent / semantic["links_url"]).read_text())
+    assert topology["links"][0]["accepted_links"] == 600
+    assert topology["links"][0]["displayed_links"] == 500
     viewer = (index.parent / "viewer.js").read_text()
     assert "Approval required" in viewer
     assert "topology coverage" in viewer

@@ -19,9 +19,9 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  SHOWCASE_ARCHIVE: histopia-pages-seven-good-v1.tar.gz
-  SHOWCASE_SHA256: 89dbf522bea50b774195ccf8e1f4e723d9f9e57a5968285df65839dc475ce8a3
-  SHOWCASE_URL: https://github.com/oncologylab/histopia/releases/download/pages-demo-seven-good-v1/histopia-pages-seven-good-v1.tar.gz
+  SHOWCASE_ARCHIVE: histopia-pages-twelve-mouse-v1.tar.gz
+  SHOWCASE_SHA256: 1e48a4fb1e5158720a38c916cd0586ed090f9d277c15b1f8fedd5c30b26330e8
+  SHOWCASE_URL: https://github.com/oncologylab/histopia/releases/download/pages-demo-twelve-mouse-v1/histopia-pages-twelve-mouse-v1.tar.gz
 
 jobs:
   build:

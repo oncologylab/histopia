@@ -1,5 +1,9 @@
 from pathlib import Path
 
+import pytest
+
+from histopia.registration._cli import _config_from_mapping
+
 try:
     import tomllib
 except ImportError:
@@ -37,3 +41,14 @@ def test_readme_links_to_interactive_pages_showcase() -> None:
     readme = Path("README.md").read_text()
 
     assert "https://oncologylab.github.io/histopia/" in readme
+
+
+def test_registration_config_rejects_unknown_keys(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="unknown registration config keys: typo"):
+        _config_from_mapping(
+            {
+                "input_dir": str(tmp_path / "input"),
+                "output_dir": str(tmp_path / "output"),
+                "typo": True,
+            }
+        )

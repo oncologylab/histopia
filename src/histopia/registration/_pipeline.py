@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -1249,47 +1250,64 @@ def _section_distance_matrix(
     count = len(slide_paths)
     distances = np.ones((count, count), dtype=float)
     np.fill_diagonal(distances, 0.0)
-    for first in range(count):
-        for second in range(first + 1, count):
-            try:
-                transform, _ = _estimate_pair_transform(
-                    slide_paths[first],
-                    slide_paths[second],
-                    crops,
-                    config,
-                )
-                dice = _final_mask_dice(
-                    crops[slide_paths[first]],
-                    crops[slide_paths[second]],
-                    transform.matrix,
-                )
-                support = min(1.0, transform.inlier_count / 40.0)
-                registration_distance = 1.0 - min(
-                    max(1e-3, 0.75 * dice + 0.25 * support), 1.0
-                )
-                shape_distance = _mask_shape_distance(
-                    crops[slide_paths[first]].mask,
-                    crops[slide_paths[second]].mask,
-                )
-                hole_distance = _mask_hole_topology_distance(
-                    crops[slide_paths[first]].mask,
-                    crops[slide_paths[second]].mask,
-                )
-                area_distance = _physical_area_distance(
-                    slide_paths[first],
-                    slide_paths[second],
-                    physical_areas,
-                )
-                distance = (
-                    0.60 * registration_distance
-                    + 0.15 * area_distance
-                    + 0.10 * shape_distance
-                    + 0.15 * hole_distance
-                )
-            except (ValueError, np.linalg.LinAlgError):
-                distance = 1.0
+    pairs = tuple(
+        (first, second) for first in range(count) for second in range(first + 1, count)
+    )
+
+    def calculate(pair: tuple[int, int]) -> tuple[int, int, float]:
+        first, second = pair
+        try:
+            transform, _ = _estimate_pair_transform(
+                slide_paths[first],
+                slide_paths[second],
+                crops,
+                config,
+            )
+            dice = _final_mask_dice(
+                crops[slide_paths[first]],
+                crops[slide_paths[second]],
+                transform.matrix,
+            )
+            support = min(1.0, transform.inlier_count / 40.0)
+            registration_distance = 1.0 - min(
+                max(1e-3, 0.75 * dice + 0.25 * support), 1.0
+            )
+            shape_distance = _mask_shape_distance(
+                crops[slide_paths[first]].mask,
+                crops[slide_paths[second]].mask,
+            )
+            hole_distance = _mask_hole_topology_distance(
+                crops[slide_paths[first]].mask,
+                crops[slide_paths[second]].mask,
+            )
+            area_distance = _physical_area_distance(
+                slide_paths[first],
+                slide_paths[second],
+                physical_areas,
+            )
+            distance = (
+                0.60 * registration_distance
+                + 0.15 * area_distance
+                + 0.10 * shape_distance
+                + 0.15 * hole_distance
+            )
+        except (ValueError, np.linalg.LinAlgError):
+            distance = 1.0
+        return first, second, float(distance)
+
+    if config.ordering_workers == 1:
+        results = map(calculate, pairs)
+        executor = None
+    else:
+        executor = ThreadPoolExecutor(max_workers=config.ordering_workers)
+        results = executor.map(calculate, pairs)
+    try:
+        for first, second, distance in results:
             distances[first, second] = distance
             distances[second, first] = distance
+    finally:
+        if executor is not None:
+            executor.shutdown()
     return distances
 
 

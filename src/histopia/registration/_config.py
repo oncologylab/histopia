@@ -105,6 +105,7 @@ class RegistrationConfig:
     section_order_strategy: SectionOrderStrategy = "natural"
     section_order_review_path: Path | None = None
     section_orientation_path: Path | None = None
+    ordering_workers: int = 1
     require_approved_order: bool = False
     mask_review_path: Path | None = None
     mask_override_dir: Path | None = None
@@ -152,6 +153,8 @@ class RegistrationConfig:
         if self.max_processed_image_dim_px <= 0:
             msg = "max_processed_image_dim_px must be positive"
             raise ValueError(msg)
+        if self.ordering_workers <= 0:
+            raise ValueError("ordering_workers must be positive")
         if self.non_rigid:
             self.non_rigid_refinement.enabled = True
         if not 1 <= self.wsi_jpeg_quality <= 100:

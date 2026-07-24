@@ -5,6 +5,8 @@ The `histopia-qupath` command writes a validated interchange bundle for the
 companion Histopia QuPath extension.
 
 ```bash
+pip install "histopia[qupath]"
+
 histopia-qupath \
   --registration-run /path/to/registration-run \
   --semantic-run /path/to/semantic-run \

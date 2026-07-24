@@ -27,6 +27,7 @@ Install only the workflow dependencies you need:
 pip install "histopia[registration,wsi]"  # brightfield WSI registration
 pip install "histopia[semantic]"          # atlas fitting from saved features
 pip install "histopia[uni2h]"             # CPU/GPU UNI2-h extraction
+pip install "histopia[qupath]"             # QuPath interchange export
 ```
 
 ## Workflows

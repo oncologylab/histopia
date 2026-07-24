@@ -206,7 +206,7 @@ def _config_from_mapping(data: dict[str, Any]) -> RegistrationConfig:
     mask_override_value = data.pop("mask_override_dir", None)
     automatic_mask_snapshot_value = data.pop("automatic_mask_snapshot_path", None)
     affine_override_value = data.pop("affine_override_path", None)
-    return RegistrationConfig(
+    config = RegistrationConfig(
         input_dir=Path(data.pop("input_dir")),
         output_dir=Path(data.pop("output_dir")),
         reference_slide=data.pop("reference_slide", None),
@@ -219,6 +219,7 @@ def _config_from_mapping(data: dict[str, Any]) -> RegistrationConfig:
         section_orientation_path=(
             Path(section_orientation_value) if section_orientation_value else None
         ),
+        ordering_workers=data.pop("ordering_workers", 1),
         require_approved_order=data.pop("require_approved_order", False),
         mask_review_path=Path(mask_review_value) if mask_review_value else None,
         mask_override_dir=Path(mask_override_value) if mask_override_value else None,
@@ -248,6 +249,10 @@ def _config_from_mapping(data: dict[str, Any]) -> RegistrationConfig:
         wsi_jpeg_quality=data.pop("wsi_jpeg_quality", 95),
         wsi_tile_size=data.pop("wsi_tile_size", 512),
     )
+    if data:
+        unknown = ", ".join(sorted(data))
+        raise ValueError(f"unknown registration config keys: {unknown}")
+    return config
 
 
 if __name__ == "__main__":
