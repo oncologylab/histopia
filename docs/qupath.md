@@ -86,7 +86,8 @@ The project workflow is deliberately staged:
 5. **Run registration** computes alignment; review it and choose **Seal
    reviewed run**.
 6. Run the semantic atlas. The extension refuses semantic execution before the
-   registration seal exists.
+   registration seal exists and its artifact checksums, order fingerprint,
+   slide count, embedded mask statuses, reviewer, and timestamp still match.
 
 The same button is used for each computational stage because preprocessing and
 pairwise-distance caches make unchanged work resumable. Review-required stages
