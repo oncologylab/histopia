@@ -8,6 +8,7 @@ from histopia.registration import (
 )
 from histopia.registration._masking import (
     TissueMaskResult,
+    _align_peer_mask_translation,
     _augment_with_group_components,
     _axis_binary_dilation,
     _axis_binary_opening,
@@ -15,9 +16,12 @@ from histopia.registration._masking import (
     _clean_mask,
     _fill_small_holes,
     _group_density_union_candidate,
+    _has_unrepresented_group_component,
     _mask_score,
     _pale_tissue_candidate,
     _polish_selected_mask,
+    _recover_supported_pale_pixels,
+    _recover_undercovered_pale_tissue,
     _remove_border_bar_components,
     _remove_hollow_detached_artifacts,
     _remove_image_frame_exterior,
@@ -184,6 +188,183 @@ def test_group_augmentation_keeps_smaller_fragment_with_peer_support() -> None:
     )
 
     assert augmented[90:120, 225:250].all()
+
+
+def test_peer_translation_aligns_shifted_dominant_tissue() -> None:
+    target = np.zeros((128, 128), dtype=bool)
+    target[40:100, 25:80] = True
+    peer = np.zeros_like(target)
+    peer[18:78, 55:110] = True
+
+    aligned = _align_peer_mask_translation(peer, target)
+
+    assert np.array_equal(aligned, target)
+
+
+def test_peer_translation_keeps_raw_mask_when_overlap_does_not_improve() -> None:
+    target = np.zeros((128, 128), dtype=bool)
+    target[30:100, 25:75] = True
+    peer = target.copy()
+    peer[15:25, 95:110] = True
+
+    aligned = _align_peer_mask_translation(peer, target)
+
+    assert np.array_equal(aligned, peer)
+
+
+def test_group_supported_pale_recovery_adds_tissue_not_debris() -> None:
+    mask = np.zeros((256, 256), dtype=bool)
+    mask[145:225, 45:175] = True
+    image = np.ones((256, 256, 3), dtype=np.float32)
+    image[145:225, 45:175] = [0.72, 0.45, 0.40]
+    image[30:105, 55:170] = [0.91, 0.86, 0.82]
+    image[35:100:5, 60:165:5] = [0.80, 0.73, 0.68]
+    image[25:70, 205:245] = [0.65, 0.35, 0.30]
+    support = np.zeros((256, 256), dtype=float)
+    support[25:110, 50:175] = 0.9
+
+    recovered = _recover_supported_pale_pixels(mask, image, support)
+
+    assert recovered[40:95, 65:160].mean() > 0.85
+    assert not recovered[25:70, 205:245].any()
+
+
+def test_group_supported_pale_recovery_fills_supported_stain_dropout_only() -> None:
+    mask = np.zeros((256, 256), dtype=bool)
+    mask[25:230, 25:230] = True
+    mask[55:115, 55:115] = False
+    mask[140:200, 140:200] = False
+    image = np.ones((256, 256, 3), dtype=np.float32)
+    image[25:230, 25:230] = [0.72, 0.45, 0.40]
+    image[55:115, 55:115] = [0.91, 0.86, 0.82]
+    image[60:110:5, 60:110:5] = [0.80, 0.73, 0.68]
+    image[140:200, 140:200] = 1.0
+    support = np.ones((256, 256), dtype=float)
+
+    recovered = _recover_supported_pale_pixels(mask, image, support)
+
+    assert recovered[65:105, 65:105].mean() > 0.85
+    assert not recovered[150:190, 150:190].any()
+
+
+def test_group_supported_pale_recovery_does_not_expand_boundary_halo() -> None:
+    mask = np.zeros((256, 256), dtype=bool)
+    mask[70:190, 70:190] = True
+    image = np.ones((256, 256, 3), dtype=np.float32)
+    image[60:200, 60:200] = [0.91, 0.86, 0.82]
+    image[70:190, 70:190] = [0.72, 0.45, 0.40]
+    support = np.ones((256, 256), dtype=float)
+
+    recovered = _recover_supported_pale_pixels(mask, image, support)
+
+    assert np.array_equal(recovered, mask)
+
+
+def test_group_supported_pale_recovery_limits_detached_growth_to_seed() -> None:
+    mask = np.zeros((256, 256), dtype=bool)
+    mask[150:225, 80:180] = True
+    image = np.ones((256, 256, 3), dtype=np.float32)
+    image[150:225, 80:180] = [0.72, 0.45, 0.40]
+    image[30:100, 35:105] = [0.91, 0.86, 0.82]
+    image[35:95:4, 40:100:4] = [0.80, 0.73, 0.68]
+    image[95:145, 70:100] = [0.91, 0.86, 0.82]
+    image[100:140:4, 75:95:4] = [0.80, 0.73, 0.68]
+    image[30:100, 155:225] = [0.91, 0.86, 0.82]
+    image[35:95:4, 160:220:4] = [0.80, 0.73, 0.68]
+    support = np.zeros((256, 256), dtype=float)
+    support[25:105, 30:110] = 0.7
+    support[25:105, 150:230] = 0.7
+    seed = np.zeros((256, 256), dtype=bool)
+    seed[40:90, 45:95] = True
+
+    recovered = _recover_supported_pale_pixels(
+        mask,
+        image,
+        support,
+        detached_seed=seed,
+    )
+
+    assert recovered[40:90, 45:95].mean() > 0.85
+    assert not recovered[120:140, 75:95].any()
+    assert not recovered[40:90, 165:215].any()
+
+
+def test_group_supported_pale_recovery_rejects_smooth_seeded_halo() -> None:
+    mask = np.zeros((256, 256), dtype=bool)
+    mask[150:225, 80:180] = True
+    image = np.ones((256, 256, 3), dtype=np.float32)
+    image[150:225, 80:180] = [0.72, 0.45, 0.40]
+    image[30:100, 35:105] = [0.91, 0.90, 0.89]
+    support = np.zeros((256, 256), dtype=float)
+    support[25:105, 30:110] = 0.8
+    seed = support > 0.7
+
+    recovered = _recover_supported_pale_pixels(
+        mask,
+        image,
+        support,
+        detached_seed=seed,
+    )
+
+    assert np.array_equal(recovered, mask)
+
+
+def test_group_pale_recovery_requires_severe_area_undercoverage() -> None:
+    typical = np.zeros((160, 160), dtype=bool)
+    typical[40:120, 30:130] = True
+    target = typical.copy()
+    target[40:70, 30:130] = False
+    image = np.ones((160, 160, 3), dtype=np.float32)
+    image[40:120, 30:130] = [0.72, 0.45, 0.40]
+    image[40:70, 30:130] = [0.91, 0.86, 0.82]
+    image[42:68:4, 32:128:4] = [0.80, 0.73, 0.68]
+
+    def result(mask: np.ndarray) -> TissueMaskResult:
+        return TissueMaskResult(mask, "synthetic", {}, True, [])
+
+    recovered = _recover_undercovered_pale_tissue(
+        {
+            "target": result(target),
+            "peer-1": result(typical),
+            "peer-2": result(typical),
+        },
+        {"target": image},
+        physical_pixel_areas=None,
+        normalized_shape=(160, 160),
+    )
+
+    assert np.array_equal(recovered["target"].mask, target)
+    assert recovered["target"].method == "synthetic"
+
+
+def test_group_component_gate_detects_missing_recurring_object() -> None:
+    target = np.zeros((128, 128), dtype=bool)
+    target[60:110, 55:105] = True
+    support = target.astype(float)
+    support[15:50, 10:50] = 0.8
+
+    assert _has_unrepresented_group_component(target, support)
+
+    target[15:50, 10:24] = True
+    assert _has_unrepresented_group_component(target, support)
+
+    target[15:50, 24:50] = True
+    assert not _has_unrepresented_group_component(target, support)
+
+
+def test_group_component_gate_extends_partial_medium_object_only() -> None:
+    support = np.zeros((200, 200), dtype=float)
+    support[20:80, 20:70] = 0.8
+    target = np.zeros((200, 200), dtype=bool)
+    target[20:80, 20:48] = True
+
+    assert _has_unrepresented_group_component(target, support)
+
+    small_support = np.zeros_like(support)
+    small_support[20:50, 20:60] = 0.8
+    small_target = np.zeros_like(target)
+    small_target[20:50, 20:42] = True
+    assert not _has_unrepresented_group_component(small_target, small_support)
 
 
 def test_group_augmentation_keeps_small_nearby_fragment_with_strong_support() -> None:

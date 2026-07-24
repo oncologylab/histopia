@@ -209,6 +209,9 @@ def refine_group_tissue_masks(
     proposal_normalized = {
         key: _resize_binary(proposal_masks[key], normalized_shape) for key in keys
     }
+    expected_proposal_fraction = float(
+        np.median([np.mean(mask) for mask in proposal_normalized.values()])
+    )
     fragment_proposals = {
         key: results[key].candidate_masks.get(
             "group_pale_tissue",
@@ -225,29 +228,26 @@ def refine_group_tissue_masks(
     selected: dict[MaskKey, TissueMaskResult] = {}
     for key in keys:
         result = results[key]
-        peer_support = np.mean(
-            np.stack(
-                [
-                    ndi.binary_dilation(proposal_normalized[peer], iterations=24)
-                    for peer in keys
-                    if peer != key
-                ]
+        peer_support = _aligned_group_support(
+            [proposal_normalized[peer] for peer in keys if peer != key],
+            proposal_normalized[key],
+            dilation_iterations=24,
+            align_translations=(
+                np.mean(proposal_normalized[key]) < expected_proposal_fraction * 0.78
             ),
-            axis=0,
         )
         key_index = keys.index(key)
         adjacent_keys = (
             keys[max(0, key_index - 1) : key_index]
             + keys[key_index + 1 : key_index + 2]
         )
-        fragment_support = np.mean(
-            np.stack(
-                [
-                    ndi.binary_dilation(fragment_normalized[peer], iterations=5)
-                    for peer in adjacent_keys
-                ]
+        fragment_support = _aligned_group_support(
+            [fragment_normalized[peer] for peer in adjacent_keys],
+            fragment_normalized[key],
+            dilation_iterations=5,
+            align_translations=(
+                np.mean(proposal_normalized[key]) < expected_proposal_fraction * 0.78
             ),
-            axis=0,
         )
         ranked = _select_group_supported_candidate(
             result,
@@ -287,9 +287,19 @@ def refine_group_tissue_masks(
                 )
         ranked = _polish_selected_mask(ranked)
         selected[key] = ranked
+    if images is not None:
+        selected = _recover_undercovered_pale_tissue(
+            selected,
+            images,
+            physical_pixel_areas=physical_pixel_areas,
+            normalized_shape=normalized_shape,
+        )
     normalized = {
         key: _resize_binary(selected[key].mask, normalized_shape) for key in keys
     }
+    expected_selected_fraction = float(
+        np.median([np.mean(mask) for mask in normalized.values()])
+    )
     refined: dict[MaskKey, TissueMaskResult] = {}
     for key in keys:
         result = selected[key]
@@ -297,39 +307,34 @@ def refine_group_tissue_masks(
         if count <= 1:
             refined[key] = result
             continue
-        peer_support = np.mean(
-            np.stack(
-                [
-                    ndi.binary_dilation(normalized[peer], iterations=24)
-                    for peer in keys
-                    if peer != key
-                ]
+        peer_support = _aligned_group_support(
+            [normalized[peer] for peer in keys if peer != key],
+            normalized[key],
+            dilation_iterations=24,
+            align_translations=(
+                np.mean(normalized[key]) < expected_selected_fraction * 0.78
             ),
-            axis=0,
         )
-        direct_peer_support = np.mean(
-            np.stack(
-                [
-                    ndi.binary_dilation(normalized[peer], iterations=3)
-                    for peer in keys
-                    if peer != key
-                ]
+        direct_peer_support = _aligned_group_support(
+            [normalized[peer] for peer in keys if peer != key],
+            normalized[key],
+            dilation_iterations=3,
+            align_translations=(
+                np.mean(normalized[key]) < expected_selected_fraction * 0.78
             ),
-            axis=0,
         )
         key_index = keys.index(key)
         adjacent_keys = (
             keys[max(0, key_index - 1) : key_index]
             + keys[key_index + 1 : key_index + 2]
         )
-        adjacent_support = np.mean(
-            np.stack(
-                [
-                    ndi.binary_dilation(normalized[peer], iterations=5)
-                    for peer in adjacent_keys
-                ]
+        adjacent_support = _aligned_group_support(
+            [normalized[peer] for peer in adjacent_keys],
+            normalized[key],
+            dilation_iterations=5,
+            align_translations=(
+                np.mean(normalized[key]) < expected_selected_fraction * 0.78
             ),
-            axis=0,
         )
         keep = np.zeros(count + 1, dtype=bool)
         component_sizes = np.bincount(labels.ravel())
@@ -519,6 +524,324 @@ def refine_group_tissue_masks(
                 physical_area / final_expected_physical_area
             )
     return refined
+
+
+def _aligned_group_support(
+    peer_masks: list[np.ndarray],
+    target_mask: np.ndarray,
+    *,
+    dilation_iterations: int,
+    align_translations: bool = True,
+) -> np.ndarray:
+    """Average peer masks after conservative dominant-object translation."""
+
+    aligned = [
+        ndi.binary_dilation(
+            (
+                _align_peer_mask_translation(peer, target_mask)
+                if align_translations
+                else peer
+            ),
+            iterations=dilation_iterations,
+        )
+        for peer in peer_masks
+    ]
+    return np.mean(np.stack(aligned), axis=0)
+
+
+def _align_peer_mask_translation(
+    peer_mask: np.ndarray,
+    target_mask: np.ndarray,
+) -> np.ndarray:
+    """Translate a peer only when dominant-object alignment improves overlap."""
+
+    peer = np.asarray(peer_mask, dtype=bool)
+    target = np.asarray(target_mask, dtype=bool)
+    if not peer.any() or not target.any() or peer.shape != target.shape:
+        return peer
+    peer_center = _dominant_component_centroid(peer)
+    target_center = _dominant_component_centroid(target)
+    shift = np.rint(target_center - peer_center).astype(int)
+    if np.max(np.abs(shift)) > max(peer.shape) * 0.40:
+        return peer
+    aligned = ndi.shift(
+        peer.astype(np.uint8),
+        shift,
+        order=0,
+        mode="constant",
+        cval=0,
+        prefilter=False,
+    ).astype(bool)
+    raw_iou = _binary_iou(peer, target)
+    aligned_iou = _binary_iou(aligned, target)
+    return aligned if aligned_iou >= raw_iou + 0.05 else peer
+
+
+def _dominant_component_centroid(mask: np.ndarray) -> np.ndarray:
+    labels, count = ndi.label(mask)
+    if count == 0:
+        return np.asarray(mask.shape, dtype=float) / 2
+    sizes = np.bincount(labels.ravel())
+    dominant = int(np.argmax(sizes[1:]) + 1)
+    return np.asarray(ndi.center_of_mass(labels == dominant))
+
+
+def _binary_iou(first: np.ndarray, second: np.ndarray) -> float:
+    union = int(np.count_nonzero(first | second))
+    if union == 0:
+        return 1.0
+    return float(np.count_nonzero(first & second) / union)
+
+
+def _recover_undercovered_pale_tissue(
+    results: dict[MaskKey, TissueMaskResult],
+    images: dict[MaskKey, np.ndarray],
+    *,
+    physical_pixel_areas: dict[MaskKey, float | None] | None,
+    normalized_shape: tuple[int, int],
+) -> dict[MaskKey, TissueMaskResult]:
+    """Recover image-supported tissue only on strong cohort undercoverage."""
+
+    normalized = {
+        key: _resize_binary(result.mask, normalized_shape)
+        for key, result in results.items()
+    }
+    normalized_fractions = {
+        key: float(np.mean(mask)) for key, mask in normalized.items()
+    }
+    expected_fraction = float(np.median(list(normalized_fractions.values())))
+    physical_areas = {
+        key: float(np.count_nonzero(result.mask) * pixel_area)
+        for key, result in results.items()
+        if (pixel_area := (physical_pixel_areas or {}).get(key)) is not None
+        and pixel_area > 0
+    }
+    expected_physical_area = (
+        float(np.median(list(physical_areas.values()))) if physical_areas else None
+    )
+    recovered: dict[MaskKey, TissueMaskResult] = {}
+    keys = list(results)
+    for key, result in results.items():
+        image = images.get(key)
+        if image is None:
+            recovered[key] = result
+            continue
+        normalized_area_ratio = (
+            normalized_fractions[key] / expected_fraction
+            if expected_fraction > 0
+            else 1.0
+        )
+        if expected_physical_area is not None and key in physical_areas:
+            area_ratio = min(
+                normalized_area_ratio,
+                physical_areas[key] / expected_physical_area,
+            )
+        else:
+            area_ratio = normalized_area_ratio
+        support = _aligned_group_support(
+            [normalized[peer] for peer in keys if peer != key],
+            normalized[key],
+            dilation_iterations=5,
+        )
+        severe_undercoverage = area_ratio < 0.60
+        missing_group_support = _unrepresented_group_components(
+            normalized[key],
+            support,
+        )
+        missing_group_object = bool(np.any(missing_group_support))
+        candidate = _recover_supported_pale_pixels(
+            result.mask,
+            image,
+            support,
+            allow_detached=severe_undercoverage or missing_group_object,
+            minimum_support=0.20,
+            detached_seed=(
+                missing_group_support
+                if missing_group_object and not severe_undercoverage
+                else None
+            ),
+        )
+        if np.count_nonzero(candidate) <= np.count_nonzero(result.mask) * 1.02:
+            recovered[key] = result
+            continue
+        if expected_physical_area is not None and key in physical_areas:
+            pixel_area = (physical_pixel_areas or {}).get(key)
+            if pixel_area is None:
+                recovered[key] = result
+                continue
+            candidate_area = float(np.count_nonzero(candidate) * pixel_area)
+            maximum_area_ratio = 1.35 if missing_group_object else 1.25
+            if candidate_area > expected_physical_area * maximum_area_ratio:
+                recovered[key] = result
+                continue
+        warnings = _mask_warnings(candidate, BrightfieldMaskConfig())
+        if warnings:
+            recovered[key] = result
+            continue
+        recovered[key] = TissueMaskResult(
+            mask=candidate,
+            method=f"{result.method}+group_pale_recovery",
+            metrics=_mask_metrics(candidate),
+            accepted=True,
+            warnings=[],
+            candidate_metrics=result.candidate_metrics,
+            candidate_warnings=result.candidate_warnings,
+            candidate_masks=result.candidate_masks,
+        )
+    return recovered
+
+
+def _recover_supported_pale_pixels(
+    mask: np.ndarray,
+    image: np.ndarray,
+    peer_support: np.ndarray,
+    *,
+    allow_detached: bool = True,
+    minimum_support: float = 0.20,
+    detached_seed: np.ndarray | None = None,
+) -> np.ndarray:
+    """Add low-contrast pixels backed by translated cohort morphology."""
+
+    rgb = _as_rgb_float(image)
+    background = _estimate_background_rgb(rgb)
+    brightness = np.mean(rgb, axis=2)
+    color_delta = np.linalg.norm(rgb - background, axis=2)
+    dark_delta = float(np.mean(background)) - brightness
+    local_mean = ndi.uniform_filter(brightness, size=15, mode="nearest")
+    local_square_mean = ndi.uniform_filter(
+        brightness * brightness,
+        size=15,
+        mode="nearest",
+    )
+    local_std = np.sqrt(np.maximum(local_square_mean - local_mean * local_mean, 0))
+    support = _resize_float(peer_support, mask.shape)
+    evidence = (color_delta > 0.025) | (local_std > 0.014) | (dark_delta > 0.020)
+    proposal = (support >= minimum_support) & evidence & (brightness < 0.98)
+    proposal = ndi.binary_closing(proposal, iterations=2)
+    proposal = ndi.binary_opening(proposal, iterations=1)
+    enclosed = ndi.binary_fill_holes(mask) & ~mask
+    native_detached_seed = (
+        _resize_binary(detached_seed, mask.shape)
+        if detached_seed is not None
+        else None
+    )
+    native_seed_envelope = (
+        _resize_binary(
+            ndi.binary_dilation(detached_seed, iterations=5),
+            mask.shape,
+        )
+        if detached_seed is not None
+        else None
+    )
+    seeded_addition = np.zeros_like(mask, dtype=bool)
+    if native_detached_seed is not None:
+        proposal_labels, proposal_count = ndi.label(proposal)
+        for label in range(1, proposal_count + 1):
+            component = proposal_labels == label
+            unmasked = component & ~mask
+            if not np.any(component & native_detached_seed) or not unmasked.any():
+                continue
+            if float(np.mean(local_std[unmasked])) < 0.020:
+                continue
+            if native_seed_envelope is not None:
+                unmasked &= native_seed_envelope
+            seeded_addition |= unmasked
+    if allow_detached:
+        novel = proposal & (~ndi.binary_dilation(mask, iterations=3) | enclosed)
+    else:
+        novel = proposal & enclosed
+    labels, count = ndi.label(novel)
+    if count == 0:
+        return mask
+    trusted_labels, trusted_count = ndi.label(mask)
+    trusted_sizes = np.bincount(trusted_labels.ravel())
+    largest_trusted = int(trusted_sizes[1:].max(initial=0)) if trusted_count else 64
+    minimum_area = max(256, int(largest_trusted * 0.02))
+    distance_to_trusted = ndi.distance_transform_edt(~mask)
+    minimum_extension = max(12.0, 0.02 * float(np.hypot(*mask.shape)))
+    keep = np.zeros(count + 1, dtype=bool)
+    for label in range(1, count + 1):
+        component = labels == label
+        area = int(np.count_nonzero(component))
+        if area < minimum_area:
+            continue
+        rows, cols = np.nonzero(component)
+        row_span = rows.max() - rows.min() + 1
+        col_span = cols.max() - cols.min() + 1
+        long_axis = max(row_span / mask.shape[0], col_span / mask.shape[1])
+        short_axis = min(row_span / mask.shape[0], col_span / mask.shape[1])
+        bbox_fill = area / max(row_span * col_span, 1)
+        enclosed_fraction = float(np.mean(enclosed[component]))
+        if long_axis > 0.08 and short_axis < 0.025:
+            continue
+        if enclosed_fraction < 0.50:
+            if (
+                native_detached_seed is not None
+                and not np.any(component & native_detached_seed)
+            ):
+                continue
+            if (
+                native_detached_seed is not None
+                and float(np.mean(local_std[component])) < 0.020
+            ):
+                continue
+            if bbox_fill < 0.12:
+                continue
+            if (
+                float(np.percentile(distance_to_trusted[component], 90))
+                < minimum_extension
+            ):
+                continue
+        if float(np.mean(support[component])) < 0.24:
+            continue
+        keep[label] = True
+    added = keep[labels]
+    if native_seed_envelope is not None:
+        added = (added & enclosed) | (added & native_seed_envelope)
+    added = ndi.binary_dilation(added, iterations=1) & (support >= 0.16)
+    recovered = mask | added | seeded_addition
+    recovered = _fill_small_holes(
+        recovered,
+        max_area=max(64, int(recovered.size * 0.004)),
+    )
+    return _remove_straight_border_rails(_remove_hollow_detached_artifacts(recovered))
+
+
+def _has_unrepresented_group_component(
+    target_mask: np.ndarray,
+    peer_support: np.ndarray,
+) -> bool:
+    """Return whether peers contain a substantial object absent from the target."""
+
+    return bool(np.any(_unrepresented_group_components(target_mask, peer_support)))
+
+
+def _unrepresented_group_components(
+    target_mask: np.ndarray,
+    peer_support: np.ndarray,
+) -> np.ndarray:
+    """Return substantial peer-supported components missing from the target."""
+
+    strong_support = ndi.binary_opening(peer_support >= 0.45, iterations=2)
+    labels, count = ndi.label(strong_support)
+    if count == 0:
+        return np.zeros_like(target_mask, dtype=bool)
+    covered = ndi.binary_dilation(target_mask, iterations=3)
+    minimum_area = max(64, int(target_mask.size * 0.025))
+    missing = np.zeros_like(target_mask, dtype=bool)
+    for label in range(1, count + 1):
+        component = labels == label
+        component_area = int(np.count_nonzero(component))
+        if component_area < minimum_area:
+            continue
+        area_fraction = component_area / target_mask.size
+        coverage = float(np.mean(covered[component]))
+        is_partially_recovered_medium_object = (
+            0.06 <= area_fraction <= 0.10 and coverage <= 0.65
+        )
+        if coverage <= 0.45 or is_partially_recovered_medium_object:
+            missing |= component
+    return missing
 
 
 def _expected_group_physical_area(
@@ -1200,6 +1523,12 @@ def _resize_binary(mask: np.ndarray, shape: tuple[int, int]) -> np.ndarray:
     zoom = (shape[0] / mask.shape[0], shape[1] / mask.shape[1])
     resized = ndi.zoom(np.asarray(mask, dtype=np.uint8), zoom, order=0)
     return resized[: shape[0], : shape[1]].astype(bool)
+
+
+def _resize_float(values: np.ndarray, shape: tuple[int, int]) -> np.ndarray:
+    zoom = (shape[0] / values.shape[0], shape[1] / values.shape[1])
+    resized = ndi.zoom(np.asarray(values, dtype=np.float32), zoom, order=1)
+    return resized[: shape[0], : shape[1]]
 
 
 def _object_aware_fusion(
