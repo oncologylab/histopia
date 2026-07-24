@@ -56,9 +56,9 @@ def test_semantic_approval_rejects_stale_review_and_result_artifacts(
     with pytest.raises(ValueError, match="fingerprint is stale"):
         validate_semantic_approval(tmp_path)
 
-    review["fingerprint"] = json.loads(
-        (tmp_path / "semantic_result.json").read_text()
-    )["fingerprint"]
+    review["fingerprint"] = json.loads((tmp_path / "semantic_result.json").read_text())[
+        "fingerprint"
+    ]
     review_path.write_text(json.dumps(review))
     np.savez_compressed(tmp_path / "atlas_model.npz", changed=np.ones(1))
 

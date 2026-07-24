@@ -205,9 +205,7 @@ def _validate_registration_binding(
         raise ValueError("semantic preflight fingerprint is stale")
     core = {
         "schema_version": schema,
-        "registration_result_sha256": preflight.get(
-            "registration_result_sha256"
-        ),
+        "registration_result_sha256": preflight.get("registration_result_sha256"),
         "order_review_fingerprint": preflight.get("order_review_fingerprint"),
         "reference_slide": preflight.get("reference_slide"),
         "slides": _portable_preflight_slides(preflight.get("slides")),
@@ -220,13 +218,9 @@ def _validate_registration_binding(
     if not isinstance(slides, list):
         raise ValueError("registration result contains no slides")
     registration_ids = [
-        Path(str(row.get("path", ""))).name
-        for row in slides
-        if isinstance(row, dict)
+        Path(str(row.get("path", ""))).name for row in slides if isinstance(row, dict)
     ]
-    preflight_ids = [
-        str(row.get("slide_name", "")) for row in core["slides"]
-    ]
+    preflight_ids = [str(row.get("slide_name", "")) for row in core["slides"]]
     semantic_ids = [
         str(row.get("id", ""))
         for row in semantic_payload.get("slides", [])

@@ -30,9 +30,9 @@ def test_qupath_bundle_exports_native_semantic_geojson(tmp_path: Path) -> None:
     assert manifest["semantic_geometry"] == "regions"
     assert manifest["semantic_geometry_version"] == "regions-v1"
     assert manifest["semantic_approval"]["reviewer"] == "Test Reviewer"
-    assert manifest["semantic_approval"]["fingerprint"] == manifest[
-        "semantic_fingerprint"
-    ]
+    assert (
+        manifest["semantic_approval"]["fingerprint"] == manifest["semantic_fingerprint"]
+    )
     assert manifest["semantic_preflight_fingerprint"]
     assert manifest["coordinate_conventions"]["semantic_annotations"] == (
         "source_native_pixels"
