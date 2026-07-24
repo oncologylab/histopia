@@ -38,13 +38,15 @@ imported directly into the matching QuPath image. Registration matrices remain
 explicitly labeled as moving-thumbnail to reference-thumbnail transforms; they
 must not be applied as native-pixel transforms.
 
-The exporter validates the complete semantic result and requires exact equality
-between each label grid and its corresponding extracted source grid. It uses
-the same rounded native-pixel patch dimensions as feature extraction. Selecting
-an unavailable K, missing a slide, changing grid rows, or using uncalibrated
-geometry fails before a new manifest is presented as complete. Fingerprinted
-annotation directories keep an older manifest internally consistent while a
-new export is being written.
+The exporter validates the complete semantic result, requires exact semantic
+approval, binds the atlas preflight to the selected registration-result
+SHA-256, and requires exact equality between each label grid and its
+corresponding extracted source grid. It uses the same rounded native-pixel
+patch dimensions as feature extraction. Selecting an unavailable K, pairing a
+different registration, missing a slide, changing grid rows, or using
+uncalibrated geometry fails before a new manifest is presented as complete.
+Fingerprinted annotation directories keep an older manifest internally
+consistent while a new export is being written.
 
 ## QuPath Extension
 
@@ -71,13 +73,18 @@ The primary **Project workflow** tab supports:
 - separate fingerprint-bound mask and order approvals, followed by final
   sealing of the registered result
 - direct semantic execution from the approved registration workspace
+- local semantic, blend, K-sensitivity, and topology review followed by
+  fingerprint-bound semantic approval
 
 The extension writes runtime-only configs and an exact slide-selection
 manifest under `<workspace>/.histopia`. **Open registration QC** generates the
 review portal there and opens its local `index.html`; it does not start a
-server or make external requests. Selected slides may come from different
-directories, but each must have a unique filename and a single local NDPI,
-SCN, SVS, TIFF, or OME-TIFF source URI.
+server or make external requests. **Open semantic QC** starts an
+ephemeral loopback-only server on `127.0.0.1` so the WebGL viewer's modules and
+assets load correctly; it is replaced the next time semantic QC is opened.
+Selected slides may come from different directories, but each must have a
+unique filename and a single local NDPI, SCN, SVS, TIFF, or OME-TIFF source
+URI.
 
 The project workflow is deliberately staged:
 
@@ -94,6 +101,11 @@ The project workflow is deliberately staged:
    It also requires the current QuPath slide selection to equal the sealed
    registration cohort. Every approval action is similarly bound to the
    prepared selection manifest.
+7. Choose **Open semantic QC** and review histology, blend, semantic K choices,
+   batch diagnostics, and adjacent-section topology.
+8. Enter review metadata and choose **Approve semantic**. Approval revalidates
+   the complete semantic artifact seal and records the exact fingerprint.
+9. Export the approved atlas and import its regions into matching open slides.
 
 The same button is used for each computational stage because preprocessing and
 pairwise-distance caches make unchanged work resumable. Review-required stages
@@ -107,14 +119,18 @@ and import** tab supports:
 
 - loading all available K values from a semantic result, defaulting to the
   atlas-selected K
-- exporting the schema-2 bundle and importing the matching open slide
+- exporting the approval-bound schema-3 bundle and importing the matching open
+  slide
 - optionally replacing existing Histopia annotations rather than duplicating
   them
 
-The extension verifies each schema-2 GeoJSON checksum before import. It invokes
-the Python package as a child process; GPU, WSI, and model dependencies remain
-in the Python environment rather than QuPath's JVM. Configure and test that
-environment independently with `histopia-semantic doctor`.
+New schema-3 exports bind the semantic approval, semantic preflight, and exact
+registration-result SHA-256. The extension verifies annotation checksums and
+byte sizes, rejects paths or symlinks outside the bundle, and retains import
+compatibility with older schema-1/2 bundles. It invokes the Python package as a
+child process; GPU, WSI, and model dependencies remain in the Python
+environment rather than QuPath's JVM. Configure and test that environment
+independently with `histopia-semantic doctor`.
 
 Source code and release history are maintained separately at
 [`oncologylab/qupath-extension-histopia`](https://github.com/oncologylab/qupath-extension-histopia).

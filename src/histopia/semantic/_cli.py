@@ -78,6 +78,13 @@ def _build_parser() -> argparse.ArgumentParser:
             )
     cache = subparsers.add_parser("cache-model")
     cache.add_argument("--cache-dir", type=Path, required=True)
+    approve = subparsers.add_parser(
+        "approve",
+        help="Approve one exact, integrity-checked semantic result.",
+    )
+    approve.add_argument("--run", type=Path, required=True)
+    approve.add_argument("--reviewer", required=True)
+    approve.add_argument("--review-notes", required=True)
     cohort = subparsers.add_parser("cohort-qc")
     cohort.add_argument("--run", type=_named_path, action="append", required=True)
     cohort.add_argument("--output", type=Path, required=True)
@@ -95,6 +102,19 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "cache-model":
         return _cache_model(args.cache_dir)
+    if args.command == "approve":
+        from histopia.semantic._approval import approve_semantic_result
+
+        approval = approve_semantic_result(
+            args.run,
+            reviewer=args.reviewer,
+            notes=args.review_notes,
+        )
+        print(
+            f"{approval.run_dir / 'semantic_review.json'}: "
+            f"fingerprint={approval.fingerprint}"
+        )
+        return 0
     if args.command == "cohort-qc":
         from histopia.semantic._qc import write_cohort_qc
 

@@ -11,6 +11,10 @@ from typing import Any
 
 import numpy as np
 
+from histopia.semantic._approval import (
+    SemanticApproval,
+    validate_semantic_approval,
+)
 from histopia.semantic._result_validation import validate_semantic_result
 
 _SEMANTIC_GEOMETRIES = ("regions", "tiles")
@@ -44,15 +48,23 @@ def export_qupath_bundle(
     slides = registration.get("slides")
     if not isinstance(slides, list) or not slides:
         raise ValueError("registration result contains no slides")
-    output_dir.mkdir(parents=True, exist_ok=True)
     annotation_dir = output_dir / "annotations"
     semantic_payload = None
     semantic_root = None
+    semantic_approval: SemanticApproval | None = None
+    semantic_preflight_fingerprint: str | None = None
     feature_paths: dict[str, Path] = {}
     palette: list[str] = []
     if semantic_run is not None:
         semantic_root = Path(semantic_run).expanduser().resolve()
         semantic_payload = validate_semantic_result(semantic_root)
+        semantic_approval = validate_semantic_approval(semantic_root)
+        semantic_preflight_fingerprint = _validate_registration_binding(
+            registration_path,
+            registration,
+            semantic_root,
+            semantic_payload,
+        )
         available = tuple(int(value) for value in semantic_payload["cluster_counts"])
         selected = int(
             semantic_payload.get("selected_k", semantic_payload["primary_clusters"])
@@ -69,6 +81,8 @@ def export_qupath_bundle(
             f"{_SEMANTIC_GEOMETRY_VERSIONS[semantic_geometry]}"
         )
         annotation_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        output_dir.mkdir(parents=True, exist_ok=True)
 
     semantic_by_id = (
         {str(row["id"]): row for row in semantic_payload["slides"]}
@@ -128,7 +142,7 @@ def export_qupath_bundle(
         slide_rows.append(row)
 
     manifest = {
-        "schema_version": 2,
+        "schema_version": 3,
         "format": "histopia-qupath-bundle",
         "coordinate_conventions": {
             "semantic_annotations": "source_native_pixels",
@@ -139,6 +153,16 @@ def export_qupath_bundle(
         "semantic_fingerprint": (
             semantic_payload.get("fingerprint")
             if semantic_payload is not None
+            else None
+        ),
+        "semantic_preflight_fingerprint": semantic_preflight_fingerprint,
+        "semantic_approval": (
+            {
+                "fingerprint": semantic_approval.fingerprint,
+                "reviewer": semantic_approval.reviewer,
+                "reviewed_at": semantic_approval.reviewed_at,
+            }
+            if semantic_approval is not None
             else None
         ),
         "semantic_clusters": clusters if semantic_payload is not None else None,
@@ -155,6 +179,94 @@ def export_qupath_bundle(
     path = output_dir / "histopia-qupath.json"
     _write_json_atomic(path, manifest, compact=False)
     return path
+
+
+def _validate_registration_binding(
+    registration_path: Path,
+    registration: dict[str, object],
+    semantic_root: Path,
+    semantic_payload: dict[str, object],
+) -> str:
+    preflight_path = semantic_root / "preflight.json"
+    preflight = json.loads(preflight_path.read_text())
+    if not isinstance(preflight, dict):
+        raise ValueError("semantic preflight root must be an object")
+    schema = preflight.get("schema_version")
+    if schema not in {1, 2}:
+        raise ValueError("semantic preflight schema is unsupported")
+    fingerprint = preflight.get("fingerprint")
+    provenance = semantic_payload.get("feature_provenance")
+    if (
+        not isinstance(fingerprint, str)
+        or not fingerprint
+        or not isinstance(provenance, dict)
+        or provenance.get("preflight_fingerprint") != fingerprint
+    ):
+        raise ValueError("semantic preflight fingerprint is stale")
+    core = {
+        "schema_version": schema,
+        "registration_result_sha256": preflight.get(
+            "registration_result_sha256"
+        ),
+        "order_review_fingerprint": preflight.get("order_review_fingerprint"),
+        "reference_slide": preflight.get("reference_slide"),
+        "slides": _portable_preflight_slides(preflight.get("slides")),
+    }
+    if _json_sha256(core) != fingerprint:
+        raise ValueError("semantic preflight record is stale")
+    if core["registration_result_sha256"] != _file_sha256(registration_path):
+        raise ValueError("semantic atlas belongs to a different registration result")
+    slides = registration.get("slides")
+    if not isinstance(slides, list):
+        raise ValueError("registration result contains no slides")
+    registration_ids = [
+        Path(str(row.get("path", ""))).name
+        for row in slides
+        if isinstance(row, dict)
+    ]
+    preflight_ids = [
+        str(row.get("slide_name", "")) for row in core["slides"]
+    ]
+    semantic_ids = [
+        str(row.get("id", ""))
+        for row in semantic_payload.get("slides", [])
+        if isinstance(row, dict)
+    ]
+    if (
+        len(registration_ids) != len(slides)
+        or any(not value for value in registration_ids)
+        or len(set(registration_ids)) != len(registration_ids)
+        or registration_ids != preflight_ids
+        or registration_ids != semantic_ids
+    ):
+        raise ValueError("semantic and registration slide order differs")
+    references = [
+        slide_id
+        for slide_id, row in zip(registration_ids, slides, strict=True)
+        if row.get("is_reference")
+    ]
+    if references != [preflight.get("reference_slide")]:
+        raise ValueError("semantic and registration references differ")
+    return fingerprint
+
+
+def _portable_preflight_slides(value: object) -> list[dict[str, object]]:
+    if not isinstance(value, list) or not value:
+        raise ValueError("semantic preflight contains no slides")
+    portable: list[dict[str, object]] = []
+    for row in value:
+        if not isinstance(row, dict):
+            raise ValueError("semantic preflight slides must be objects")
+        portable.append(
+            {key: item for key, item in row.items() if key != "source_path"}
+        )
+    return portable
+
+
+def _json_sha256(value: object) -> str:
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
 
 
 def _index_feature_paths(feature_dir: Path) -> dict[str, Path]:

@@ -145,6 +145,19 @@ artifacts are rejected before QC or viewer generation. Scientific
 interpretation should wait until semantic overlays and sensitivity fits have
 been reviewed.
 
+Approve the exact reviewed fingerprint with:
+
+```bash
+histopia-semantic approve \
+  --run /path/to/semantic-run \
+  --reviewer "Reviewer name" \
+  --review-notes "Reviewed semantic, blend, K sensitivity, and topology views."
+```
+
+Approval revalidates every sealed result artifact before atomically updating
+`semantic_review.json`. QuPath export rejects missing, unapproved, or stale
+review records.
+
 Preflight also requires every registration mask to be accepted and backed by
 an approved mask-review record. Its portable slide provenance records the
 effective processed-mask checksum, mask method, and review status. This binds

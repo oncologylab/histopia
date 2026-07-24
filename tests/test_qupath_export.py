@@ -24,11 +24,16 @@ def test_qupath_bundle_exports_native_semantic_geojson(tmp_path: Path) -> None:
     )
 
     manifest = json.loads(manifest_path.read_text())
-    assert manifest["schema_version"] == 2
+    assert manifest["schema_version"] == 3
     assert manifest["format"] == "histopia-qupath-bundle"
     assert manifest["semantic_clusters"] == 2
     assert manifest["semantic_geometry"] == "regions"
     assert manifest["semantic_geometry_version"] == "regions-v1"
+    assert manifest["semantic_approval"]["reviewer"] == "Test Reviewer"
+    assert manifest["semantic_approval"]["fingerprint"] == manifest[
+        "semantic_fingerprint"
+    ]
+    assert manifest["semantic_preflight_fingerprint"]
     assert manifest["coordinate_conventions"]["semantic_annotations"] == (
         "source_native_pixels"
     )
@@ -64,6 +69,39 @@ def test_qupath_bundle_rejects_unavailable_k(tmp_path: Path) -> None:
             semantic_run=semantic,
             clusters=5,
         )
+
+
+def test_qupath_bundle_rejects_unapproved_or_different_registration(
+    tmp_path: Path,
+) -> None:
+    registration, semantic = _write_runs(tmp_path)
+    review_path = semantic / "semantic_review.json"
+    review = json.loads(review_path.read_text())
+    review["approved"] = False
+    review_path.write_text(json.dumps(review))
+
+    with pytest.raises(ValueError, match="not approved"):
+        export_qupath_bundle(
+            registration,
+            tmp_path / "unapproved",
+            semantic_run=semantic,
+        )
+    assert not (tmp_path / "unapproved").exists()
+
+    review["approved"] = True
+    review_path.write_text(json.dumps(review))
+    result_path = registration / "registration_result.json"
+    registration_payload = json.loads(result_path.read_text())
+    registration_payload["changed_after_semantics"] = True
+    result_path.write_text(json.dumps(registration_payload))
+
+    with pytest.raises(ValueError, match="different registration result"):
+        export_qupath_bundle(
+            registration,
+            tmp_path / "mismatched",
+            semantic_run=semantic,
+        )
+    assert not (tmp_path / "mismatched").exists()
 
 
 def test_qupath_bundle_coalesces_adjacent_tiles_and_preserves_audit_mode(
@@ -229,8 +267,67 @@ def _write_runs(
         ],
         "topology_pairs": [],
     }
+    registration_sha256 = hashlib.sha256(
+        (registration / "registration_result.json").read_bytes()
+    ).hexdigest()
+    preflight_core = {
+        "schema_version": 2,
+        "registration_result_sha256": registration_sha256,
+        "order_review_fingerprint": None,
+        "reference_slide": source.name,
+        "slides": [
+            {
+                "slide_name": source.name,
+                "source_sha256": "source-sha256",
+                "thumbnail_sha256": "thumbnail-sha256",
+                "mask_sha256": "mask-sha256",
+                "mask_method": "test",
+                "mask_review_status": "auto_pass",
+                "transform_sha256": "transform-sha256",
+                "thumbnail_shape": [100, 120],
+                "mpp_xy": [0.5, 0.5],
+                "is_reference": True,
+            }
+        ],
+    }
+    preflight_fingerprint = hashlib.sha256(
+        json.dumps(
+            preflight_core,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+    preflight = {
+        **preflight_core,
+        "registration_run": str(registration),
+        "slides": [
+            {
+                **preflight_core["slides"][0],
+                "source_path": str(source),
+            }
+        ],
+        "fingerprint": preflight_fingerprint,
+        "slide_count": 1,
+    }
+    (semantic / "preflight.json").write_text(json.dumps(preflight))
+    core["feature_provenance"] = {
+        "preflight_fingerprint": preflight_fingerprint,
+        "expected_slide_ids": [source.name],
+    }
     payload = _seal_semantic_result(semantic, core)
     (semantic / "semantic_result.json").write_text(json.dumps(payload))
+    (semantic / "semantic_review.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "approved": True,
+                "fingerprint": payload["fingerprint"],
+                "reviewer": "Test Reviewer",
+                "reviewed_at": "2026-07-24T18:30:00+00:00",
+                "notes": "Reviewed synthetic semantic overlays.",
+            }
+        )
+    )
     return registration, semantic
 
 
