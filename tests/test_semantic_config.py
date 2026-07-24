@@ -50,7 +50,13 @@ def test_semantic_config_rejects_selected_k_outside_generated_counts(tmp_path) -
         )
 
 
-def test_semantic_config_validates_and_normalizes_device(tmp_path) -> None:
+@pytest.mark.parametrize(
+    "invalid_device",
+    ("gpu", "cuda:", "cuda:-1", "cuda:foo", "cuda:1:2", "cuda:١"),
+)
+def test_semantic_config_validates_and_normalizes_device(
+    tmp_path, invalid_device
+) -> None:
     config = SemanticAtlasConfig(
         registration_run=tmp_path / "registration",
         output_dir=tmp_path / "semantic",
@@ -62,7 +68,7 @@ def test_semantic_config_validates_and_normalizes_device(tmp_path) -> None:
         SemanticAtlasConfig(
             registration_run=tmp_path / "registration",
             output_dir=tmp_path / "semantic",
-            device="gpu",
+            device=invalid_device,
         )
 
 

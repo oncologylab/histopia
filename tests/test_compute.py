@@ -64,6 +64,9 @@ def test_explicit_unavailable_or_invalid_device_fails() -> None:
         resolve_compute_device("cuda:2", torch_module=_torch(cuda=True, count=1))
     with pytest.raises(ValueError, match="device must be"):
         resolve_compute_device("gpu", torch_module=_torch())
+    for malformed in ("cuda:", "cuda:-1", "cuda:foo", "cuda:1:2", "cuda:١"):
+        with pytest.raises(ValueError, match="device must be"):
+            resolve_compute_device(malformed, torch_module=_torch())
     with pytest.raises(RuntimeError, match="CUDA was requested"):
         inspect_compute("cuda", torch_module=_torch())
 

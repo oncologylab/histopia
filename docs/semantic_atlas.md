@@ -98,6 +98,14 @@ patch workers. All feature and coordinate hashes were identical. Vectorized
 mask-grid coverage reduced its 49,533-patch selection stage from 3.33 seconds
 to 0.018 seconds with every fraction identical.
 
+On a second real 30,720 by 29,440 H&E NDPI with 6,379 accepted patches and two
+patch workers, native libvips caps of 1, 2, 4, 8, and 16 threads took
+5.48-5.70, 4.17-4.19, 3.20-3.42, 3.14-3.62, and 4.15-4.17 seconds,
+respectively; the adaptive default took 4.03-4.18 seconds. Every feature,
+coordinate, and coverage hash was identical. Four threads was the most stable
+choice on that host, but Histopia leaves the cap unset because storage,
+libvips, and host concurrency determine the optimum.
+
 Standard 224-pixel RGB patches are normalized as one tensor batch. On the
 validated A100 runtime, this reduced 64-patch preprocessing from 62.4 to
 14.9 milliseconds and complete preprocessing plus inference from 0.319 to

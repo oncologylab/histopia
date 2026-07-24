@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass
 from importlib import import_module
 from typing import Any
@@ -31,7 +32,7 @@ def resolve_compute_device(
     if not value:
         raise ValueError("compute device must not be empty")
     if value != "auto" and value != "cpu" and value != "mps":
-        if value != "cuda" and not value.startswith("cuda:"):
+        if value != "cuda" and re.fullmatch(r"cuda:[0-9]+", value) is None:
             raise ValueError("device must be auto, cpu, cuda, cuda:N, or mps")
 
     torch = torch_module

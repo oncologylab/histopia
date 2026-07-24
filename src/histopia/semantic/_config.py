@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -49,12 +50,16 @@ class SemanticAtlasConfig:
         if not 0 <= self.min_tissue_fraction <= 1:
             raise ValueError("min_tissue_fraction must be between 0 and 1")
         normalized_device = self.device.strip().lower()
-        if normalized_device not in {
-            "auto",
-            "cpu",
-            "cuda",
-            "mps",
-        } and not normalized_device.startswith("cuda:"):
+        if (
+            normalized_device
+            not in {
+                "auto",
+                "cpu",
+                "cuda",
+                "mps",
+            }
+            and re.fullmatch(r"cuda:[0-9]+", normalized_device) is None
+        ):
             raise ValueError("device must be auto, cpu, cuda, cuda:N, or mps")
         self.device = normalized_device
         requested = (
