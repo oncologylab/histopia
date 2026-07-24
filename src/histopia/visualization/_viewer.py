@@ -1248,12 +1248,16 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
 const manifest = await (await fetch('manifest.json')).json();
 const viewport = document.querySelector('#viewport');
-const renderer = new THREE.WebGLRenderer({antialias: true, alpha: false});
+const renderer = new THREE.WebGLRenderer({
+  antialias: true,
+  alpha: false,
+});
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.setClearColor(0xf4f5f3);
 viewport.append(renderer.domElement);
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 10000);
+camera.position.set(0, -400, 300);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 const group = new THREE.Group();
@@ -1266,13 +1270,39 @@ let linkObject = null;
 let loadGeneration = 0;
 let textureGeneration = 0;
 let focusedSlideIndex = null;
+let renderRequested = false;
+let renderUntil = 0;
+let updatingControls = false;
 function disposeTexture(texture) { if (texture) texture.dispose(); }
+async function loadTexture(url) {
+  const texture = await loader.loadAsync(url);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+function requestRender() {
+  if (renderRequested) return;
+  renderRequested = true;
+  requestAnimationFrame(render);
+}
+function requestRenderBurst(durationMs = 1600) {
+  renderUntil = Math.max(renderUntil, performance.now() + durationMs);
+  requestRender();
+}
+function render() {
+  renderRequested = false;
+  updatingControls = true;
+  controls.update();
+  updatingControls = false;
+  renderer.render(scene, camera);
+  if (performance.now() < renderUntil) requestRender();
+}
 
 function resize() {
   const box = viewport.getBoundingClientRect();
   renderer.setSize(box.width, box.height, true);
   camera.aspect = box.width / box.height;
   camera.updateProjectionMatrix();
+  requestRender();
 }
 function resetCamera() {
   const visibleMeshes = group.children.filter(child => child.visible);
@@ -1293,7 +1323,10 @@ function resetCamera() {
   controls.minDistance = Math.max(sphere.radius * 0.12, camera.near * 10);
   controls.maxDistance = distance * 8;
   camera.updateProjectionMatrix();
+  const dampingEnabled = controls.enableDamping;
+  controls.enableDamping = false;
   controls.update();
+  controls.enableDamping = dampingEnabled;
 }
 function orderedSlides() {
   return [...document.querySelectorAll('#sections li')].map(li =>
@@ -1305,6 +1338,7 @@ function clearLinks() {
   linkObject.geometry.dispose();
   linkObject.material.dispose();
   linkObject = null;
+  requestRender();
 }
 function rebuildLinks() {
   clearLinks();
@@ -1331,6 +1365,7 @@ function rebuildLinks() {
   linkObject = new THREE.LineSegments(geometry, material);
   linkObject.renderOrder = 10;
   scene.add(linkObject);
+  requestRender();
 }
 
 function layout() {
@@ -1457,9 +1492,7 @@ async function setMode(mode, force = false) {
   const mouse = current;
   const generation = ++textureGeneration;
   const textures = await Promise.all(mouse.slides.map(async slide => {
-    const texture = await loader.loadAsync(textureUrl(slide, mode));
-    texture.colorSpace = THREE.SRGBColorSpace;
-    return texture;
+    return loadTexture(textureUrl(slide, mode));
   }));
   if (generation !== textureGeneration || current !== mouse) {
     textures.forEach(disposeTexture);
@@ -1473,6 +1506,7 @@ async function setMode(mode, force = false) {
     disposeTexture(previous);
   });
   updateModeControls();
+  requestRenderBurst();
 }
 async function loadTopologyLinks(mouse) {
   if (!mouse.semantic) return [];
@@ -1497,9 +1531,7 @@ async function loadMouse(mouse) {
   let loadedTextures = 0;
   const [textures, topologyLinks] = await Promise.all([
     Promise.all(mouse.slides.map(async slide => {
-      const texture = await loader.loadAsync(
-        textureUrl(slide, requestedMode, requestedK));
-      texture.colorSpace = THREE.SRGBColorSpace;
+      const texture = await loadTexture(textureUrl(slide, requestedMode, requestedK));
       loadedTextures += 1;
       if (generation === loadGeneration)
         progress.textContent = `Loading ${loadedTextures} / ${mouse.slides.length}`;
@@ -1548,6 +1580,7 @@ async function loadMouse(mouse) {
     group.add(slide.mesh);
   });
   buildList(); layout(); updateModeControls(); resetCamera();
+  requestRenderBurst();
   viewport.setAttribute('aria-busy', 'false');
 }
 function reportLoadError(error) {
@@ -1586,10 +1619,13 @@ document.querySelector('#export').addEventListener('click', () => {
 });
 document.querySelectorAll('#mode button').forEach(button =>
   button.addEventListener('click', () => setMode(button.dataset.mode)));
+controls.addEventListener('change', () => {
+  if (!updatingControls) requestRender();
+});
+controls.addEventListener('end', () => requestRenderBurst(1800));
 new ResizeObserver(resize).observe(viewport); resize(); resetCamera();
-function animate() { requestAnimationFrame(animate); controls.update(); renderer.render(scene, camera); }
 try { await loadMouse(manifest.mice[0]); } catch (error) { reportLoadError(error); }
-animate();
+requestRender();
 """
 
 _STYLES_CSS = """*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden}body{font-family:Arial,sans-serif;color:#202426;background:#f4f5f3}main{display:grid;grid-template-columns:300px minmax(0,1fr);width:100%;height:100%;overflow:hidden}aside{min-width:0;min-height:0;padding:18px;border-right:1px solid #c9ceca;background:#fff;overflow-y:auto;overflow-x:hidden}h1{font-size:22px;margin:0 0 18px}label{display:grid;gap:6px;font-size:13px;margin:14px 0}select,input{width:100%}.commands,.segmented,.visibility-commands{display:flex;gap:8px;margin:16px 0}button{border:1px solid #88918b;background:#fff;padding:7px 10px;border-radius:4px;cursor:pointer}.segmented{gap:0}.segmented button{flex:1;border-radius:0;margin-left:-1px}.segmented button:first-child{margin-left:0;border-radius:4px 0 0 4px}.segmented button:last-child{border-radius:0 4px 4px 0}.segmented button.active{background:#202426;color:#fff}.segmented button:disabled{color:#a7aca8;cursor:default}.slide-navigation{display:grid;grid-template-columns:36px minmax(0,1fr) 36px;align-items:center;gap:8px;margin:16px 0}.slide-navigation button{width:36px;height:32px;padding:0;font-size:18px}.slide-navigation output{text-align:center;font-size:12px;white-space:nowrap}.visibility-commands button{flex:1}#legend{display:grid;grid-template-columns:1fr 1fr;gap:5px;font-size:11px}#legend span{display:flex;align-items:center;gap:5px}#legend i{display:block;width:12px;height:12px;border:1px solid #555}#order-status{font-size:12px;color:#8a4f12}ol{padding:0;list-style:none}li{display:grid;grid-template-columns:20px minmax(0,1fr);align-items:center;min-height:32px;border-bottom:1px solid #eceeec;font-size:12px;cursor:grab}li span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}li input{width:14px}#viewport{position:relative;min-width:0;min-height:0;width:100%;height:100%;overflow:hidden}canvas{display:block;width:100%!important;height:100%!important}@media(max-width:720px){main{grid-template-columns:1fr;grid-template-rows:250px minmax(0,1fr)}aside{border-right:0;border-bottom:1px solid #c9ceca}#sections{display:none}}"""

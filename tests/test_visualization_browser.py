@@ -43,6 +43,16 @@ def test_viewer_fits_desktop_and_ignores_stale_mouse_loads(tmp_path: Path) -> No
         with playwright.sync_playwright() as runtime:
             browser = runtime.chromium.launch(headless=True)
             page = browser.new_page(viewport={"width": 1920, "height": 1080})
+            page.add_init_script(
+                """window.__histopiaRafCount = 0;
+                const originalRaf = window.requestAnimationFrame;
+                window.requestAnimationFrame = function(callback) {
+                  return originalRaf.call(window, function(timestamp) {
+                    window.__histopiaRafCount += 1;
+                    return callback(timestamp);
+                  });
+                };"""
+            )
             page.on(
                 "console",
                 lambda message: (
@@ -65,6 +75,15 @@ def test_viewer_fits_desktop_and_ignores_stale_mouse_loads(tmp_path: Path) -> No
                 wait_until="networkidle",
             )
             page.wait_for_selector("#sections li")
+            page.wait_for_timeout(1800)
+            page.evaluate("window.__histopiaRafCount = 0")
+            page.wait_for_timeout(500)
+            assert page.evaluate("window.__histopiaRafCount") <= 2
+            idle_screenshot = page.locator("canvas").screenshot()
+            idle_pixels = np.asarray(
+                Image.open(io.BytesIO(idle_screenshot)).convert("RGB")
+            )
+            assert np.ptp(idle_pixels.reshape(-1, 3), axis=0).max() > 20
             for width, height in ((1920, 1080), (3840, 2160)):
                 page.set_viewport_size({"width": width, "height": height})
                 page.wait_for_timeout(100)
