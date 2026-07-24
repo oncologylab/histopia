@@ -113,6 +113,16 @@ Regularized labels are accepted only when adjacency does not worsen, at most 25
 percent of labels change, and registered centroid distance does not worsen by
 more than 10 percent.
 
+Reciprocal candidate ranking uses bounded vector operations within each source
+patch while retaining deterministic target tie-breaking and sparse memory. On
+a 23-section atlas with 76,499 patches, one complete 22-pair correspondence
+pass fell from 30.26 to 22.89 seconds. A profiled full fit fell from 135.15 to
+117.23 seconds. The semantic JSON, review fingerprint, atlas model, all 22
+topology artifacts, and all 189 stored arrays were exactly unchanged. When a
+batch-correction proposal is rejected, Histopia also retains the original
+topology graph because the accepted feature matrix is unchanged; accepted
+corrections still trigger a complete correspondence rebuild.
+
 ## Review And Viewer
 
 Every fit writes `semantic_result.json`, per-slide label grids,

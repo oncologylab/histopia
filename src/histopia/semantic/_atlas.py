@@ -136,18 +136,19 @@ def fit_joint_atlas(
                 graph.weight[consensus],
                 seed=seed,
             )
-            projected = batch_correction.corrected_features.astype(np.float32)
-            split_features = tuple(
-                projected[offsets[i] : offsets[i + 1]] for i in range(len(sections))
-            )
-            correspondences = _match_correspondences(sections, split_features)
-            graph = build_serial_graph(
-                tuple(section.grid_rc for section in sections),
-                tuple(section.reference_um_xy for section in sections),
-                split_features,
-                max_cross_section_distance_um=max_cross_section_distance_um,
-                correspondences=correspondences,
-            )
+            if batch_correction.guard.accepted:
+                projected = batch_correction.corrected_features.astype(np.float32)
+                split_features = tuple(
+                    projected[offsets[i] : offsets[i + 1]] for i in range(len(sections))
+                )
+                correspondences = _match_correspondences(sections, split_features)
+                graph = build_serial_graph(
+                    tuple(section.grid_rc for section in sections),
+                    tuple(section.reference_um_xy for section in sections),
+                    split_features,
+                    max_cross_section_distance_um=max_cross_section_distance_um,
+                    correspondences=correspondences,
+                )
 
     counts = tuple(dict.fromkeys(int(value) for value in cluster_counts))
     if any(count <= 1 or count > len(sample) for count in counts):

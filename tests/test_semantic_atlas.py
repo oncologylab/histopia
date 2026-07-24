@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
@@ -12,6 +14,7 @@ from histopia.semantic._atlas import (
     balanced_sample_indices,
     fit_joint_atlas,
 )
+from histopia.semantic._batch import BatchAcceptanceGuard
 from histopia.semantic._graph import EdgeKind, GraphEdges
 
 
@@ -91,13 +94,23 @@ def test_regularized_atlas_builds_and_passes_adjacent_correspondences(
 ) -> None:
     sections = (_section("a", 0), _section("b", 2), _section("c", 4))
     real_builder = atlas_module.build_serial_graph
+    real_corrector = atlas_module.correct_batch_offsets
     captured: list[object] = []
 
     def capture_builder(*args: object, **kwargs: object) -> GraphEdges:
         captured.append(kwargs.get("correspondences"))
         return real_builder(*args, **kwargs)
 
+    def accepted_correction(*args, **kwargs):
+        result = real_corrector(*args, **kwargs)
+        return replace(
+            result,
+            corrected_features=result.proposed_features,
+            guard=BatchAcceptanceGuard(True, ()),
+        )
+
     monkeypatch.setattr(atlas_module, "build_serial_graph", capture_builder)
+    monkeypatch.setattr(atlas_module, "correct_batch_offsets", accepted_correction)
 
     result = fit_joint_atlas(
         sections,
@@ -124,8 +137,19 @@ def test_regularized_atlas_builds_and_passes_adjacent_correspondences(
     assert result.selected_k == 2
 
 
-def test_joint_atlas_automatically_selects_k_from_requested_range() -> None:
+def test_rejected_batch_correction_reuses_original_topology(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     sections = (_section("a", 0), _section("b", 2), _section("c", 4))
+    real_matcher = atlas_module._match_correspondences
+    calls = 0
+
+    def counted_matcher(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return real_matcher(*args, **kwargs)
+
+    monkeypatch.setattr(atlas_module, "_match_correspondences", counted_matcher)
 
     result = fit_joint_atlas(
         sections,
@@ -138,6 +162,7 @@ def test_joint_atlas_automatically_selects_k_from_requested_range() -> None:
 
     assert result.selected_k in {2, 3, 4}
     assert set(result.clusterings) == {2, 3, 4}
+    assert calls == 1
     assert not result.batch_correction.guard.accepted
     assert result.batch_correction.guard.reasons
 

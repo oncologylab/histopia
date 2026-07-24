@@ -328,18 +328,18 @@ def _reciprocal_matches(
         source_margin[source_index] = (
             float(scores[best] - scores[order[1]]) if len(order) > 1 else 0.0
         )
-        for target_index, score in zip(indices, scores, strict=True):
-            target_index = int(target_index)
-            current_score = float(target_best_score[target_index])
-            current_source = int(target_best[target_index])
-            if score > current_score or (
-                score == current_score and source_index < current_source
-            ):
-                target_second_score[target_index] = current_score
-                target_best_score[target_index] = score
-                target_best[target_index] = source_index
-            elif score > target_second_score[target_index]:
-                target_second_score[target_index] = score
+        current_scores = target_best_score[indices]
+        current_sources = target_best[indices]
+        replace_best = (scores > current_scores) | (
+            (scores == current_scores) & (source_index < current_sources)
+        )
+        replaced_targets = indices[replace_best]
+        target_second_score[replaced_targets] = current_scores[replace_best]
+        target_best_score[replaced_targets] = scores[replace_best]
+        target_best[replaced_targets] = source_index
+
+        replace_second = (~replace_best) & (scores > target_second_score[indices])
+        target_second_score[indices[replace_second]] = scores[replace_second]
 
     has_runner_up = np.isfinite(target_second_score)
     target_margin = np.zeros(len(target_xy), dtype=np.float32)

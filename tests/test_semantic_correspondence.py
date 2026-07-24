@@ -250,6 +250,47 @@ def test_reciprocal_search_considers_every_candidate_inside_radius() -> None:
     np.testing.assert_array_equal(target, [79])
 
 
+def test_reciprocal_target_ranking_retains_runner_up_and_tie_breaking() -> None:
+    source_xy = np.array([[0.0, 0.0], [1.0, 0.0]])
+    target_xy = np.array([[0.0, 0.0], [1.0, 0.0]])
+    source_descriptor = np.array([[1.0, 0.0], [0.8, 0.6]], dtype=np.float32)
+    target_descriptor = np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32)
+    config = CorrespondenceConfig(
+        patch_width_um=10.0,
+        geometry_score_weight=0.0,
+    )
+
+    source, target, similarity, margin = _reciprocal_matches(
+        source_xy,
+        target_xy,
+        source_descriptor,
+        target_descriptor,
+        np.zeros_like(source_xy),
+        radius_um=10.0,
+        config=config,
+    )
+
+    np.testing.assert_array_equal(source, [0])
+    np.testing.assert_array_equal(target, [0])
+    np.testing.assert_array_equal(similarity, [1.0])
+    np.testing.assert_allclose(margin, [0.1], rtol=0, atol=1e-7)
+
+    tied_source = np.repeat(source_descriptor[:1], 2, axis=0)
+    source, target, _, margin = _reciprocal_matches(
+        source_xy,
+        target_xy,
+        tied_source,
+        target_descriptor,
+        np.zeros_like(source_xy),
+        radius_um=10.0,
+        config=config,
+    )
+
+    np.testing.assert_array_equal(source, [0])
+    np.testing.assert_array_equal(target, [0])
+    np.testing.assert_array_equal(margin, [0.0])
+
+
 def test_matching_rejects_an_isolated_near_decoy_without_runner_up() -> None:
     grid = np.array([[0, 0]], dtype=np.int32)
     features = np.array([[1.0, 0.0]], dtype=np.float32)
