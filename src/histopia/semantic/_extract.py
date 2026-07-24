@@ -149,7 +149,7 @@ def _geometry_from_json(data: dict[str, Any]) -> SlideGeometry:
 
 
 class _VipsPatchReader:
-    provenance_id = "pyvips-row-batch-v1"
+    provenance_id = "pyvips-context-row-batch-v2"
 
     def __init__(self, path: Path) -> None:
         try:
@@ -170,7 +170,7 @@ class _VipsPatchReader:
     def read_many(
         self, requests: tuple[tuple[int, int, int, int, int], ...]
     ) -> tuple[np.ndarray, ...]:
-        """Decode adjacent grid patches as bounded row strips."""
+        """Decode batch-invariant grid patches from context-padded row strips."""
 
         if not requests:
             return ()
@@ -185,8 +185,10 @@ class _VipsPatchReader:
             )
         patches: list[np.ndarray | None] = [None] * len(requests)
         for (y, width, height, output_px), items in groups.items():
-            left = min(request[0] for _, request in items)
-            right = max(request[0] + width for _, request in items)
+            minimum = min(request[0] for _, request in items)
+            maximum = max(request[0] + width for _, request in items)
+            left = minimum - width if minimum >= width else minimum
+            right = maximum + width if maximum + width <= self.image.width else maximum
             strip = self.image.crop(left, y, right - left, height)
             strip = strip.resize(
                 output_px / width,

@@ -57,8 +57,12 @@ histopia-semantic extract --config semantic-atlas.toml --device cuda:0 \
   --batch-size 128 --patch-workers 4 --vips-threads 8
 ```
 
-The effective overrides are included in feature provenance and cache identity.
-Use `--device cpu` for portable validation or when GPU memory is unavailable.
+Device and batch-size overrides are included in feature provenance and cache
+identity because they can change numerical inference. `patch_workers` and
+`vips_threads` only control throughput and intentionally do not invalidate
+scientifically equivalent completed features. Retain the effective command or
+generated QuPath config when benchmarking those controls. Use `--device cpu`
+for portable validation or when GPU memory is unavailable.
 
 Set `patch_workers` above one to prefetch complete WSI batches concurrently
 before they are consumed in order by the encoder. Result order and feature
@@ -68,11 +72,13 @@ libvips, so `1` is the portable default; benchmark `2` or `4` with the intended
 storage and batch size.
 
 For regular source grids, the built-in pyvips reader coalesces adjacent patches
-into bounded row strips and prefetches one batch while the accelerator encodes
-the current batch. This avoids repeated WSI tile decoding without loading a
-whole slide into memory. Reader and extraction-method versions are part of
-feature provenance, so a changed sampling implementation invalidates stale
-caches.
+into bounded row strips and adds one whole horizontal patch of source context
+when available. The context keeps interpolation identical when a row is split
+across different inference batches. Histopia prefetches the next strip batch
+while the accelerator encodes the current batch, avoiding repeated WSI tile
+decoding without loading a whole slide into memory. Reader and
+extraction-method versions are part of feature provenance, so a changed
+sampling implementation invalidates stale caches.
 
 Feature provenance also records inference batch size, resolved device,
 precision, accelerator identity, and relevant package versions. Switching
@@ -99,12 +105,15 @@ mask-grid coverage reduced its 49,533-patch selection stage from 3.33 seconds
 to 0.018 seconds with every fraction identical.
 
 On a second real 30,720 by 29,440 H&E NDPI with 6,379 accepted patches and two
-patch workers, native libvips caps of 1, 2, 4, 8, and 16 threads took
-5.48-5.70, 4.17-4.19, 3.20-3.42, 3.14-3.62, and 4.15-4.17 seconds,
-respectively; the adaptive default took 4.03-4.18 seconds. Every feature,
-coordinate, and coverage hash was identical. Four threads was the most stable
-choice on that host, but Histopia leaves the cap unset because storage,
-libvips, and host concurrency determine the optimum.
+patch workers, the context-padded reader took 6.11-6.67, 3.91-4.30,
+3.23-3.35, 3.46-3.52, and 4.05-4.09 seconds with native libvips caps of
+1, 2, 4, 8, and 16 threads, respectively; the adaptive default took
+4.39-4.40 seconds. Every feature, coordinate, and coverage hash was identical.
+Four threads was the stable optimum on that host, but Histopia leaves the cap
+unset because storage, libvips, and host concurrency determine the optimum.
+At four libvips threads, inference batch sizes 32, 64, and 128 took 3.71, 3.15,
+and 2.86 seconds with an identical feature hash, confirming that strip
+interpolation no longer depends on batch boundaries.
 
 Standard 224-pixel RGB patches are normalized as one tensor batch. On the
 validated A100 runtime, this reduced 64-patch preprocessing from 62.4 to

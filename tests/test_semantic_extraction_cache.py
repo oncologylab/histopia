@@ -80,3 +80,46 @@ def test_patch_reader_composites_grayscale_alpha_onto_white(
         [159, 159, 159],
         [200, 200, 200],
     ]
+
+
+@pytest.mark.integration
+def test_context_patch_reader_is_invariant_to_batch_boundaries(
+    tmp_path: Path,
+) -> None:
+    pyvips = pytest.importorskip("pyvips")
+    pixels = np.random.default_rng(7).integers(
+        0,
+        256,
+        size=(700, 1400, 3),
+        dtype=np.uint8,
+    )
+    path = tmp_path / "random.tif"
+    pyvips.Image.new_from_memory(
+        pixels.tobytes(),
+        1400,
+        700,
+        3,
+        "uchar",
+    ).tiffsave(str(path), tile=True, pyramid=True)
+    requests = (
+        (20, 200, 243, 243, 224),
+        (992, 200, 243, 243, 224),
+        (263, 200, 243, 243, 224),
+        (749, 200, 243, 243, 224),
+        (506, 200, 243, 243, 224),
+    )
+    reader = _VipsPatchReader(path)
+
+    together = reader.read_many(requests)
+    split = reader.read_many(requests[:2]) + reader.read_many(requests[2:])
+    isolated = tuple(reader.read_many((request,))[0] for request in requests)
+
+    assert reader.provenance_id == "pyvips-context-row-batch-v2"
+    for expected, split_patch, isolated_patch in zip(
+        together,
+        split,
+        isolated,
+        strict=True,
+    ):
+        np.testing.assert_array_equal(split_patch, expected)
+        np.testing.assert_array_equal(isolated_patch, expected)
