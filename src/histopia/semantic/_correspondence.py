@@ -93,15 +93,109 @@ def match_adjacent_sections(
         raise ValueError("source and target feature dimensions must match")
     if not len(source_um_xy) or not len(target_um_xy):
         return _empty_result(
+            source_section,
+            target_section,
+            len(source_um_xy),
+            len(target_um_xy),
+        )
+    return _match_prepared_adjacent_sections(
+        source_um_xy,
+        _context_descriptors(
+            source_grid_rc,
+            source_features,
+            config.context_radii_grid,
+        ),
+        target_um_xy,
+        _context_descriptors(
+            target_grid_rc,
+            target_features,
+            config.context_radii_grid,
+        ),
+        source_section=source_section,
+        target_section=target_section,
+        config=config,
+    )
+
+
+def _match_section_sequence(
+    grid_rc: Sequence[np.ndarray],
+    um_xy: Sequence[np.ndarray],
+    features: Sequence[np.ndarray],
+    *,
+    configs: Sequence[CorrespondenceConfig],
+) -> tuple[AdjacentSectionCorrespondence, ...]:
+    """Match every adjacent pair while reusing each section descriptor."""
+
+    section_count = len(grid_rc)
+    if section_count < 2:
+        raise ValueError("section sequence requires at least two sections")
+    if len(um_xy) != section_count or len(features) != section_count:
+        raise ValueError("section sequence inputs must contain the same sections")
+    if len(configs) != section_count - 1:
+        raise ValueError("section sequence requires one config per adjacent pair")
+
+    prepared = tuple(
+        _validate_section(section_grid, section_xy, section_features, name="section")
+        for section_grid, section_xy, section_features in zip(
+            grid_rc,
+            um_xy,
+            features,
+            strict=True,
+        )
+    )
+    feature_dims = {section_features.shape[1] for _, _, section_features in prepared}
+    if len(feature_dims) != 1:
+        raise ValueError("section sequence feature dimensions must match")
+    if any(
+        config.context_radii_grid != configs[0].context_radii_grid
+        for config in configs[1:]
+    ):
+        raise ValueError("section sequence context radii must match")
+    descriptors = tuple(
+        (
+            _context_descriptors(
+                section_grid,
+                section_features,
+                configs[0].context_radii_grid,
+            )
+            if len(section_grid)
+            else None
+        )
+        for section_grid, _, section_features in prepared
+    )
+    return tuple(
+        _match_prepared_adjacent_sections(
+            prepared[index][1],
+            descriptors[index],
+            prepared[index + 1][1],
+            descriptors[index + 1],
+            source_section=index,
+            target_section=index + 1,
+            config=configs[index],
+        )
+        for index in range(section_count - 1)
+    )
+
+
+def _match_prepared_adjacent_sections(
+    source_um_xy: np.ndarray,
+    source_descriptor: np.ndarray | None,
+    target_um_xy: np.ndarray,
+    target_descriptor: np.ndarray | None,
+    *,
+    source_section: int,
+    target_section: int,
+    config: CorrespondenceConfig,
+) -> AdjacentSectionCorrespondence:
+    """Match one validated pair with descriptors prepared by its caller."""
+
+    if not len(source_um_xy) or not len(target_um_xy):
+        return _empty_result(
             source_section, target_section, len(source_um_xy), len(target_um_xy)
         )
-
-    source_descriptor = _context_descriptors(
-        source_grid_rc, source_features, config.context_radii_grid
-    )
-    target_descriptor = _context_descriptors(
-        target_grid_rc, target_features, config.context_radii_grid
-    )
+    if source_descriptor is None or target_descriptor is None:
+        raise RuntimeError("non-empty correspondence descriptors are missing")
+    target_tree = _ckdtree(target_um_xy)
     field = np.zeros_like(source_um_xy, dtype=np.float64)
     matched_source = np.empty(0, dtype=np.int64)
     matched_target = np.empty(0, dtype=np.int64)
@@ -117,6 +211,7 @@ def match_adjacent_sections(
             field,
             radius_in_patches * config.patch_width_um,
             config,
+            target_tree=target_tree,
         )
         observed = target_um_xy[matched_target] - source_um_xy[matched_source]
         seed_residual = np.linalg.norm(observed - field[matched_source], axis=1)
@@ -300,9 +395,12 @@ def _reciprocal_matches(
     field: np.ndarray,
     radius_um: float,
     config: CorrespondenceConfig,
+    *,
+    target_tree: Any | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    tree = _ckdtree(target_xy)
-    candidates = tree.query_ball_point(
+    if target_tree is None:
+        target_tree = _ckdtree(target_xy)
+    candidates = target_tree.query_ball_point(
         source_xy + field,
         radius_um,
         return_sorted=True,

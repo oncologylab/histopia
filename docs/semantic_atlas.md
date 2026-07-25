@@ -59,7 +59,10 @@ the resolved device and accelerator memory before extraction. CUDA extraction
 uses native bfloat16 autocast when the selected GPU supports it and float16
 autocast otherwise, then recursively reduces a batch after an out-of-memory
 error. CPU and Apple MPS extraction use float32. The resolved precision is
-recorded in feature provenance.
+recorded in feature provenance. The device applies to UNI2-h inference, not
+global atlas fitting. PCA, correspondence, guarded batch correction, K
+optimization, and topology regularization use the CPU implementation so their
+validated algorithms and numerical identity do not depend on an accelerator.
 
 Validate the exact backend intended for a run, then optionally override only
 the machine-level controls without editing the saved scientific configuration:
@@ -232,9 +235,14 @@ bounded matrix batches. Each source window contains at most 1,024 patches and
 each scoring batch targets at most 8,192 candidate edges; one source
 neighbourhood remains indivisible. This limits descriptor gathers while
 preserving the original floating-point operation order and sequential target
-tie-breaking. On a 16-section, 80,307-patch atlas, the complete cold fit fell
-from 82.13 to 66.01 seconds and the atlas phase from 76.47 to 60.94 seconds,
-with slightly lower peak memory. On a larger 24-section,
+tie-breaking. Each section's context descriptor is now computed once per atlas
+pass, and one target spatial index is reused across the three coarse-to-fine
+search radii. On a 16-section, 80,307-patch atlas, this preparation reuse
+reduced a controlled fit from 64.825 to 62.546 seconds (3.64 percent), while
+all 191 in-memory scientific arrays and metadata retained the same SHA-256
+digest. Earlier bounded-ranking work reduced the same corpus's complete cold
+fit from 82.13 to 66.01 seconds and the atlas phase from 76.47 to 60.94
+seconds, with slightly lower peak memory. On a larger 24-section,
 524,317-patch stress atlas, the complete measured fit fell from 566.23 to
 553.24 seconds and the atlas phase from 540.99 to 529.50 seconds. The selected
 K, result fingerprints, and all 194 and 290 scientific artifacts,

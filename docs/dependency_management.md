@@ -41,12 +41,19 @@ Semantic atlas fitting from existing compact features:
 python -m pip install -e ".[semantic]"
 ```
 
+This profile fits the global atlas on CPU and does not install PyTorch. Use
+`fit_threads` to bound its native BLAS and OpenMP pools.
+
 UNI2-h extraction from source whole-slide images:
 
 ```bash
 python -m pip install -e ".[uni2h]" \
     -c constraints/semantic-repro.txt
 ```
+
+The `uni2h` profile adds PyTorch and the WSI stack for CPU, CUDA, or Apple MPS
+feature extraction. The selected accelerator does not replace the CPU atlas
+fit.
 
 The exact tested UNI2-h runtime is also available directly:
 

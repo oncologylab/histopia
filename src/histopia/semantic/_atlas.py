@@ -10,7 +10,7 @@ from histopia.semantic._batch import BatchCorrectionResult, correct_batch_offset
 from histopia.semantic._correspondence import (
     AdjacentSectionCorrespondence,
     CorrespondenceConfig,
-    match_adjacent_sections,
+    _match_section_sequence,
 )
 from histopia.semantic._features import PatchFeatures
 from histopia.semantic._graph import (
@@ -227,26 +227,21 @@ def _match_correspondences(
     sections: tuple[PatchFeatures, ...],
     features: tuple[np.ndarray, ...],
 ) -> tuple[AdjacentSectionCorrespondence, ...]:
-    return tuple(
-        match_adjacent_sections(
-            sections[index].grid_rc,
-            sections[index].reference_um_xy,
-            features[index],
-            sections[index + 1].grid_rc,
-            sections[index + 1].reference_um_xy,
-            features[index + 1],
-            source_section=index,
-            target_section=index + 1,
-            config=CorrespondenceConfig(
+    return _match_section_sequence(
+        tuple(section.grid_rc for section in sections),
+        tuple(section.reference_um_xy for section in sections),
+        features,
+        configs=tuple(
+            CorrespondenceConfig(
                 patch_width_um=0.5
                 * (
                     sections[index].patch_size_px * sections[index].analysis_mpp
                     + sections[index + 1].patch_size_px
                     * sections[index + 1].analysis_mpp
                 )
-            ),
-        )
-        for index in range(len(sections) - 1)
+            )
+            for index in range(len(sections) - 1)
+        ),
     )
 
 

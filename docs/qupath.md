@@ -103,6 +103,12 @@ review portal there and opens its local `index.html`; it does not start a
 server or make external requests. **Open semantic QC** starts an
 ephemeral loopback-only server on `127.0.0.1` so the WebGL viewer's modules and
 assets load correctly; it is replaced the next time semantic QC is opened.
+
+The QuPath **Device** control selects the backend for UNI2-h feature extraction.
+The global semantic atlas then uses the validated CPU implementation;
+**Fit threads** bounds its native BLAS and OpenMP pools. An idle GPU during the
+fit stage is therefore expected and does not indicate a fallback or failure.
+
 Selected slides may come from different directories, but each must have a
 unique filename and a single local NDPI, SCN, SVS, TIFF, or OME-TIFF source
 URI.

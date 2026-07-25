@@ -5,10 +5,12 @@ import tracemalloc
 import numpy as np
 import pytest
 
+from histopia.semantic import _correspondence as correspondence_module
 from histopia.semantic._correspondence import (
     AdjacentSectionCorrespondence,
     CorrespondenceConfig,
     _context_descriptors,
+    _match_section_sequence,
     _neighborhood_consistency,
     _reciprocal_matches,
     _score_candidate_window,
@@ -72,6 +74,101 @@ def test_matching_reports_missing_and_distant_tiles_as_unmatched() -> None:
             target_section=4,
             config=CorrespondenceConfig(patch_width_um=100.0),
         )
+
+
+def test_section_sequence_reuses_descriptors_and_matches_pairwise(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows, columns = np.mgrid[:3, :4]
+    grid = np.column_stack([rows.ravel(), columns.ravel()]).astype(np.int32)
+    coordinates = tuple(
+        grid[:, ::-1].astype(float) * 100.0 + np.array([shift, 0.0])
+        for shift in (0.0, 2.0, 4.0)
+    )
+    rng = np.random.default_rng(912)
+    features = tuple(
+        rng.normal(size=(len(grid), 8)).astype(np.float32) for _ in coordinates
+    )
+    configs = (
+        CorrespondenceConfig(patch_width_um=100.0),
+        CorrespondenceConfig(patch_width_um=100.0),
+    )
+    expected = tuple(
+        match_adjacent_sections(
+            grid,
+            coordinates[index],
+            features[index],
+            grid,
+            coordinates[index + 1],
+            features[index + 1],
+            source_section=index,
+            target_section=index + 1,
+            config=configs[index],
+        )
+        for index in range(2)
+    )
+    real_descriptor = correspondence_module._context_descriptors
+    descriptor_calls = 0
+
+    def counted_descriptor(*args, **kwargs):
+        nonlocal descriptor_calls
+        descriptor_calls += 1
+        return real_descriptor(*args, **kwargs)
+
+    monkeypatch.setattr(
+        correspondence_module,
+        "_context_descriptors",
+        counted_descriptor,
+    )
+    observed = _match_section_sequence(
+        (grid, grid, grid),
+        coordinates,
+        features,
+        configs=configs,
+    )
+
+    assert descriptor_calls == 3
+    for expected_pair, observed_pair in zip(expected, observed, strict=True):
+        for name in AdjacentSectionCorrespondence.__dataclass_fields__:
+            left = getattr(expected_pair, name)
+            right = getattr(observed_pair, name)
+            if isinstance(left, np.ndarray):
+                np.testing.assert_array_equal(left, right)
+            else:
+                assert left == right
+
+
+def test_section_sequence_preserves_empty_section_results() -> None:
+    empty_grid = np.empty((0, 2), dtype=np.int32)
+    empty_xy = np.empty((0, 2), dtype=np.float64)
+    empty_features = np.empty((0, 3), dtype=np.float32)
+    grid = np.array([[0, 0]], dtype=np.int32)
+    xy = np.array([[0.0, 0.0]])
+    features = np.array([[1.0, 0.0, 0.0]], dtype=np.float32)
+    config = CorrespondenceConfig(patch_width_um=100.0)
+
+    direct = match_adjacent_sections(
+        empty_grid,
+        empty_xy,
+        empty_features,
+        grid,
+        xy,
+        features,
+        source_section=0,
+        target_section=1,
+        config=config,
+    )
+    sequence = _match_section_sequence(
+        (empty_grid, grid),
+        (empty_xy, xy),
+        (empty_features, features),
+        configs=(config,),
+    )
+
+    assert direct.source_indices.size == 0
+    assert sequence[0].source_indices.size == 0
+    np.testing.assert_array_equal(direct.unmatched_target_indices, [0])
+    np.testing.assert_array_equal(sequence[0].unmatched_target_indices, [0])
 
 
 def test_matching_recovers_smooth_nonlinear_displacement_with_repeated_features() -> (
