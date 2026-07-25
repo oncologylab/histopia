@@ -281,6 +281,14 @@ mask-review artifacts only when their source metadata, pixel data,
 configuration, physical calibration, and algorithm schema match. Missing or
 corrupt entries are regenerated. Set it to `false` for an intentionally cold
 run; review approval fingerprints are enforced independently of this cache.
+Every rendered mask-artifact bundle also records the exact relative path,
+byte size, and SHA-256 of each thumbnail, mask, overlay, and candidate image.
+Missing, changed, truncated, symlinked, or escaping outputs regenerate only
+the affected slide bundle. Upgrading an older filename-only manifest rebuilds
+each bundle once. On a 24-slide validation stack with 504 retained PNGs, a
+fully warm checksum pass took 0.43 seconds; deliberately truncating one PNG
+rebuilt one slide in 5.43 seconds, reused the other 23, and restored every
+baseline output hash.
 
 `alignment_cache = true` independently enables exact directed rigid-pair
 reuse. Each entry binds oriented crop pixels, reviewed masks, crop

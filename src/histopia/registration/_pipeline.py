@@ -98,6 +98,8 @@ from histopia.registration._wsi import (
     warp_slide_to_reference,
 )
 
+_MASK_ARTIFACT_MANIFEST_SCHEMA = "histopia-registration-mask-artifacts-v2"
+
 
 @dataclass(slots=True)
 class AlignmentMetrics:
@@ -395,14 +397,15 @@ def _register_sections(
             ) as executor:
                 rendered_rows = tuple(executor.map(render_mask_artifacts, slide_paths))
         artifact_rows = tuple(rendered_rows)
-        for path, artifact_fingerprint, artifact_paths, _rendered in artifact_rows:
-            _record_mask_artifacts(
-                artifact_manifest,
-                path,
-                artifact_fingerprint,
-                artifact_paths,
-                config.output_dir,
-            )
+        for path, artifact_fingerprint, artifact_paths, rendered in artifact_rows:
+            if rendered:
+                _record_mask_artifacts(
+                    artifact_manifest,
+                    path,
+                    artifact_fingerprint,
+                    artifact_paths,
+                    config.output_dir,
+                )
     if artifact_manifest_path is not None:
         _write_mask_artifact_manifest(artifact_manifest_path, artifact_manifest)
     artifact_seconds = time.perf_counter() - artifact_started
@@ -1621,18 +1624,16 @@ def _mask_artifact_fingerprint(
 
 def _load_mask_artifact_manifest(path: Path | None) -> dict[str, Any]:
     if path is None:
-        return {"schema": "histopia-registration-mask-artifacts-v1", "slides": {}}
+        return {"schema": _MASK_ARTIFACT_MANIFEST_SCHEMA, "slides": {}}
     try:
         payload = json.loads(path.read_text())
-        if payload.get(
-            "schema"
-        ) == "histopia-registration-mask-artifacts-v1" and isinstance(
+        if payload.get("schema") == _MASK_ARTIFACT_MANIFEST_SCHEMA and isinstance(
             payload.get("slides"), dict
         ):
             return payload
     except (OSError, TypeError, json.JSONDecodeError):
         pass
-    return {"schema": "histopia-registration-mask-artifacts-v1", "slides": {}}
+    return {"schema": _MASK_ARTIFACT_MANIFEST_SCHEMA, "slides": {}}
 
 
 def _mask_artifacts_are_current(
@@ -1642,13 +1643,21 @@ def _mask_artifacts_are_current(
     paths: tuple[Path, ...],
     output_dir: Path,
 ) -> bool:
-    entry = manifest["slides"].get(str(source.resolve()))
-    expected = [str(path.relative_to(output_dir)) for path in paths]
+    slides = manifest.get("slides")
+    entry = slides.get(str(source.resolve())) if isinstance(slides, dict) else None
+    try:
+        expected = _mask_artifact_relative_paths(paths, output_dir)
+    except ValueError:
+        return False
+    rows = entry.get("artifacts") if isinstance(entry, dict) else None
     return bool(
         isinstance(entry, dict)
         and entry.get("fingerprint") == fingerprint
-        and entry.get("artifacts") == expected
-        and all(path.is_file() for path in paths)
+        and isinstance(rows, list)
+        and len(rows) == len(expected)
+        and all(isinstance(row, dict) for row in rows)
+        and [row.get("path") for row in rows] == expected
+        and all(_mask_artifact_matches(output_dir, row) for row in rows)
     )
 
 
@@ -1661,27 +1670,111 @@ def _record_mask_artifacts(
 ) -> None:
     key = str(source.resolve())
     previous = manifest["slides"].get(key, {})
-    current_relative = [str(path.relative_to(output_dir)) for path in paths]
+    current_relative = _mask_artifact_relative_paths(paths, output_dir)
+    rows: list[dict[str, object]] = []
+    for relative, path in zip(current_relative, paths, strict=True):
+        if not path.is_file() or path.is_symlink():
+            raise FileNotFoundError(f"registration mask artifact is missing: {path}")
+        rows.append(
+            {
+                "path": relative,
+                "size": path.stat().st_size,
+                "sha256": _mask_artifact_sha256(path),
+            }
+        )
     if isinstance(previous, dict):
-        for relative in previous.get("artifacts", []):
-            if not isinstance(relative, str):
+        previous_artifacts = previous.get("artifacts", [])
+        if not isinstance(previous_artifacts, list):
+            previous_artifacts = []
+        for artifact in previous_artifacts:
+            relative = artifact.get("path") if isinstance(artifact, dict) else None
+            if not isinstance(relative, str) or relative in current_relative:
                 continue
-            stale = (output_dir / relative).resolve()
-            if not stale.is_relative_to(output_dir.resolve()):
-                continue
-            if relative not in current_relative and stale.is_file():
-                stale.unlink()
+            _remove_stale_mask_artifact(output_dir, relative)
     manifest["slides"][key] = {
         "fingerprint": fingerprint,
-        "artifacts": current_relative,
+        "artifacts": rows,
     }
 
 
 def _write_mask_artifact_manifest(path: Path, manifest: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    temporary.write_text(json.dumps(manifest, sort_keys=True, separators=(",", ":")))
-    temporary.replace(path)
+    write_json_atomic(
+        path,
+        manifest,
+        indent=None,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _mask_artifact_relative_paths(
+    paths: tuple[Path, ...],
+    output_dir: Path,
+) -> list[str]:
+    root = output_dir.resolve()
+    relative: list[str] = []
+    for path in paths:
+        resolved = path.resolve()
+        if not resolved.is_relative_to(root):
+            raise ValueError("registration mask artifact escapes the output directory")
+        relative.append(str(resolved.relative_to(root)))
+    if len(relative) != len(set(relative)):
+        raise ValueError("registration mask artifact bundle contains duplicates")
+    return relative
+
+
+def _mask_artifact_matches(output_dir: Path, row: dict[str, object]) -> bool:
+    relative = row.get("path")
+    expected_size = row.get("size")
+    expected_sha256 = row.get("sha256")
+    if (
+        not isinstance(relative, str)
+        or not relative
+        or not isinstance(expected_size, int)
+        or isinstance(expected_size, bool)
+        or expected_size < 0
+        or not isinstance(expected_sha256, str)
+        or len(expected_sha256) != 64
+    ):
+        return False
+    root = output_dir.resolve()
+    candidate = root / relative
+    path = candidate.resolve()
+    try:
+        if (
+            not path.is_relative_to(root)
+            or not path.is_file()
+            or candidate.is_symlink()
+            or path.stat().st_size != expected_size
+        ):
+            return False
+        return _mask_artifact_sha256(path) == expected_sha256
+    except OSError:
+        return False
+
+
+def _remove_stale_mask_artifact(output_dir: Path, relative: str) -> None:
+    root = output_dir.resolve()
+    candidate = Path(os.path.abspath(root / relative))
+    if not candidate.is_relative_to(root):
+        return
+    try:
+        parent = candidate.parent.resolve()
+        if not parent.is_relative_to(root):
+            return
+        path = parent / candidate.name
+        if path.is_symlink() or path.is_file():
+            path.unlink()
+    except OSError:
+        return
+
+
+def _mask_artifact_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def _write_alignment_qc(

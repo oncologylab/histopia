@@ -26,6 +26,7 @@ from histopia.registration._pipeline import (
     _create_tissue_masks,
     _crop_to_mask,
     _load_automatic_mask_snapshot,
+    _load_mask_artifact_manifest,
     _load_registration_thumbnails,
     _mask_artifact_fingerprint,
     _mask_artifact_paths,
@@ -197,7 +198,7 @@ def test_mask_artifact_manifest_requires_exact_complete_bundle(
     )
     fingerprint = _mask_artifact_fingerprint(source, image, result)
     manifest: dict[str, object] = {
-        "schema": "histopia-registration-mask-artifacts-v1",
+        "schema": "histopia-registration-mask-artifacts-v2",
         "slides": {},
     }
 
@@ -208,7 +209,58 @@ def test_mask_artifact_manifest_requires_exact_complete_bundle(
     _record_mask_artifacts(manifest, source, fingerprint, paths, output)
 
     assert _mask_artifacts_are_current(manifest, source, fingerprint, paths, output)
+    entry = manifest["slides"][str(source.resolve())]
+    assert all(row["size"] == len(b"artifact") for row in entry["artifacts"])
+    assert all(len(row["sha256"]) == 64 for row in entry["artifacts"])
+    paths[0].write_bytes(b"ARTIFACT")
+    assert not _mask_artifacts_are_current(manifest, source, fingerprint, paths, output)
+    paths[0].write_bytes(b"artifact")
     paths[-1].unlink()
+    assert not _mask_artifacts_are_current(manifest, source, fingerprint, paths, output)
+
+
+def test_mask_artifact_manifest_rejects_v1_and_symlink_replacements(
+    tmp_path: Path,
+) -> None:
+    manifest_path = tmp_path / "mask-artifacts.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "schema": "histopia-registration-mask-artifacts-v1",
+                "slides": {"stale": {}},
+            }
+        )
+    )
+    assert _load_mask_artifact_manifest(manifest_path) == {
+        "schema": "histopia-registration-mask-artifacts-v2",
+        "slides": {},
+    }
+
+    output = tmp_path / "output"
+    source = tmp_path / "slide.ndpi"
+    source.write_bytes(b"source")
+    image = np.full((8, 9, 3), 180, dtype=np.uint8)
+    mask = np.ones((8, 9), dtype=bool)
+    result = TissueMaskResult(mask, "test", {}, True, [])
+    paths = _mask_artifact_paths(
+        output / "processed",
+        output / "qc",
+        output / "qc" / "mask_candidates",
+        source,
+        result,
+    )
+    for path in paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"artifact")
+    manifest = _load_mask_artifact_manifest(None)
+    fingerprint = _mask_artifact_fingerprint(source, image, result)
+    _record_mask_artifacts(manifest, source, fingerprint, paths, output)
+
+    target = tmp_path / "replacement.png"
+    target.write_bytes(b"artifact")
+    paths[0].unlink()
+    paths[0].symlink_to(target)
+
     assert not _mask_artifacts_are_current(manifest, source, fingerprint, paths, output)
 
 
@@ -325,6 +377,45 @@ def test_parallel_group_masks_and_artifacts_match_serial_pipeline(
     assert parallel[2]["independent_mask_seconds"] >= 0
     assert parallel[2]["group_mask_seconds"] >= 0
     assert parallel[2]["mask_artifact_seconds"] >= 0
+
+
+def test_mask_artifact_cache_selectively_repairs_one_corrupt_slide(
+    tmp_path: Path,
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    image = np.full((90, 110, 3), 255, dtype=np.uint8)
+    image[20:72, 25:85] = [175, 95, 120]
+    for index, shift in enumerate((0, 3, 6)):
+        Image.fromarray(np.roll(image, shift=(shift, -shift), axis=(0, 1))).save(
+            input_dir / f"section-{index}.png"
+        )
+    config = RegistrationConfig(
+        input_dir,
+        output_dir,
+        reference_slide="section-0.png",
+        reference_policy="explicit",
+        rigid_method="phase_correlation",
+        align_strategy="reference",
+        max_processed_image_dim_px=110,
+        mask_workers=3,
+        write_processed_images=True,
+    )
+    register_sections(config)
+    target = next((output_dir / "qc" / "mask_candidates").glob("section-1.*.mask.png"))
+    original = target.read_bytes()
+    unchanged = output_dir / "processed" / "section-0.thumbnail.png"
+    unchanged_mtime = unchanged.stat().st_mtime_ns
+    target.write_bytes(bytes(len(original)))
+
+    register_sections(config)
+
+    performance = load_performance_report(output_dir / PERFORMANCE_FILENAME)
+    assert performance["mask_artifact_slides_rendered"] == 1
+    assert performance["mask_artifact_slides_reused"] == 2
+    assert target.read_bytes() == original
+    assert unchanged.stat().st_mtime_ns == unchanged_mtime
 
 
 def test_mask_workers_must_be_positive(tmp_path: Path) -> None:
