@@ -202,7 +202,9 @@ def refine_group_tissue_masks(
     Slide canvases are normalized without registration. A component is retained
     when it is the dominant object on its slide or overlaps tissue proposals in
     other sections. This makes masking section-group aware while allowing
-    gradual changes in tissue shape and size.
+    gradual changes in tissue shape and size. Small detached line-like
+    components require support from an adjacent input section because broad
+    cohort overlap is not reliable before registration.
     """
 
     if isinstance(workers, bool) or not isinstance(workers, int):
@@ -414,10 +416,25 @@ def refine_group_tissue_masks(
             support = float(np.mean(peer_support[normalized_component]))
             direct_support = float(np.mean(direct_peer_support[normalized_component]))
             neighbor_support = float(np.mean(adjacent_support[normalized_component]))
+            fragment_gap = float(np.min(distance_to_main[component]))
+            component_aspect_ratio = max(row_span, col_span) / max(
+                min(row_span, col_span), 1
+            )
+            small_isolated_line_fragment = (
+                relative_area < 0.05
+                and long_axis >= 0.10
+                and short_axis < 0.06
+                and component_aspect_ratio >= 2.50
+                and bbox_fill < 0.45
+                and fragment_gap > 0.02 * float(np.hypot(*result.mask.shape))
+                and neighbor_support < 0.45
+            )
+            if small_isolated_line_fragment:
+                continue
             component_support[label] = support
             close_supported_fragment = (
                 relative_area < 0.10
-                and float(np.min(distance_to_main[component])) <= maximum_fragment_gap
+                and fragment_gap <= maximum_fragment_gap
                 and (
                     neighbor_support >= 0.45
                     or direct_support >= max(0.02, 0.50 / (len(keys) - 1))
@@ -425,8 +442,7 @@ def refine_group_tissue_masks(
             )
             close_native_fragment = (
                 0.02 <= relative_area < 0.10
-                and float(np.min(distance_to_main[component]))
-                <= 0.02 * float(np.hypot(*result.mask.shape))
+                and fragment_gap <= 0.02 * float(np.hypot(*result.mask.shape))
                 and _component_center_fill_ratio(component) >= 0.45
             )
             recurring_substantial_component = (

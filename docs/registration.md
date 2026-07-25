@@ -26,6 +26,7 @@ Implemented now:
 
 - brightfield/IHC tissue-mask candidates with artifact, frame, and QC scoring
 - image-aware inset scanner-frame cleanup gated by selected exterior foreground
+- adjacent-section recurrence checks for small detached line-like mask fragments
 - fail-closed mask review manifests and exact-shape binary overrides
 - strict WSI discovery that excludes label photos and generated artifacts
 - scanner-content geometry for SCN thumbnails and native-coordinate warping

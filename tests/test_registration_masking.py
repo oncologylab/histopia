@@ -762,6 +762,60 @@ def test_group_consensus_rejects_broad_corner_rail_with_false_peer_support() -> 
     assert not refined["target"].mask[20:175, 20:85].any()
 
 
+def test_group_consensus_rejects_detached_line_with_false_global_support() -> None:
+    main_tissue = np.zeros((300, 400), dtype=bool)
+    main_tissue[70:210, 160:300] = True
+    detached_line = np.zeros_like(main_tissue)
+    cols = np.arange(75, 140)
+    rows = 235 + ((cols - 75) // 8)
+    detached_line[rows, cols] = True
+    detached_line = ndi.binary_dilation(detached_line, iterations=2)
+    target = main_tissue | detached_line
+
+    nonadjacent_tissue = np.zeros_like(main_tissue)
+    nonadjacent_tissue[175:285, 35:210] = True
+
+    def result(mask: np.ndarray) -> TissueMaskResult:
+        return TissueMaskResult(mask, "synthetic", {}, True, [])
+
+    refined = refine_group_tissue_masks(
+        {
+            "nonadjacent-before": result(nonadjacent_tissue),
+            "adjacent-before": result(main_tissue),
+            "target": result(target),
+            "adjacent-after": result(main_tissue),
+            "nonadjacent-after": result(nonadjacent_tissue),
+        }
+    )
+
+    assert refined["target"].mask[100:180, 190:270].all()
+    assert not refined["target"].mask[detached_line].any()
+
+
+def test_group_consensus_preserves_adjacent_supported_line_fragment() -> None:
+    main_tissue = np.zeros((300, 400), dtype=bool)
+    main_tissue[70:210, 160:300] = True
+    line_fragment = np.zeros_like(main_tissue)
+    cols = np.arange(75, 140)
+    rows = 235 + ((cols - 75) // 8)
+    line_fragment[rows, cols] = True
+    line_fragment = ndi.binary_dilation(line_fragment, iterations=2)
+    target = main_tissue | line_fragment
+
+    def result(mask: np.ndarray) -> TissueMaskResult:
+        return TissueMaskResult(mask, "synthetic", {}, True, [])
+
+    refined = refine_group_tissue_masks(
+        {
+            "first": result(target),
+            "target": result(target),
+            "third": result(target),
+        }
+    )
+
+    assert refined["target"].mask[line_fragment].all()
+
+
 def test_group_consensus_preserves_displaced_neighbor_supported_tissue() -> None:
     target = np.zeros((220, 340), dtype=bool)
     target[50:170, 35:155] = True
