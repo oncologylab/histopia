@@ -301,8 +301,11 @@ histopia-register --config registration.toml --staged
 exit code zero with `status = "review_required"`. Direct library calls and CLI
 runs without `--staged` still raise `RegistrationApprovalRequired`. Mask and
 order approvals are written atomically and survive a rerun only when their
-exact fingerprints remain current. The combined review portal supports a
-mask-only first stage and adds the order tab after the proposal exists.
+exact fingerprints remain current. Prepared mask/order manifests, final
+registration JSON, validation reports, and incremental full-resolution warp
+summaries also use atomic replacement, preventing cancellation from leaving a
+truncated final-path artifact. The combined review portal supports a mask-only
+first stage and adds the order tab after the proposal exists.
 
 After reviewing the completed mask, order, and registration views, seal the
 exact artifacts without recomputing unchanged transforms:

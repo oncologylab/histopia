@@ -10,6 +10,8 @@ from typing import Any
 
 import numpy as np
 
+from histopia._atomic import write_json_atomic
+
 
 @dataclass(frozen=True, slots=True)
 class SemanticPreflightSlide:
@@ -117,8 +119,7 @@ def write_preflight(preflight: SemanticPreflight, output_path: Path | str) -> Pa
     output.parent.mkdir(parents=True, exist_ok=True)
     payload = asdict(preflight)
     payload["slide_count"] = preflight.slide_count
-    output.write_text(json.dumps(payload, indent=2) + "\n")
-    return output
+    return write_json_atomic(output, payload)
 
 
 def _validate_slide(

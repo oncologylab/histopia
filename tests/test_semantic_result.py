@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from histopia.semantic import PatchFeatures
+from histopia.semantic import PatchFeatures, approve_semantic_result
 from histopia.semantic._atlas import AtlasClustering, JointAtlas
 from histopia.semantic._result import (
     _common_feature_provenance,
@@ -58,10 +58,32 @@ def test_write_atlas_result_is_review_gated_and_keeps_per_slide_grids(
     with np.load(tmp_path / payload["slides"][1]["labels"]["2"]) as saved:
         np.testing.assert_array_equal(saved["labels"], [1, 0])
         np.testing.assert_array_equal(saved["grid_rc"], [[0, 0], [0, 1]])
+    approve_semantic_result(
+        tmp_path,
+        reviewer="Test Reviewer",
+        notes="Exact deterministic rerun reviewed.",
+        reviewed_at="2026-07-25T01:00:00+00:00",
+    )
+    original_result = result_path.read_bytes()
+
+    write_atlas_result(atlas, sections, tmp_path, primary_clusters=2)
+
+    preserved_review = json.loads((tmp_path / "semantic_review.json").read_text())
+    assert result_path.read_bytes() == original_result
+    assert preserved_review["approved"] is True
+    assert preserved_review["reviewer"] == "Test Reviewer"
+    assert preserved_review["reviewed_at"] == "2026-07-25T01:00:00+00:00"
     changed = dict(payload)
     changed["selected_k"] = 3
     with pytest.raises(ValueError, match="fingerprint is stale"):
         validate_semantic_result(tmp_path, changed)
+
+    atlas.clusterings[2].labels[0] = 1
+    write_atlas_result(atlas, sections, tmp_path, primary_clusters=2)
+
+    changed_review = json.loads((tmp_path / "semantic_review.json").read_text())
+    assert changed_review["approved"] is False
+    assert changed_review["fingerprint"] != payload["fingerprint"]
 
 
 def test_result_fingerprint_rejects_changed_artifact_bytes(tmp_path: Path) -> None:

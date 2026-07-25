@@ -9,6 +9,7 @@ from pathlib import Path
 
 import numpy as np
 
+from histopia._atomic import write_binary_atomic, write_json_atomic
 from histopia.semantic import _result_validation
 from histopia.semantic._atlas import JointAtlas
 from histopia.semantic._correspondence import CorrespondenceConfig
@@ -43,7 +44,7 @@ def write_atlas_result(
     *,
     primary_clusters: int,
 ) -> Path:
-    """Write labels, model metadata, and an unapproved review record."""
+    """Write sealed atlas artifacts and fingerprint-bound review state."""
 
     output_dir = Path(output_dir)
     common_provenance = _common_feature_provenance(sections, output_dir)
@@ -72,7 +73,7 @@ def write_atlas_result(
     }
     for count, clustering in atlas.clusterings.items():
         arrays[f"centroids_k{count}"] = clustering.centroids
-    np.savez_compressed(model_path, **arrays)
+    _savez_compressed_atomic(model_path, **arrays)
 
     slide_rows: list[dict[str, object]] = []
     for index, section in enumerate(sections):
@@ -82,7 +83,7 @@ def write_atlas_result(
             directory = label_root / f"k-{count}"
             directory.mkdir(parents=True, exist_ok=True)
             path = directory / f"{index + 1:03d}.npz"
-            np.savez_compressed(
+            _savez_compressed_atomic(
                 path,
                 labels=clustering.labels[start:stop].astype(np.int16),
                 joint_labels=clustering.joint_labels[start:stop].astype(np.int16),
@@ -127,7 +128,7 @@ def write_atlas_result(
         source = correspondence.source_section
         target = correspondence.target_section
         path = topology_root / f"{source + 1:03d}-{target + 1:03d}.npz"
-        np.savez_compressed(
+        _savez_compressed_atomic(
             path,
             source_indices=correspondence.source_indices,
             target_indices=correspondence.target_indices,
@@ -178,18 +179,40 @@ def write_atlas_result(
     payload = _seal_semantic_result(output_dir, core)
     fingerprint = str(payload["fingerprint"])
     result_path = output_dir / "semantic_result.json"
-    result_path.write_text(json.dumps(payload, indent=2) + "\n")
-    review = {
+    write_json_atomic(result_path, payload)
+    review_path = output_dir / "semantic_review.json"
+    review = _review_for_current_result(output_dir, review_path, fingerprint)
+    write_json_atomic(review_path, review)
+    return result_path
+
+
+def _review_for_current_result(
+    output_dir: Path,
+    review_path: Path,
+    fingerprint: str,
+) -> dict[str, object]:
+    default: dict[str, object] = {
         "schema_version": 3,
         "approved": False,
         "fingerprint": fingerprint,
         "reviewer": None,
         "notes": "",
     }
-    (output_dir / "semantic_review.json").write_text(
-        json.dumps(review, indent=2) + "\n"
-    )
-    return result_path
+    try:
+        from histopia.semantic._approval import validate_semantic_approval
+
+        validate_semantic_approval(output_dir)
+        previous = json.loads(review_path.read_text())
+    except (FileNotFoundError, OSError, TypeError, ValueError):
+        return default
+    return previous if isinstance(previous, dict) else default
+
+
+def _savez_compressed_atomic(path: Path, **arrays: np.ndarray) -> Path:
+    def write(stream) -> None:
+        np.savez_compressed(stream, **arrays)
+
+    return write_binary_atomic(path, write)
 
 
 def _package_version(package: str) -> str:

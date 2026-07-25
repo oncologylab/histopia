@@ -9,6 +9,7 @@ from typing import Any
 
 import numpy as np
 
+from histopia._atomic import write_json_atomic
 from histopia._vips_image import normalize_vips_rgb_uchar
 from histopia.registration._errors import OptionalDependencyError
 from histopia.registration._slides import SlideGeometry
@@ -401,9 +402,9 @@ def warp_saved_registration(
                 reference_thumbnail_bbox=reference_thumbnail_bbox,
             )
         results.append(result)
-        summary_path.parent.mkdir(parents=True, exist_ok=True)
-        summary_path.write_text(
-            json.dumps([item.to_json_dict() for item in results], indent=2) + "\n"
+        write_json_atomic(
+            summary_path,
+            [item.to_json_dict() for item in results],
         )
     return tuple(results)
 

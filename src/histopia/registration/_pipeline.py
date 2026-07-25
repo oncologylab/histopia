@@ -14,6 +14,7 @@ from typing import Any
 
 import numpy as np
 
+from histopia._atomic import write_json_atomic, write_text_atomic
 from histopia.registration._config import RegistrationConfig
 from histopia.registration._errors import RegistrationApprovalRequired
 from histopia.registration._io import (
@@ -166,9 +167,7 @@ class RegistrationResult:
             if path is not None
             else self.output_dir / "registration_result.json"
         )
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(self.to_json_dict(), indent=2) + "\n")
-        return path
+        return write_json_atomic(path, self.to_json_dict())
 
 
 def register_sections(config: RegistrationConfig) -> RegistrationResult:
@@ -1365,7 +1364,7 @@ def _write_validation_report(result: RegistrationResult) -> Path:
         )
     lines.append("")
     report_path = result.output_dir / "validation_report.md"
-    report_path.write_text("\n".join(lines) + "\n")
+    write_text_atomic(report_path, "\n".join(lines) + "\n")
     return report_path
 
 

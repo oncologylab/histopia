@@ -9,6 +9,8 @@ from pathlib import Path
 
 import numpy as np
 
+from histopia._atomic import write_json_atomic
+
 
 @dataclass(frozen=True, slots=True)
 class CavityContinuitySummary:
@@ -310,7 +312,7 @@ def write_order_proposal(path: Path, proposal: SectionOrderProposal) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = proposal.to_json_dict(approved=approved)
     payload.update(review_metadata)
-    path.write_text(json.dumps(payload, indent=2) + "\n")
+    write_json_atomic(path, payload)
 
 
 def order_is_approved(path: Path, fingerprint: str) -> bool:

@@ -172,10 +172,14 @@ corrections still trigger a complete correspondence rebuild.
 ## Review And Viewer
 
 Every fit writes `semantic_result.json`, per-slide label grids,
-`atlas_model.npz`, and `semantic_review.json`. A new result is unapproved and
-fingerprinted. The fingerprint binds the model, every label grid, every
-topology artifact, and the exact preflight slide order; stale or incomplete
-artifacts are rejected before QC or viewer generation. Scientific
+`atlas_model.npz`, and `semantic_review.json`. Model, label, topology, result,
+and review files use atomic per-file replacement, so cancellation cannot expose
+a partially written artifact at its final path. A new or changed result is
+unapproved and fingerprinted. An exact deterministic rerun retains an existing
+approval only after the regenerated result and every sealed artifact validate
+against the same fingerprint. The fingerprint binds the model, every label
+grid, every topology artifact, and the exact preflight slide order; stale or
+incomplete artifacts are rejected before QC or viewer generation. Scientific
 interpretation should wait until semantic overlays and sensitivity fits have
 been reviewed.
 

@@ -10,6 +10,7 @@ from typing import Literal
 
 import numpy as np
 
+from histopia._atomic import write_json_atomic
 from histopia.registration._errors import OptionalDependencyError
 from histopia.registration._masking import (
     TissueMaskResult,
@@ -117,7 +118,7 @@ def write_mask_review(
         "slides": [entries[key].to_json_dict() for key in sorted(entries)],
     }
     payload.update(review_metadata)
-    path.write_text(json.dumps(payload, indent=2) + "\n")
+    write_json_atomic(path, payload)
     return path
 
 
