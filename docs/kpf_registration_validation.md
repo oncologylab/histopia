@@ -65,26 +65,32 @@ are coverage limitations rather than transform failures.
 
 ## Full-Resolution Validation
 
-All 105 affine results were applied to the original NDPI/SCN files and read
-back from a dedicated external output tree. The source data tree was not
-modified.
+The first 105-file native export used whole-canvas thumbnail scaling. A later
+per-slide audit found that cohort medians had hidden failures for scanner files
+whose processing thumbnails represented explicit OpenSlide content bounds.
+Eight SCN sections in 4257 and one SCN section in 4630 were therefore scaled
+against the glass canvas instead of their tissue-content bounds.
 
-| Mouse | Files | Reference canvas (H x W) | Pyramid levels | Native/thumb mask Dice | Native/thumb MAE |
-|---|---:|---:|---:|---:|---:|
-| 4257 | 38 | 43,264 x 51,840 | 8 | 0.968 | 3.62 |
-| 4577 | 25 | 47,360 x 59,520 | 8 | 0.977 | 2.68 |
-| 4630 | 24 | 17,664 x 17,280 | 7 | 0.998 | 2.63 |
-| 5997 | 18 | 19,456 x 19,200 | 7 | 0.981 | 3.21 |
+| Mouse | Files | Bounds-aware inputs | Legacy coordinate failures |
+|---|---:|---:|---:|
+| 4257 | 38 | 8 | 8 |
+| 4577 | 25 | 0 | 0 |
+| 4630 | 24 | 1 | 1 |
+| 5997 | 18 | 0 | 0 |
 
-Every TIFF had the expected reference dimensions, three `uchar` RGB bands,
-readable pyramid pages, and no unfinished temporary file. There were no
-missing, unexpected, or malformed outputs. `Native/thumb` values compare a
-thumbnail rendered from the native pyramid with the previously accepted
-thumbnail-space warp. MAE is measured on the 0-255 RGB scale.
+The remaining 96 legacy TIFFs have full-slide thumbnail geometry and are not
+affected by this coordinate error. Histopia now reconstructs native transforms
+from the saved `SlideGeometry` content bounds. A real 4257 Yap correction using
+the same historical affine transform improved whole-canvas MAE from 43.10 to
+8.71 and approved-tissue MAE from 88.56 to 22.51 on the 0-255 RGB scale.
 
-Visual readback included representative aligned sections, all four rigid review
-cases, and rescued 4257 pAMPKa. Native output preserved the same placement and
-partial-coverage decisions as thumbnail validation.
+The resumable exporter now fingerprints the registration result, source and
+reference file identities, transform, optional displacement, crop, writer
+settings, and output identity. Legacy summaries cannot be silently adopted;
+they require `--overwrite`. The validation script enforces both per-slide and
+cohort-level MAE limits, reports every rejected slide, and requires the current
+provenance schema. This prevents a good cohort median from concealing a severe
+individual coordinate failure.
 
 Reproduce this audit with:
 

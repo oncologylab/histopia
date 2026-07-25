@@ -53,6 +53,7 @@ from histopia.registration._slides import SlideGeometry, SlideRecord, discover_s
 from histopia.registration._wsi import (
     WsiWarpResult,
     calculate_thumbnail_overlap_bbox,
+    geometry_thumbnail_to_native_matrix,
     thumbnail_to_full_resolution_matrix,
     warp_saved_registration,
     warp_slide_to_reference,
@@ -102,6 +103,7 @@ __all__ = [
     "discover_slides",
     "estimate_rigid_transform",
     "estimate_non_rigid_transform",
+    "geometry_thumbnail_to_native_matrix",
     "refine_rigid_transform",
     "normalize_slide_stem",
     "orient_section_group",

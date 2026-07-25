@@ -372,9 +372,15 @@ histopia-register \
     --warp-crop-mode reference
 ```
 
-The command is resumable by default. Existing outputs are checked against the
-requested canvas; use `--overwrite` to replace them. Each completed file is
-written atomically and recorded in `full_resolution_warps.json`.
+The command is resumable by default. Histopia reconstructs native coordinates
+from the scanner content bounds saved during registration. Each completed file
+is written atomically and recorded in `full_resolution_warps.json` with a
+fingerprint of the registration result, source/reference file identities,
+transform, non-rigid displacement, crop, writer settings, and output identity.
+An existing TIFF is reused only when that complete request still matches and
+the file remains readable with the expected canvas. Outputs created by an
+older summary schema, changed inputs, or changed settings require
+`--overwrite`.
 
 `reference` is the safe crop default and preserves the entire reference
 canvas. `overlap` reproduces a legacy-style common valid rectangle, but can
