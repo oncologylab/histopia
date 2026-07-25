@@ -319,6 +319,15 @@ summaries also use atomic replacement, preventing cancellation from leaving a
 truncated final-path artifact. The combined review portal supports a mask-only
 first stage and adds the order tab after the proposal exists.
 
+Each invocation also atomically checkpoints `registration_performance.json`.
+It records safe worker and algorithm controls, total elapsed time, and durations
+for discovery, thumbnail loading, masks, ordering, rigid alignment, optional
+refinement, QC rendering, full-resolution export, and result writing. A normal
+mask or order pause is recorded as `review_required`; cancellation is
+`interrupted`, and an actual exception is `failed`. This file is observational:
+it is excluded from the registration result and approval fingerprints, so
+timing differences cannot invalidate or alter scientific results.
+
 After reviewing the completed mask, order, and registration views, seal the
 exact artifacts without recomputing unchanged transforms:
 

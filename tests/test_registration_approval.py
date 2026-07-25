@@ -69,6 +69,21 @@ def test_validate_registration_approval_rejects_post_approval_changes(
         validate_registration_approval(tmp_path)
 
 
+def test_registration_performance_is_outside_approval_seal(tmp_path: Path) -> None:
+    _write_run(tmp_path)
+    approved = approve_registration_run(
+        tmp_path,
+        reviewer="Test Reviewer",
+        notes="Reviewed.",
+    )
+    performance_path = tmp_path / "registration_performance.json"
+    performance_path.write_text('{"observational_only":true,"elapsed_seconds":1}')
+    first = validate_registration_approval(tmp_path)
+    performance_path.write_text('{"observational_only":true,"elapsed_seconds":99}')
+
+    assert validate_registration_approval(tmp_path) == first == approved
+
+
 def test_approve_registration_run_rejects_timestamp_without_timezone(
     tmp_path: Path,
 ) -> None:

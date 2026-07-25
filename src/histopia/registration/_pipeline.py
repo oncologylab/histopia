@@ -55,6 +55,7 @@ from histopia.registration._orientation import (
     load_orientation_overrides,
     quarter_turn_matrix,
 )
+from histopia.registration._performance import RegistrationPerformance
 from histopia.registration._preprocessing_cache import (
     load_or_create_group_masks,
     load_or_create_independent_mask,
@@ -171,8 +172,50 @@ class RegistrationResult:
 
 
 def register_sections(config: RegistrationConfig) -> RegistrationResult:
+    """Run registration and record observational stage performance."""
+
+    config.output_dir.mkdir(parents=True, exist_ok=True)
+    performance = RegistrationPerformance(
+        config.output_dir,
+        controls={
+            "thumbnail_workers": config.thumbnail_workers,
+            "mask_workers": config.mask_workers,
+            "ordering_workers": config.ordering_workers,
+            "preprocessing_cache": config.preprocessing_cache,
+            "max_processed_image_dim_px": config.max_processed_image_dim_px,
+            "rigid_method": config.rigid_method,
+            "align_strategy": config.align_strategy,
+            "section_order_strategy": config.section_order_strategy,
+            "non_rigid_enabled": config.non_rigid_refinement.enabled,
+            "write_processed_images": config.write_processed_images,
+            "write_warped_images": config.write_warped_images,
+        },
+    )
+    try:
+        return _register_sections(config, performance)
+    except RegistrationApprovalRequired as exc:
+        try:
+            review_artifact = str(exc.review_path.relative_to(config.output_dir))
+        except ValueError:
+            review_artifact = exc.review_path.name
+        performance.review_required(
+            exc.stage,
+            review_artifact,
+            pending_slide_count=len(exc.pending_slides),
+        )
+        raise
+    except BaseException as exc:
+        performance.fail(exc)
+        raise
+
+
+def _register_sections(
+    config: RegistrationConfig,
+    performance: RegistrationPerformance,
+) -> RegistrationResult:
     """Run rigid thumbnail registration for a serial-section image folder."""
 
+    performance.start_stage("slide_discovery")
     slide_paths = (
         validate_slide_selection(config.input_slides, wsi_only=config.wsi_only)
         if config.input_slides
@@ -185,7 +228,7 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
 
     if config.section_order_strategy != "anchored_similarity":
         slide_paths = _apply_section_order(slide_paths, config.section_order_path)
-    config.output_dir.mkdir(parents=True, exist_ok=True)
+    performance.update(slide_count=len(slide_paths))
     processed_dir = config.output_dir / "processed"
     qc_dir = config.output_dir / "qc"
     mask_candidate_dir = qc_dir / "mask_candidates"
@@ -198,6 +241,7 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
         if config.preprocessing_cache
         else None
     )
+    performance.start_stage("thumbnail_load")
     thumbnails, geometries = _load_registration_thumbnails(
         slide_paths,
         config,
@@ -215,6 +259,7 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
     )
     artifact_manifest = _load_mask_artifact_manifest(artifact_manifest_path)
 
+    performance.start_stage("mask_preparation")
     if config.automatic_mask_snapshot_path is not None:
         masks = _load_automatic_mask_snapshot(
             config.automatic_mask_snapshot_path,
@@ -301,6 +346,7 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
     if artifact_manifest_path is not None:
         _write_mask_artifact_manifest(artifact_manifest_path, artifact_manifest)
 
+    performance.start_stage("mask_review")
     write_mask_review(review_path, review_entries)
     invalid_masks = [path.name for path in slide_paths if not masks[path].accepted]
     unapproved_masks = [
@@ -316,6 +362,7 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
             pending_slides=tuple(unapproved_masks),
         )
 
+    performance.start_stage("orientation_and_crop")
     orientation_turns = load_orientation_overrides(
         config.section_orientation_path,
         tuple(path.name for path in slide_paths),
@@ -342,6 +389,7 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
         )
         for path in slide_paths
     }
+    performance.start_stage("section_ordering")
     prepared_features: dict[Path, PreparedRigidFeatures] | None = None
     if config.section_order_strategy == "similarity":
         prepared_features = _prepare_crop_features(slide_paths, crops, config)
@@ -423,6 +471,7 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
         slide_paths = tuple(path_by_name[name] for name in proposal.slides)
     if prepared_features is None:
         prepared_features = _prepare_crop_features(slide_paths, crops, config)
+    performance.start_stage("rigid_alignment")
     if config.reference_slide is not None or config.reference_policy == "explicit":
         reference_path = _select_reference(slide_paths, config.reference_slide)
     else:
@@ -450,6 +499,7 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
         config.affine_override_path,
     )
 
+    performance.start_stage("refinement_and_metrics")
     slides: list[SlideRegistration] = []
     for path in slide_paths:
         if path == reference_path:
@@ -566,12 +616,23 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
         slides=tuple(slides),
         warnings=tuple(warnings),
     )
+    performance.start_stage("review_rendering")
     if config.write_processed_images:
         _write_primary_review_panels(result, thumbnails, geometries, qc_dir / "review")
+    performance.start_stage(
+        "full_resolution_warp",
+        details={"enabled": config.write_warped_images},
+    )
     if config.write_warped_images:
         _write_full_resolution_warps(result, thumbnails, geometries, config)
+    performance.start_stage("result_write")
     result.write_json()
     _write_validation_report(result)
+    performance.complete(
+        reference_slide=reference_path.name,
+        warning_count=len(warnings),
+        registered_slide_count=len(slides),
+    )
     return result
 
 

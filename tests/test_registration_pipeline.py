@@ -16,6 +16,10 @@ from histopia.registration import (
 )
 from histopia.registration._errors import RegistrationApprovalRequired
 from histopia.registration._masking import TissueMaskResult
+from histopia.registration._performance import (
+    PERFORMANCE_FILENAME,
+    load_performance_report,
+)
 from histopia.registration._pipeline import (
     _create_tissue_masks,
     _crop_to_mask,
@@ -58,6 +62,12 @@ def test_register_sections_writes_thumbnail_result(tmp_path: Path) -> None:
     assert payload["slides"][1]["alignment_metrics"]["dice"] > 0.9
     assert (output_dir / "qc" / "[#001] fixed.mask_overlay.png").exists()
     assert (output_dir / "validation_report.md").exists()
+    performance = load_performance_report(output_dir / PERFORMANCE_FILENAME)
+    assert performance["status"] == "completed"
+    assert performance["slide_count"] == 2
+    assert performance["registered_slide_count"] == 2
+    assert performance["controls"]["thumbnail_workers"] == 1
+    assert performance["stages"]["result_write"]["status"] == "completed"
 
 
 def test_strict_registration_advances_through_exact_review_stages(
@@ -88,6 +98,10 @@ def test_strict_registration_advances_through_exact_review_stages(
         register_sections(config)
     assert mask_gate.value.stage == "masks"
     assert len(mask_gate.value.pending_slides) == 3
+    mask_performance = load_performance_report(output_dir / PERFORMANCE_FILENAME)
+    assert mask_performance["status"] == "review_required"
+    assert mask_performance["review_stage"] == "masks"
+    assert mask_performance["pending_slide_count"] == 3
     approve_mask_review(
         output_dir,
         reviewer="Test Reviewer",
@@ -97,6 +111,10 @@ def test_strict_registration_advances_through_exact_review_stages(
     with pytest.raises(RegistrationApprovalRequired) as order_gate:
         register_sections(config)
     assert order_gate.value.stage == "order"
+    order_performance = load_performance_report(output_dir / PERFORMANCE_FILENAME)
+    assert order_performance["status"] == "review_required"
+    assert order_performance["review_stage"] == "order"
+    assert order_performance["pending_slide_count"] == 0
     order_payload = json.loads((output_dir / "section_order_review.json").read_text())
     assert order_payload["slides"][0]["slide"] == "[#001] section.png"
     assert order_payload["slides"][0]["fixed"] is True
@@ -116,6 +134,28 @@ def test_strict_registration_advances_through_exact_review_stages(
     assert json.loads((output_dir / "section_order_review.json").read_text())[
         "approved"
     ]
+    assert load_performance_report(output_dir / PERFORMANCE_FILENAME)["status"] == (
+        "completed"
+    )
+
+
+def test_registration_failure_is_observationally_recorded(tmp_path: Path) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+
+    with pytest.raises(FileNotFoundError, match="no registration input slides"):
+        register_sections(
+            RegistrationConfig(
+                input_dir=input_dir,
+                output_dir=output_dir,
+            )
+        )
+
+    performance = load_performance_report(output_dir / PERFORMANCE_FILENAME)
+    assert performance["status"] == "failed"
+    assert performance["failure_type"] == "FileNotFoundError"
+    assert performance["stages"]["slide_discovery"]["status"] == "failed"
 
 
 def test_mask_artifact_manifest_requires_exact_complete_bundle(
