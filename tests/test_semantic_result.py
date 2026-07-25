@@ -51,6 +51,14 @@ def test_write_atlas_result_is_review_gated_and_keeps_per_slide_grids(
     assert payload["selected_k"] == 2
     assert payload["schema_version"] == 3
     assert payload["feature_normalization"] == "patch_l2_v2"
+    assert payload["fit_config"] == {
+        "algorithm": "global-semantic-atlas",
+        "algorithm_version": 1,
+        "requested_pca_components": 64,
+        "balanced_patch_cap": 4096,
+        "seed": 0,
+        "max_cross_section_distance_um": 112.0,
+    }
     assert payload["correspondence"]["geometry_score_weight"] == 0.65
     assert payload["topology_pairs"] == []
     assert payload["slides"][0]["labels"]["2"].endswith("001.npz")

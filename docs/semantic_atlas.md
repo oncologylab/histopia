@@ -45,6 +45,12 @@ documented ranges. Cluster counts are never silently rounded.
 `cache-model` requires prior acceptance of the upstream gated model terms and
 authenticated Hugging Face access. Subsequent extraction defaults to local-only
 model loading. `histopia-semantic run` combines extraction and fitting.
+Both `fit` and `run` reuse an existing atlas only after validating every result
+artifact digest and matching content-sealed features, slide order, clustering,
+PCA, sampling, topology, dependency versions, native thread count, and the
+semantic algorithm revision. Historical unsealed results are readable but are
+never eligible for fit reuse. Use `--overwrite-fit` when an intentional
+recomputation is required.
 
 Set `device = "auto"` to prefer CUDA, then Apple MPS, then CPU. Explicit
 `"cuda"`, `"cuda:N"`, `"mps"`, and `"cpu"` values fail clearly when the
@@ -63,6 +69,8 @@ histopia-semantic doctor --device cuda:0
 histopia-semantic extract --config semantic-atlas.toml --device cuda:0 \
   --batch-size 128 --patch-workers 4 --vips-threads 8
 histopia-semantic fit --config semantic-atlas.toml --fit-threads 4
+histopia-semantic fit --config semantic-atlas.toml --fit-threads 4 \
+  --overwrite-fit
 ```
 
 Device and batch-size overrides are included in feature provenance and cache
@@ -118,7 +126,9 @@ batch correction, global clustering, K selection, and topology
 regularization. It defaults to four and is recorded in sealed result runtime
 provenance. Keeping this value explicit avoids machine-dependent
 oversubscription and makes fitting performance reproducible without changing
-feature artifacts.
+feature artifacts. The observational `semantic_performance.json` report records
+`cache_hit`, the validation time, and why a candidate result was not reusable;
+an exact hit reports zero atlas-fit and artifact-write time.
 
 On a validated 23-section atlas with 76,499 patches, one, four, eight, 16, and
 32 fit threads took 95.7, 71.7, 73.3, 73.6, and 106.2 seconds, respectively.
@@ -126,6 +136,13 @@ The four- and 32-thread fits selected the same K, produced exactly identical
 labels for every K from 5 through 15, and retained every adjacent-section
 topology pair exactly. Four threads reduced runtime by 33% relative to the
 machine's unbounded 32-thread native pools.
+
+With the same 23 sections and 76,499 patches stored as content-sealed
+features, an isolated cold fit took 75.82 seconds and 2.30 GiB peak RSS. A
+second process validated and reused the exact result in 1.88 seconds with
+301 MiB peak RSS: 40.3 times faster with about 87% lower peak memory. Of the
+1.51 seconds measured inside Histopia, feature loading used 1.44 seconds and
+validation of the result plus every referenced artifact used 0.07 seconds.
 
 A separate cold-process end-to-end refit, including artifact writing, fell
 from 109.0 to 78.4 seconds after loading native estimator runtimes before

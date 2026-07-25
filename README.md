@@ -71,13 +71,18 @@ scientific configuration:
 histopia-semantic extract --config atlas.toml --device cuda:0 \
   --batch-size 128 --patch-workers 4 --vips-threads 8
 histopia-semantic fit --config atlas.toml --fit-threads 4
+# Force a new fit after benchmarking or algorithm development:
+histopia-semantic fit --config atlas.toml --fit-threads 4 --overwrite-fit
 ```
 
 Registration exposes bounded thumbnail, mask, ordering, QC, and native libvips
 worker controls; semantic extraction and fitting expose device and thread
 controls. Registration ordering and viewer assets use exact, checksummed
-caches. Any change to reviewed masks, geometry, orientation, transforms,
-semantic labels, or encoding settings invalidates the affected cache.
+caches. Semantic fitting reuses only a fully sealed result whose feature
+contents, slide order, scientific controls, algorithm revision, and numerical
+runtime all match. Any change to reviewed masks, geometry, orientation,
+transforms, semantic labels, or encoding settings invalidates the affected
+cache.
 
 ## Development
 

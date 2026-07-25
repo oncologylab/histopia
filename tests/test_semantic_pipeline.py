@@ -9,7 +9,9 @@ import pytest
 
 from histopia.semantic import PatchFeatures, SemanticAtlasConfig
 from histopia.semantic import _pipeline as pipeline
+from histopia.semantic._atlas import AtlasClustering, JointAtlas
 from histopia.semantic._extract import feature_artifact_path
+from histopia.semantic._result import write_atlas_result
 
 
 def _config(tmp_path: Path) -> SemanticAtlasConfig:
@@ -138,6 +140,10 @@ def test_fit_uses_preflight_order_and_ignores_stale_extra_features(
         assert args[0] is atlas
         assert kwargs["primary_clusters"] == 2
         assert kwargs["fit_threads"] == 4
+        assert kwargs["requested_pca_components"] == 2
+        assert kwargs["balanced_patch_cap"] == 4096
+        assert kwargs["seed"] == 0
+        assert kwargs["max_cross_section_distance_um"] == 112.0
         result.write_text(json.dumps({"fingerprint": "result-fingerprint"}))
         return result
 
@@ -235,3 +241,187 @@ def test_fit_rejects_stale_feature_provenance_before_global_computation(
 
     with pytest.raises(ValueError, match="preflight_fingerprint"):
         pipeline.fit_saved_features(config)
+
+
+def test_fit_reuses_only_exact_content_sealed_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    slides = _write_preflight(config)
+    _save_expected_features(config, slides)
+    sections = pipeline._load_saved_feature_sections(config)
+    atlas = _two_section_atlas(sections)
+    result = write_atlas_result(
+        atlas,
+        sections,
+        config.output_dir,
+        primary_clusters=2,
+        fit_threads=config.fit_threads,
+        requested_pca_components=config.pca_components,
+        balanced_patch_cap=config.balanced_patch_cap,
+        seed=config.seed,
+        max_cross_section_distance_um=config.max_cross_section_distance_um,
+    )
+    original = result.read_bytes()
+    monkeypatch.setattr(
+        pipeline,
+        "fit_joint_atlas",
+        lambda *args, **kwargs: pytest.fail("exact result should be reused"),
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "_sklearn_estimators",
+        lambda: pytest.fail("fit runtime should not be loaded"),
+    )
+
+    reused = pipeline.fit_or_reuse_saved_features(config)
+
+    assert reused == result
+    assert result.read_bytes() == original
+    performance = json.loads(
+        (config.output_dir / "semantic_performance.json").read_text()
+    )["fit"]
+    assert performance["status"] == "completed"
+    assert performance["cache_requested"] is True
+    assert performance["cache_hit"] is True
+    assert performance["cache_status"] == "exact-result-reused"
+    assert performance["atlas_fit_seconds"] == 0.0
+    assert performance["artifact_write_seconds"] == 0.0
+
+
+def test_result_reuse_rejects_changed_science_or_feature_content(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    slides = _write_preflight(config)
+    _save_expected_features(config, slides)
+    sections = pipeline._load_saved_feature_sections(config)
+    write_atlas_result(
+        _two_section_atlas(sections),
+        sections,
+        config.output_dir,
+        primary_clusters=2,
+        fit_threads=config.fit_threads,
+        requested_pca_components=config.pca_components,
+        balanced_patch_cap=config.balanced_patch_cap,
+        seed=config.seed,
+        max_cross_section_distance_um=config.max_cross_section_distance_um,
+    )
+
+    changed_config = SemanticAtlasConfig(
+        registration_run=config.registration_run,
+        output_dir=config.output_dir,
+        cluster_min=2,
+        cluster_max=2,
+        pca_components=2,
+        max_cross_section_distance_um=100.0,
+    )
+    cached, status = pipeline._matching_saved_atlas_result(
+        changed_config,
+        sections,
+    )
+    assert cached is None
+    assert status == "fit-config-differs"
+
+    replacement = _feature(slides[0])
+    replacement = PatchFeatures(
+        slide_id=replacement.slide_id,
+        features=np.full((2, 3), 2.0, dtype=np.float32),
+        grid_rc=replacement.grid_rc,
+        native_xy=replacement.native_xy,
+        reference_um_xy=replacement.reference_um_xy,
+        tissue_fraction=replacement.tissue_fraction,
+        grid_shape=replacement.grid_shape,
+        patch_size_px=replacement.patch_size_px,
+        analysis_mpp=replacement.analysis_mpp,
+        provenance=replacement.provenance,
+    )
+    replacement.save(
+        feature_artifact_path(
+            config.output_dir / "features",
+            1,
+            str(slides[0]["slide_name"]),
+        )
+    )
+    changed_sections = pipeline._load_saved_feature_sections(config)
+    cached, status = pipeline._matching_saved_atlas_result(
+        config,
+        changed_sections,
+    )
+    assert cached is None
+    assert status == "feature-identity-differs"
+
+
+def test_result_reuse_refuses_legacy_unsealed_feature_identity(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    slides = _write_preflight(config)
+    _save_expected_features(config, slides)
+    loaded = pipeline._load_saved_feature_sections(config)
+    unsealed = tuple(_feature(slide) for slide in slides)
+    write_atlas_result(
+        _two_section_atlas(unsealed),
+        unsealed,
+        config.output_dir,
+        primary_clusters=2,
+        fit_threads=config.fit_threads,
+        requested_pca_components=config.pca_components,
+        balanced_patch_cap=config.balanced_patch_cap,
+        seed=config.seed,
+        max_cross_section_distance_um=config.max_cross_section_distance_um,
+    )
+
+    cached, status = pipeline._matching_saved_atlas_result(config, loaded)
+
+    assert cached is None
+    assert status == "feature-identity-differs"
+
+
+def test_run_forwards_explicit_fit_overwrite(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    result = config.output_dir / "semantic_result.json"
+    captured: list[bool] = []
+    monkeypatch.setattr(
+        pipeline,
+        "extract_registration_features",
+        lambda *args, **kwargs: (),
+    )
+
+    def capture_fit(
+        received: SemanticAtlasConfig,
+        *,
+        overwrite: bool,
+    ) -> Path:
+        assert received is config
+        captured.append(overwrite)
+        return result
+
+    monkeypatch.setattr(pipeline, "fit_or_reuse_saved_features", capture_fit)
+
+    output = pipeline.run_semantic_atlas(
+        config,
+        object(),
+        overwrite_fit=True,
+    )
+
+    assert output == result
+    assert captured == [True]
+
+
+def _two_section_atlas(
+    sections: tuple[PatchFeatures, ...],
+) -> JointAtlas:
+    labels = np.array([0, 1, 1, 0], dtype=np.int32)
+    return JointAtlas(
+        slide_ids=tuple(section.slide_id for section in sections),
+        section_offsets=np.array([0, 2, 4]),
+        pca_components=2,
+        pca_mean=np.zeros(3, dtype=np.float32),
+        pca_basis=np.zeros((2, 3), dtype=np.float32),
+        clusterings={2: AtlasClustering(2, labels, labels, np.zeros((2, 2)), None)},
+    )

@@ -54,6 +54,11 @@ def _add_fit_arguments(parser: argparse.ArgumentParser) -> None:
         type=_positive_int,
         help="Override native BLAS/OpenMP threads used for global atlas fitting.",
     )
+    parser.add_argument(
+        "--overwrite-fit",
+        action="store_true",
+        help="Recompute the atlas even when an exact sealed result is reusable.",
+    )
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -161,9 +166,12 @@ def main(argv: list[str] | None = None) -> int:
 
         preflight = preflight_registration(config.registration_run)
     if args.command == "fit":
-        from histopia.semantic._pipeline import fit_saved_features
+        from histopia.semantic._pipeline import fit_or_reuse_saved_features
 
-        _, result = fit_saved_features(config)
+        result = fit_or_reuse_saved_features(
+            config,
+            overwrite=args.overwrite_fit,
+        )
     else:
         if config.model_cache_dir is None:
             parser.error("model_cache_dir is required for UNI2-h extraction")
@@ -192,6 +200,7 @@ def main(argv: list[str] | None = None) -> int:
             encoder,
             preflight=preflight,
             overwrite_features=args.overwrite_features,
+            overwrite_fit=args.overwrite_fit,
             progress=print,
         )
     print(result)

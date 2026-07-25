@@ -5,11 +5,13 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Callable
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 from histopia.semantic._atlas import JointAtlas, _sklearn_estimators, fit_joint_atlas
 from histopia.semantic._config import SemanticAtlasConfig
+from histopia.semantic._correspondence import CorrespondenceConfig
 from histopia.semantic._extract import (
     extract_registration_features,
     feature_artifact_path,
@@ -23,18 +25,47 @@ from histopia.semantic._performance import (
 from histopia.semantic._preflight import SemanticPreflight
 from histopia.semantic._result import (
     _common_feature_provenance,
+    _fit_config_payload,
+    _package_version,
+    validate_semantic_result,
     write_atlas_result,
 )
 
 
 def fit_saved_features(config: SemanticAtlasConfig) -> tuple[JointAtlas, Path]:
-    """Fit and save an atlas from compact feature artifacts in section order."""
+    """Fit and save a new atlas from compact features in section order."""
+
+    atlas, result = _fit_saved_features(config, reuse_existing=False)
+    if atlas is None:  # pragma: no cover - internal contract guard
+        raise RuntimeError("semantic atlas fit unexpectedly returned no atlas")
+    return atlas, result
+
+
+def fit_or_reuse_saved_features(
+    config: SemanticAtlasConfig,
+    *,
+    overwrite: bool = False,
+) -> Path:
+    """Return an exact cached result or fit one when its identity differs."""
+
+    _, result = _fit_saved_features(config, reuse_existing=not overwrite)
+    return result
+
+
+def _fit_saved_features(
+    config: SemanticAtlasConfig,
+    *,
+    reuse_existing: bool,
+) -> tuple[JointAtlas | None, Path]:
+    """Run the measured fit stage with optional strict result reuse."""
 
     fit_started = time.perf_counter()
     performance: dict[str, object] = {
         "status": "running",
         "started_at": utc_timestamp(),
         "fit_threads": config.fit_threads,
+        "cache_requested": reuse_existing,
+        "cache_hit": False,
         "elapsed_seconds": 0.0,
     }
 
@@ -43,16 +74,6 @@ def fit_saved_features(config: SemanticAtlasConfig) -> tuple[JointAtlas, Path]:
         write_performance_stage(config.output_dir, "fit", performance)
 
     checkpoint()
-    try:
-        from threadpoolctl import threadpool_limits
-    except ImportError as exc:
-        performance["status"] = "failed"
-        performance["failure_type"] = type(exc).__name__
-        performance["completed_at"] = utc_timestamp()
-        checkpoint()
-        raise RuntimeError(
-            "joint semantic atlas fitting requires the 'semantic' extra"
-        ) from exc
     try:
         stage_started = time.perf_counter()
         sections = _load_saved_feature_sections(config)
@@ -64,6 +85,32 @@ def fit_saved_features(config: SemanticAtlasConfig) -> tuple[JointAtlas, Path]:
         provenance = sections[0].provenance or {}
         if isinstance(provenance.get("preflight_fingerprint"), str):
             performance["preflight_fingerprint"] = provenance["preflight_fingerprint"]
+
+        if reuse_existing:
+            stage_started = time.perf_counter()
+            cached, cache_status = _matching_saved_atlas_result(config, sections)
+            performance["cache_validation_seconds"] = elapsed_seconds(stage_started)
+            performance["cache_status"] = cache_status
+            if cached is not None:
+                performance["cache_hit"] = True
+                performance["atlas_fit_seconds"] = 0.0
+                performance["artifact_write_seconds"] = 0.0
+                performance["selected_k"] = cached["selected_k"]
+                performance["cluster_counts"] = list(config.cluster_counts)
+                performance["semantic_result_fingerprint"] = cached["fingerprint"]
+                performance["status"] = "completed"
+                performance["completed_at"] = utc_timestamp()
+                checkpoint()
+                return None, config.output_dir / "semantic_result.json"
+        else:
+            performance["cache_status"] = "disabled"
+
+        try:
+            from threadpoolctl import threadpool_limits
+        except ImportError as exc:
+            raise RuntimeError(
+                "joint semantic atlas fitting requires the 'semantic' extra"
+            ) from exc
 
         stage_started = time.perf_counter()
         # Load BLAS/OpenMP-backed estimators before threadpoolctl snapshots runtimes.
@@ -90,6 +137,10 @@ def fit_saved_features(config: SemanticAtlasConfig) -> tuple[JointAtlas, Path]:
             config.output_dir,
             primary_clusters=config.selected_clusters or atlas.selected_k,
             fit_threads=config.fit_threads,
+            requested_pca_components=config.pca_components,
+            balanced_patch_cap=config.balanced_patch_cap,
+            seed=config.seed,
+            max_cross_section_distance_um=config.max_cross_section_distance_um,
         )
         performance["artifact_write_seconds"] = elapsed_seconds(stage_started)
         performance["selected_k"] = atlas.selected_k
@@ -119,6 +170,7 @@ def run_semantic_atlas(
     *,
     preflight: SemanticPreflight | None = None,
     overwrite_features: bool = False,
+    overwrite_fit: bool = False,
     progress: Callable[[str], None] | None = None,
 ) -> Path:
     """Extract compact features, fit the global atlas, and request review."""
@@ -130,8 +182,102 @@ def run_semantic_atlas(
         overwrite=overwrite_features,
         progress=progress,
     )
-    _, result = fit_saved_features(config)
-    return result
+    return fit_or_reuse_saved_features(config, overwrite=overwrite_fit)
+
+
+def _matching_saved_atlas_result(
+    config: SemanticAtlasConfig,
+    sections: tuple[PatchFeatures, ...],
+) -> tuple[dict[str, object] | None, str]:
+    """Validate whether the current sealed result is exact for this fit."""
+
+    provenance = _common_feature_provenance(sections, config.output_dir)
+    if provenance is None or provenance.get("feature_integrity") != "content-sha256-v1":
+        return None, "features-not-content-sealed"
+    try:
+        payload = validate_semantic_result(config.output_dir)
+    except FileNotFoundError:
+        return None, "result-missing"
+    except (OSError, TypeError, ValueError):
+        return None, "result-invalid"
+
+    expected_fit_config = _fit_config_payload(
+        requested_pca_components=config.pca_components,
+        balanced_patch_cap=config.balanced_patch_cap,
+        seed=config.seed,
+        max_cross_section_distance_um=config.max_cross_section_distance_um,
+    )
+    expected_runtime = {
+        package: _package_version(package)
+        for package in ("numpy", "scikit-learn", "scipy", "threadpoolctl")
+    }
+    expected_runtime["native_threads"] = config.fit_threads
+    expected_correspondence = json.loads(
+        json.dumps(
+            asdict(
+                CorrespondenceConfig(
+                    patch_width_um=config.patch_size_px * config.analysis_mpp
+                )
+            )
+        )
+    )
+    expected_components = min(
+        config.pca_components,
+        sections[0].features.shape[1],
+        sum(
+            min(len(section.features), config.balanced_patch_cap)
+            for section in sections
+        ),
+    )
+    slide_rows = payload.get("slides")
+    slide_ids = (
+        [row.get("id") for row in slide_rows]
+        if isinstance(slide_rows, list)
+        and all(isinstance(row, dict) for row in slide_rows)
+        else None
+    )
+    selected_k = payload.get("selected_k")
+    expected_primary = config.selected_clusters or selected_k
+    checks = (
+        (
+            payload.get("feature_provenance") == provenance,
+            "feature-identity-differs",
+        ),
+        (payload.get("fit_config") == expected_fit_config, "fit-config-differs"),
+        (payload.get("fit_runtime") == expected_runtime, "fit-runtime-differs"),
+        (
+            payload.get("correspondence") == expected_correspondence,
+            "correspondence-config-differs",
+        ),
+        (
+            payload.get("cluster_counts") == list(config.cluster_counts),
+            "cluster-counts-differ",
+        ),
+        (
+            payload.get("pca_components") == expected_components,
+            "pca-components-differ",
+        ),
+        (
+            payload.get("feature_normalization") == "patch_l2_v2",
+            "feature-normalization-differs",
+        ),
+        (
+            isinstance(selected_k, int) and selected_k in config.cluster_counts,
+            "selected-cluster-count-invalid",
+        ),
+        (
+            payload.get("primary_clusters") == expected_primary,
+            "primary-cluster-count-differs",
+        ),
+        (
+            slide_ids == [section.slide_id for section in sections],
+            "slide-order-differs",
+        ),
+    )
+    for matches, status in checks:
+        if not matches:
+            return None, status
+    return payload, "exact-result-reused"
 
 
 def _load_saved_feature_sections(

@@ -62,10 +62,18 @@ def test_compute_overrides_are_validated_without_mutating_source(
 
 def test_fit_cli_accepts_fit_thread_override_only() -> None:
     args = _build_parser().parse_args(
-        ["fit", "--config", "atlas.toml", "--fit-threads", "4"]
+        [
+            "fit",
+            "--config",
+            "atlas.toml",
+            "--fit-threads",
+            "4",
+            "--overwrite-fit",
+        ]
     )
 
     assert args.fit_threads == 4
+    assert args.overwrite_fit is True
     assert not hasattr(args, "device")
 
 
@@ -84,6 +92,7 @@ def test_run_cli_accepts_extraction_and_fit_overrides() -> None:
 
     assert args.batch_size == 128
     assert args.fit_threads == 6
+    assert args.overwrite_fit is False
 
 
 def test_cli_rejects_nonpositive_compute_override() -> None:

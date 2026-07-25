@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 
 from histopia._atomic import write_binary_atomic, write_json_atomic
-from histopia._validation import positive_int
+from histopia._validation import nonnegative_int, positive_float, positive_int
 from histopia.semantic import _result_validation
 from histopia.semantic._atlas import JointAtlas
 from histopia.semantic._correspondence import CorrespondenceConfig
@@ -19,6 +19,7 @@ from histopia.semantic._features import PatchFeatures
 _seal_semantic_result = _result_validation._seal_semantic_result
 validate_semantic_result = _result_validation.validate_semantic_result
 
+SEMANTIC_FIT_ALGORITHM_VERSION = 1
 SEMANTIC_PALETTE = (
     "#d73027",
     "#1a9850",
@@ -45,11 +46,25 @@ def write_atlas_result(
     *,
     primary_clusters: int,
     fit_threads: int = 4,
+    requested_pca_components: int = 64,
+    balanced_patch_cap: int = 4096,
+    seed: int = 0,
+    max_cross_section_distance_um: float = 112.0,
 ) -> Path:
     """Write sealed atlas artifacts and fingerprint-bound review state."""
 
     output_dir = Path(output_dir)
     fit_threads = positive_int("fit_threads", fit_threads)
+    requested_pca_components = positive_int(
+        "requested_pca_components",
+        requested_pca_components,
+    )
+    balanced_patch_cap = positive_int("balanced_patch_cap", balanced_patch_cap)
+    seed = nonnegative_int("seed", seed)
+    max_cross_section_distance_um = positive_float(
+        "max_cross_section_distance_um",
+        max_cross_section_distance_um,
+    )
     common_provenance = _common_feature_provenance(sections, output_dir)
     patch_widths = {
         float(section.patch_size_px * section.analysis_mpp) for section in sections
@@ -158,6 +173,12 @@ def write_atlas_result(
     correspondence = asdict(
         CorrespondenceConfig(patch_width_um=next(iter(patch_widths)))
     )
+    fit_config = _fit_config_payload(
+        requested_pca_components=requested_pca_components,
+        balanced_patch_cap=balanced_patch_cap,
+        seed=seed,
+        max_cross_section_distance_um=max_cross_section_distance_um,
+    )
     core = {
         "schema_version": 3,
         "primary_clusters": primary_clusters,
@@ -165,6 +186,7 @@ def write_atlas_result(
         "pca_components": atlas.pca_components,
         "feature_normalization": "patch_l2_v2",
         "feature_provenance": common_provenance,
+        "fit_config": fit_config,
         "fit_runtime": {
             **{
                 package: _package_version(package)
@@ -226,6 +248,23 @@ def _package_version(package: str) -> str:
         return version(package)
     except PackageNotFoundError:
         return "unavailable"
+
+
+def _fit_config_payload(
+    *,
+    requested_pca_components: int,
+    balanced_patch_cap: int,
+    seed: int,
+    max_cross_section_distance_um: float,
+) -> dict[str, object]:
+    return {
+        "algorithm": "global-semantic-atlas",
+        "algorithm_version": SEMANTIC_FIT_ALGORITHM_VERSION,
+        "requested_pca_components": requested_pca_components,
+        "balanced_patch_cap": balanced_patch_cap,
+        "seed": seed,
+        "max_cross_section_distance_um": float(max_cross_section_distance_um),
+    }
 
 
 def _common_feature_provenance(

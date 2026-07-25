@@ -12,6 +12,10 @@ _PUBLIC_IMPORTS = {
         "approve_semantic_result",
     ),
     "fit_saved_features": ("histopia.semantic._pipeline", "fit_saved_features"),
+    "fit_or_reuse_saved_features": (
+        "histopia.semantic._pipeline",
+        "fit_or_reuse_saved_features",
+    ),
     "preflight_registration": (
         "histopia.semantic._preflight",
         "preflight_registration",
@@ -47,6 +51,7 @@ __all__ = [
     "SemanticPreflight",
     "SemanticAtlasConfig",
     "approve_semantic_result",
+    "fit_or_reuse_saved_features",
     "fit_saved_features",
     "preflight_registration",
     "run_semantic_atlas",
