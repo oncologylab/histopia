@@ -352,6 +352,24 @@ of worker count. On a 51-slide four-cohort review, an eight-worker cold build
 fell from 25.22 to 12.75 seconds and an unchanged warm rebuild fell from 16.32
 to 1.12 seconds; every mask-review WebP remained byte-identical.
 
+Combine several staged runs under one fixed-viewport review endpoint:
+
+```bash
+histopia-visualize registration-cohort-review candidate-review/ \
+  --run cohort-a=/path/to/cohort-a/run \
+  --run cohort-b=/path/to/cohort-b/run \
+  --workers 4
+```
+
+The outer portal reports each cohort's slide count and per-stage approval
+state. Generation rejects a cohort when its prepared mask, order, or alignment
+stages disagree on slide count. Existing stage arrays remain in the manifest
+for compatibility, while `stage_summary` records the validated count and
+approval state. On an eight-cohort, 131-section review, a four-worker cold
+build took 50.84 seconds at 541 MiB peak RSS. The exact warm build took 2.53
+seconds at 177 MiB, reused all 131 mask assets, and preserved all 387
+non-observational files byte-for-byte.
+
 For a strict production run, keep the review manifests in the registration
 run directory and advance the workflow explicitly:
 

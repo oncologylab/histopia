@@ -100,15 +100,44 @@ def build_registration_cohort_review(
             workers=workers,
         )
         manifest = json.loads((index.parent / "manifest.json").read_text())
+        stages: list[str] = []
+        stage_summary: dict[str, dict[str, object]] = {}
+        slide_counts: set[int] = set()
+        for stage in ("mask", "order", "alignment"):
+            row = manifest.get(stage)
+            if row is None:
+                continue
+            if not isinstance(row, dict):
+                raise ValueError(f"{name} {stage} review summary must be an object")
+            approved = row.get("approved")
+            slide_count = row.get("slide_count")
+            if not isinstance(approved, bool):
+                raise ValueError(f"{name} {stage} review approval must be a boolean")
+            if (
+                isinstance(slide_count, bool)
+                or not isinstance(slide_count, int)
+                or slide_count < 1
+            ):
+                raise ValueError(
+                    f"{name} {stage} review slide count must be a positive integer"
+                )
+            stages.append(stage)
+            slide_counts.add(slide_count)
+            stage_summary[stage] = {
+                "approved": approved,
+                "slide_count": slide_count,
+            }
+        if not stages:
+            raise ValueError(f"{name} registration review has no prepared stages")
+        if len(slide_counts) != 1:
+            raise ValueError(f"{name} registration review stage slide counts differ")
         reviews.append(
             {
                 "id": name,
                 "href": f"{name}/index.html",
-                "stages": [
-                    stage
-                    for stage in ("mask", "order", "alignment")
-                    if stage in manifest
-                ],
+                "slide_count": slide_counts.pop(),
+                "stages": stages,
+                "stage_summary": stage_summary,
             }
         )
     manifest = {"schema_version": 1, "reviews": reviews}
@@ -237,14 +266,17 @@ border-bottom:1px solid #ccd1d1;min-width:0}
 header strong{margin-right:12px;white-space:nowrap}
 label,#status{font-size:13px;color:#566573}
 select{min-width:110px;padding:5px 8px;border:1px solid #aeb6bf;background:#fff}
-#status{margin-left:auto;white-space:nowrap}
+#status{min-width:0;margin-left:auto;overflow:hidden;text-overflow:ellipsis;
+white-space:nowrap;text-align:right}
 main,iframe{width:100%;height:100%;min-width:0;min-height:0;border:0}
 @media(max-width:600px){
-  header{padding:0 8px;gap:6px}
-  header strong{font-size:12px;margin-right:2px}
+  body{grid-template-rows:70px minmax(0,1fr)}
+  header{display:grid;grid-template-columns:minmax(0,1fr) 92px;
+    grid-template-rows:30px 24px;padding:4px 8px;gap:4px 8px}
+  header strong{grid-column:1;grid-row:1;font-size:12px;margin-right:0}
   label{display:none}
-  select{min-width:80px}
-  #status{font-size:10px}
+  select{grid-column:2;grid-row:1;width:100%;min-width:0}
+  #status{grid-column:1/3;grid-row:2;margin-left:0;font-size:10px;text-align:left}
 }
 """
 
@@ -264,7 +296,15 @@ function choose(id){
   const row=manifest.reviews.find(item=>item.id===id)||manifest.reviews[0];
   select.value=row.id;
   frame.src=row.href;
-  status.textContent=row.stages.join(" · ");
+  const names={mask:"masks",order:"order",alignment:"registration"};
+  const parts=row.stages.map(stage=>{
+    const summary=row.stage_summary?.[stage];
+    if(!summary)return names[stage]||stage;
+    return `${names[stage]||stage} ${summary.approved?"approved":"review required"}`;
+  });
+  const count=Number.isInteger(row.slide_count)?`${row.slide_count} slides · `:"";
+  status.textContent=count+parts.join(" · ");
+  status.title=status.textContent;
   const url=new URL(location.href);
   url.searchParams.set("cohort",row.id);
   history.replaceState(null,"",url);

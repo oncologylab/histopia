@@ -135,12 +135,19 @@ def test_registration_cohort_review_builds_one_path_free_entrypoint(
     def build(run: Path, destination: Path, *, workers: int) -> Path:
         assert run in runs.values()
         assert workers == 3
+        slide_count = 17 if run == runs["4845"] else 12
         destination.mkdir(parents=True)
         (destination / "manifest.json").write_text(
             json.dumps(
                 {
-                    "mask": {},
-                    "order": {},
+                    "mask": {
+                        "approved": True,
+                        "slide_count": slide_count,
+                    },
+                    "order": {
+                        "approved": False,
+                        "slide_count": slide_count,
+                    },
                 }
             )
         )
@@ -159,8 +166,41 @@ def test_registration_cohort_review_builds_one_path_free_entrypoint(
     assert index == output / "index.html"
     assert [row["id"] for row in manifest["reviews"]] == ["4845", "8471"]
     assert manifest["reviews"][0]["stages"] == ["mask", "order"]
+    assert manifest["reviews"][0]["slide_count"] == 17
+    assert manifest["reviews"][0]["stage_summary"] == {
+        "mask": {"approved": True, "slide_count": 17},
+        "order": {"approved": False, "slide_count": 17},
+    }
     assert str(tmp_path) not in index.read_text()
     assert "overflow:hidden" in (output / "cohort-review.css").read_text()
+    script = (output / "cohort-review.js").read_text()
+    assert "review required" in script
+    assert "status.title" in script
+
+
+def test_registration_cohort_review_rejects_inconsistent_stage_counts(
+    tmp_path: Path, monkeypatch
+) -> None:
+    def build(run: Path, destination: Path, *, workers: int) -> Path:
+        destination.mkdir(parents=True)
+        (destination / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "mask": {"approved": True, "slide_count": 17},
+                    "order": {"approved": False, "slide_count": 16},
+                }
+            )
+        )
+        (destination / "index.html").write_text("<p>review</p>")
+        return destination / "index.html"
+
+    monkeypatch.setattr(_review_portal, "build_registration_review", build)
+
+    with pytest.raises(ValueError, match="stage slide counts differ"):
+        _review_portal.build_registration_cohort_review(
+            {"4845": tmp_path / "run"},
+            tmp_path / "review",
+        )
 
 
 def test_registration_cohort_review_rejects_unsafe_name(tmp_path: Path) -> None:
@@ -169,6 +209,67 @@ def test_registration_cohort_review_rejects_unsafe_name(tmp_path: Path) -> None:
             {"../escape": tmp_path / "run"},
             tmp_path / "review",
         )
+
+
+@pytest.mark.browser
+def test_registration_cohort_review_shows_full_mobile_approval_status(
+    tmp_path: Path, monkeypatch
+) -> None:
+    playwright = pytest.importorskip("playwright.sync_api")
+    runs = {"4845": tmp_path / "run-4845", "8471": tmp_path / "run-8471"}
+
+    def build(run: Path, destination: Path, *, workers: int) -> Path:
+        slide_count = 17 if run == runs["4845"] else 12
+        destination.mkdir(parents=True)
+        (destination / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "mask": {"approved": True, "slide_count": slide_count},
+                    "order": {"approved": False, "slide_count": slide_count},
+                }
+            )
+        )
+        (destination / "index.html").write_text("<p>review</p>")
+        return destination / "index.html"
+
+    monkeypatch.setattr(_review_portal, "build_registration_review", build)
+    index = _review_portal.build_registration_cohort_review(
+        runs,
+        tmp_path / "review",
+    )
+
+    errors: list[str] = []
+    with playwright.sync_playwright() as runtime:
+        browser = runtime.chromium.launch(headless=True)
+        page = browser.new_page(viewport={"width": 390, "height": 844})
+        page.on(
+            "console",
+            lambda message: (
+                errors.append(message.text) if message.type == "error" else None
+            ),
+        )
+        page.on("requestfailed", lambda request: errors.append(request.url))
+        page.goto(f"{index.as_uri()}?cohort=8471", wait_until="load")
+        page.wait_for_function(
+            "() => document.querySelector('#status').textContent.includes('12 slides')"
+        )
+        assert page.locator("#status").inner_text() == (
+            "12 slides · masks approved · order review required"
+        )
+        status_width = page.locator("#status").evaluate(
+            "(element) => [element.clientWidth, element.scrollWidth]"
+        )
+        assert status_width[1] <= status_width[0] + 1
+        dimensions = page.evaluate(
+            """() => ({
+              x: document.documentElement.scrollWidth > innerWidth,
+              y: document.documentElement.scrollHeight > innerHeight,
+            })"""
+        )
+        assert not dimensions["x"]
+        assert not dimensions["y"]
+        browser.close()
+    assert errors == []
 
 
 @pytest.mark.browser
