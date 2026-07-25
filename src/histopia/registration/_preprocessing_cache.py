@@ -20,7 +20,7 @@ from histopia.registration._slides import SlideGeometry
 
 _THUMBNAIL_CACHE_SCHEMA = "histopia-registration-thumbnail-v1"
 _MASK_CACHE_SCHEMA = "histopia-registration-independent-mask-v1"
-_GROUP_MASK_CACHE_SCHEMA = "histopia-registration-group-mask-v2"
+_GROUP_MASK_CACHE_SCHEMA = "histopia-registration-group-mask-v3"
 
 
 def load_or_create_thumbnail(

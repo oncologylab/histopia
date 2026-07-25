@@ -816,6 +816,66 @@ def test_group_consensus_preserves_adjacent_supported_line_fragment() -> None:
     assert refined["target"].mask[line_fragment].all()
 
 
+def test_group_consensus_rejects_detached_low_information_stain() -> None:
+    shape = (300, 400)
+    rows, cols = np.indices(shape)
+    main_tissue = np.zeros(shape, dtype=bool)
+    main_tissue[55:220, 160:320] = True
+    pale_stain = ((rows - 155) / 14) ** 2 + ((cols - 110) / 24) ** 2 <= 1
+    target = main_tissue | pale_stain
+    nonadjacent_tissue = np.zeros(shape, dtype=bool)
+    nonadjacent_tissue[100:230, 40:180] = True
+
+    def result(mask: np.ndarray) -> TissueMaskResult:
+        return TissueMaskResult(mask, "synthetic", {}, True, [])
+
+    results = {
+        "nonadjacent-before": result(nonadjacent_tissue),
+        "adjacent-before": result(main_tissue),
+        "target": result(target),
+        "adjacent-after": result(main_tissue),
+        "nonadjacent-after": result(nonadjacent_tissue),
+    }
+    images: dict[str, np.ndarray] = {}
+    for key, mask_result in results.items():
+        image = np.full((*shape, 3), [238, 236, 235], dtype=np.uint8)
+        image[mask_result.mask] = [190, 140, 120]
+        if key == "target":
+            image[pale_stain] = [230, 226, 226]
+        images[key] = image
+
+    refined = refine_group_tissue_masks(results, images=images)
+
+    assert refined["target"].mask[100:180, 190:270].all()
+    assert not refined["target"].mask[pale_stain].any()
+
+
+def test_group_consensus_preserves_adjacent_supported_pale_fragment() -> None:
+    shape = (300, 400)
+    rows, cols = np.indices(shape)
+    main_tissue = np.zeros(shape, dtype=bool)
+    main_tissue[55:220, 160:320] = True
+    pale_fragment = ((rows - 155) / 14) ** 2 + ((cols - 110) / 24) ** 2 <= 1
+    mask = main_tissue | pale_fragment
+
+    def result() -> TissueMaskResult:
+        return TissueMaskResult(mask.copy(), "synthetic", {}, True, [])
+
+    images: dict[str, np.ndarray] = {}
+    for key in ("first", "target", "third"):
+        image = np.full((*shape, 3), [238, 236, 235], dtype=np.uint8)
+        image[main_tissue] = [190, 140, 120]
+        image[pale_fragment] = [230, 226, 226]
+        images[key] = image
+
+    refined = refine_group_tissue_masks(
+        {"first": result(), "target": result(), "third": result()},
+        images=images,
+    )
+
+    assert refined["target"].mask[pale_fragment].all()
+
+
 def test_group_consensus_preserves_displaced_neighbor_supported_tissue() -> None:
     target = np.zeros((220, 340), dtype=bool)
     target[50:170, 35:155] = True

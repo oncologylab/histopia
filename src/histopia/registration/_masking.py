@@ -204,7 +204,9 @@ def refine_group_tissue_masks(
     other sections. This makes masking section-group aware while allowing
     gradual changes in tissue shape and size. Small detached line-like
     components require support from an adjacent input section because broad
-    cohort overlap is not reliable before registration.
+    cohort overlap is not reliable before registration. Far detached
+    components with weak adjacent support must also contain measurable
+    brightfield color, darkness, or local texture.
     """
 
     if isinstance(workers, bool) or not isinstance(workers, int):
@@ -322,6 +324,10 @@ def refine_group_tissue_masks(
         labels, count = ndi.label(result.mask)
         if count <= 1:
             return result
+        image_evidence = _brightfield_component_evidence(
+            (images or {}).get(key),
+            result.mask.shape,
+        )
         peer_support = _aligned_group_support(
             [normalized[peer] for peer in keys if peer != key],
             normalized[key],
@@ -430,6 +436,20 @@ def refine_group_tissue_masks(
                 and neighbor_support < 0.45
             )
             if small_isolated_line_fragment:
+                continue
+            low_information_fragment = (
+                image_evidence is not None
+                and float(np.mean(image_evidence[0][component])) < 0.08
+                and float(np.mean(image_evidence[1][component])) < 0.014
+                and float(np.mean(image_evidence[2][component])) < 0.05
+            )
+            small_isolated_low_information_fragment = (
+                relative_area < 0.10
+                and fragment_gap > 0.03 * float(np.hypot(*result.mask.shape))
+                and neighbor_support < 0.20
+                and low_information_fragment
+            )
+            if small_isolated_low_information_fragment:
                 continue
             component_support[label] = support
             close_supported_fragment = (
@@ -602,6 +622,29 @@ def _aligned_group_support(
         for peer in peer_masks
     ]
     return np.mean(np.stack(aligned), axis=0)
+
+
+def _brightfield_component_evidence(
+    image: np.ndarray | None,
+    expected_shape: tuple[int, int],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+    """Return color, local-texture, and darkness evidence for one thumbnail."""
+
+    if image is None or image.shape[:2] != expected_shape:
+        return None
+    rgb = _as_rgb_float(image)
+    background = _estimate_background_rgb(rgb)
+    brightness = np.mean(rgb, axis=2)
+    local_mean = ndi.uniform_filter(brightness, size=15, mode="nearest")
+    local_square_mean = ndi.uniform_filter(
+        brightness * brightness,
+        size=15,
+        mode="nearest",
+    )
+    local_std = np.sqrt(np.maximum(local_square_mean - local_mean * local_mean, 0))
+    color_delta = np.linalg.norm(rgb - background, axis=2)
+    dark_delta = float(np.mean(background)) - brightness
+    return color_delta, local_std, dark_delta
 
 
 def _align_peer_mask_translation(
