@@ -31,6 +31,7 @@ pip install "histopia[semantic] @ git+https://github.com/oncologylab/histopia.gi
 pip install "histopia[uni2h] @ git+https://github.com/oncologylab/histopia.git@main"
 pip install "histopia[uni2h-repro] @ git+https://github.com/oncologylab/histopia.git@main"
 pip install "histopia[qupath] @ git+https://github.com/oncologylab/histopia.git@main"
+pip install "histopia[registration-repro,uni2h-repro,qupath] @ git+https://github.com/oncologylab/histopia.git@main"
 ```
 
 ## Workflows
@@ -60,6 +61,7 @@ active machine before starting a long extraction:
 ```bash
 histopia-semantic doctor --device auto
 histopia-semantic doctor --device cuda:0
+histopia-qupath --doctor --workflow full --device auto --require-api 1
 ```
 
 Long extraction jobs can override compute settings without editing their

@@ -21,6 +21,9 @@ histopia-qupath \
   --semantic-run /path/to/semantic-run \
   --clusters 7 \
   --output /path/to/qupath-bundle
+
+# Validate the exact environment used by the extension:
+histopia-qupath --doctor --workflow full --device auto --require-api 1
 ```
 
 `--semantic-geometry regions` is the default. It losslessly coalesces
@@ -75,8 +78,12 @@ The primary **Project workflow** tab supports:
 - semantic device including explicit `cuda:N`, K range, batch-size,
   patch-reader, optional native libvips thread cap, bounded global-fit threads,
   and model-cache controls
-- an in-panel compute check that reports the resolved Python/Torch backend and
-  accelerator before extraction
+- an in-panel environment check that reports the Histopia workflow API,
+  dependency and libvips versions, resolved Python/Torch backend, and
+  accelerator
+- automatic workflow-specific preflight before registration, semantic
+  analysis, and export, so an incomplete selected Python environment fails
+  before analysis begins
 - conservative automatic preprocessing and QC worker counts capped at four,
   with independent editable controls so faster mask preparation does not
   over-parallelize memory-heavier registration diagnostics
@@ -147,7 +154,11 @@ annotation checksums and byte sizes, rejects paths or symlinks outside the
 bundle, and retains import compatibility with schema 1-3. It invokes the
 Python package as a child process; GPU, WSI, and model dependencies remain in
 the Python environment rather than QuPath's JVM. Configure and test that
-environment independently with `histopia-semantic doctor`.
+environment independently with:
+
+```bash
+histopia-qupath --doctor --workflow full --device auto --require-api 1
+```
 
 Source code and release history are maintained separately at
 [`oncologylab/qupath-extension-histopia`](https://github.com/oncologylab/qupath-extension-histopia).
