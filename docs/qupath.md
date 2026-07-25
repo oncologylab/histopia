@@ -71,9 +71,9 @@ The primary **Project workflow** tab supports:
   and model-cache controls
 - an in-panel compute check that reports the resolved Python/Torch backend and
   accelerator before extraction
-- a conservative automatic registration worker count capped at four, including
-  concurrent QC rendering, with an editable override for measured host-specific
-  tuning
+- conservative automatic preprocessing and QC worker counts capped at four,
+  with independent editable controls so faster mask preparation does not
+  over-parallelize memory-heavier registration diagnostics
 - live process output, review-note redaction, and complete process-tree
   cancellation with bounded force escalation
 - one self-contained browser portal that opens at the mask-only preparation
