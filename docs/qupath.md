@@ -69,7 +69,10 @@ The primary **Project workflow** tab supports:
   patch-reader, optional native libvips thread cap, and model-cache controls
 - an in-panel compute check that reports the resolved Python/Torch backend and
   accelerator before extraction
-- live process output and descendant-process cancellation
+- a conservative automatic registration worker count capped at four, with an
+  editable override for measured host-specific tuning
+- live process output, review-note redaction, and complete process-tree
+  cancellation with bounded force escalation
 - one self-contained browser portal that opens at the mask-only preparation
   stage, then adds section order and registered-stack QC when available
 - separate fingerprint-bound mask and order approvals, followed by final
@@ -121,8 +124,8 @@ and import** tab supports:
 
 - loading all available K values from a semantic result, defaulting to the
   atlas-selected K
-- exporting the approval-bound schema-3 bundle and importing the matching open
-  slide
+- exporting approval-bound schema-4 bundles while retaining schema-3
+  compatibility, and importing the matching open slide
 - optionally replacing existing Histopia annotations rather than duplicating
   them
 
