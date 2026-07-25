@@ -8,6 +8,7 @@ from typing import Any
 import numpy as np
 from scipy import ndimage as ndi
 
+from histopia.registration._config import NonRigidRefinementConfig
 from histopia.registration._errors import OptionalDependencyError
 
 
@@ -64,6 +65,25 @@ def estimate_non_rigid_transform(
 ) -> NonRigidTransformResult:
     """Estimate and acceptance-gate a dense flow after affine registration."""
 
+    settings = NonRigidRefinementConfig(
+        enabled=True,
+        max_displacement_fraction=max_displacement_fraction,
+        smoothing_sigma_px=smoothing_sigma_px,
+        support_dilation_fraction=support_dilation_fraction,
+        min_similarity_improvement=min_similarity_improvement,
+        max_mask_dice_loss=max_mask_dice_loss,
+        min_jacobian_p01=min_jacobian_p01,
+        max_jacobian_p99=max_jacobian_p99,
+        max_inverse_consistency_fraction=max_inverse_consistency_fraction,
+    )
+    max_displacement_fraction = settings.max_displacement_fraction
+    smoothing_sigma_px = settings.smoothing_sigma_px
+    support_dilation_fraction = settings.support_dilation_fraction
+    min_similarity_improvement = settings.min_similarity_improvement
+    max_mask_dice_loss = settings.max_mask_dice_loss
+    min_jacobian_p01 = settings.min_jacobian_p01
+    max_jacobian_p99 = settings.max_jacobian_p99
+    max_inverse_consistency_fraction = settings.max_inverse_consistency_fraction
     cv2 = _import_cv2()
     fixed_rgb = _as_rgb_u8(fixed)
     moving_rgb = _as_rgb_u8(rigid_moving)

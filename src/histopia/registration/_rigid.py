@@ -7,6 +7,7 @@ from typing import Any
 
 import numpy as np
 
+from histopia.registration._config import MaskRefinementConfig
 from histopia.registration._errors import OptionalDependencyError
 
 MIN_MASK_FALLBACK_DICE = 0.25
@@ -137,6 +138,17 @@ def refine_rigid_transform(
     intensity as a correspondence signal across serial IHC sections.
     """
 
+    settings = MaskRefinementConfig(
+        enabled=True,
+        max_dim_px=max_dim_px,
+        min_dice_improvement=min_dice_improvement,
+        max_relative_scale_change=max_relative_scale_change,
+        max_relative_anisotropy=max_relative_anisotropy,
+    )
+    max_dim_px = settings.max_dim_px
+    min_dice_improvement = settings.min_dice_improvement
+    max_relative_scale_change = settings.max_relative_scale_change
+    max_relative_anisotropy = settings.max_relative_anisotropy
     try:
         import cv2
     except ImportError as exc:

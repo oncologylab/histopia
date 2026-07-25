@@ -110,6 +110,13 @@ max_jacobian_p99 = 4.0
 max_inverse_consistency_fraction = 0.02
 ```
 
+Configuration is validated before slide discovery. Registration modes and WSI
+compression must use documented values; canvas cropping is either `reference`
+or `overlap`. Worker counts, dimensions, and morphology sizes must be integers
+in their documented ranges. Mask fractions and affine/non-rigid acceptance
+gates must be finite and physically meaningful, so malformed configs fail
+before expensive WSI decoding.
+
 External workflow UIs such as the Histopia QuPath extension can supply
 `input_slides` as an exact ordered list of absolute paths. This supports a
 QuPath project cohort whose source slides are stored in different directories.

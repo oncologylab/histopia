@@ -37,6 +37,11 @@ histopia-semantic extract --config semantic-atlas.toml
 histopia-semantic fit --config semantic-atlas.toml
 ```
 
+Semantic configuration is validated before model or WSI loading. Physical
+scales and topology distances must be finite and positive; patch, batch,
+worker, PCA, sampling, seed, and cluster controls must be integers in their
+documented ranges. Cluster counts are never silently rounded.
+
 `cache-model` requires prior acceptance of the upstream gated model terms and
 authenticated Hugging Face access. Subsequent extraction defaults to local-only
 model loading. `histopia-semantic run` combines extraction and fitting.

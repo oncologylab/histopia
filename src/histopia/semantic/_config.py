@@ -9,6 +9,13 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from histopia._validation import (
+    finite_float,
+    nonnegative_int,
+    positive_float,
+    positive_int,
+)
+
 
 @dataclass(slots=True)
 class SemanticAtlasConfig:
@@ -39,16 +46,46 @@ class SemanticAtlasConfig:
         self.output_dir = Path(self.output_dir)
         if self.model_cache_dir is not None:
             self.model_cache_dir = Path(self.model_cache_dir)
-        if self.analysis_mpp <= 0 or self.patch_size_px <= 0 or self.batch_size <= 0:
-            raise ValueError(
-                "analysis scale, patch size, and batch size must be positive"
-            )
-        if self.patch_workers <= 0:
-            raise ValueError("patch_workers must be positive")
-        if self.vips_threads is not None and self.vips_threads <= 0:
-            raise ValueError("vips_threads must be positive when provided")
+        self.analysis_mpp = positive_float("analysis_mpp", self.analysis_mpp)
+        self.patch_size_px = positive_int("patch_size_px", self.patch_size_px)
+        self.batch_size = positive_int("batch_size", self.batch_size)
+        self.patch_workers = positive_int("patch_workers", self.patch_workers)
+        if self.vips_threads is not None:
+            self.vips_threads = positive_int("vips_threads", self.vips_threads)
+        self.min_tissue_fraction = finite_float(
+            "min_tissue_fraction",
+            self.min_tissue_fraction,
+        )
         if not 0 <= self.min_tissue_fraction <= 1:
             raise ValueError("min_tissue_fraction must be between 0 and 1")
+        self.cluster_min = positive_int("cluster_min", self.cluster_min)
+        self.cluster_max = positive_int("cluster_max", self.cluster_max)
+        self.selected_clusters = _optional_positive_int(
+            "selected_clusters",
+            self.selected_clusters,
+        )
+        self.primary_clusters = _optional_positive_int(
+            "primary_clusters",
+            self.primary_clusters,
+        )
+        self.sensitivity_clusters = tuple(
+            positive_int("sensitivity_clusters", value)
+            for value in self.sensitivity_clusters
+        )
+        self.pca_components = positive_int("pca_components", self.pca_components)
+        self.balanced_patch_cap = positive_int(
+            "balanced_patch_cap",
+            self.balanced_patch_cap,
+        )
+        self.max_cross_section_distance_um = positive_float(
+            "max_cross_section_distance_um",
+            self.max_cross_section_distance_um,
+        )
+        self.seed = nonnegative_int("seed", self.seed)
+        if self.seed > 2**32 - 1:
+            raise ValueError("seed must not exceed 2**32 - 1")
+        if not isinstance(self.device, str):
+            raise TypeError("device must be a string")
         normalized_device = self.device.strip().lower()
         if (
             normalized_device
@@ -106,10 +143,11 @@ def load_semantic_config(path: Path | str) -> SemanticAtlasConfig:
         data = tomllib.loads(path.read_text())
     else:
         raise ValueError("config must be JSON or TOML")
+    data = dict(data)
     sensitivity = data.pop("sensitivity_clusters", ())
     return SemanticAtlasConfig(
         **data,
-        sensitivity_clusters=tuple(int(value) for value in sensitivity),
+        sensitivity_clusters=tuple(sensitivity),
     )
 
 
@@ -134,3 +172,7 @@ def override_compute_config(
         if value is not None
     }
     return replace(config, **overrides)
+
+
+def _optional_positive_int(name: str, value: object | None) -> int | None:
+    return None if value is None else positive_int(name, value)

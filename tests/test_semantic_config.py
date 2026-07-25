@@ -105,3 +105,49 @@ def test_vips_thread_cap_cannot_change_after_import(monkeypatch) -> None:
 
     with pytest.raises(RuntimeError, match="cannot change after pyvips is imported"):
         configure_vips_threads(8)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "error", "message"),
+    (
+        ("analysis_mpp", float("nan"), ValueError, "finite"),
+        ("analysis_mpp", 0, ValueError, "positive"),
+        ("patch_size_px", True, TypeError, "integer"),
+        ("batch_size", 1.5, TypeError, "integer"),
+        ("pca_components", 0, ValueError, "positive"),
+        ("balanced_patch_cap", -1, ValueError, "positive"),
+        ("max_cross_section_distance_um", float("inf"), ValueError, "finite"),
+        ("seed", -1, ValueError, "non-negative"),
+        ("seed", 2**32, ValueError, "must not exceed"),
+        ("device", 1, TypeError, "string"),
+    ),
+)
+def test_semantic_config_rejects_invalid_scientific_controls(
+    tmp_path,
+    field,
+    value,
+    error,
+    message,
+) -> None:
+    with pytest.raises(error, match=message):
+        SemanticAtlasConfig(
+            registration_run=tmp_path / "registration",
+            output_dir=tmp_path / "semantic",
+            **{field: value},
+        )
+
+
+def test_semantic_config_does_not_truncate_cluster_counts(tmp_path) -> None:
+    path = tmp_path / "invalid.json"
+    path.write_text(
+        json.dumps(
+            {
+                "registration_run": "registration",
+                "output_dir": "semantic",
+                "sensitivity_clusters": [5.5],
+            }
+        )
+    )
+
+    with pytest.raises(TypeError, match="must be an integer"):
+        load_semantic_config(path)

@@ -325,6 +325,7 @@ def _load_config(path: Path) -> RegistrationConfig:
 
 
 def _config_from_mapping(data: dict[str, Any]) -> RegistrationConfig:
+    data = dict(data)
     mask_data = dict(data.pop("mask", {}))
     mask = BrightfieldMaskConfig(**mask_data)
     refinement_data = dict(data.pop("refinement", {}))

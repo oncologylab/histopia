@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from histopia.registration import (
     RigidTransformResult,
@@ -72,6 +73,19 @@ def test_mask_refinement_improves_conservative_affine_initializer() -> None:
 
     assert result.method == "initial+mask_ecc_affine"
     assert result.inlier_count > 900
+
+
+def test_mask_refinement_rejects_invalid_acceptance_gate() -> None:
+    mask = np.ones((8, 8), dtype=bool)
+    initial = RigidTransformResult(np.eye(3), "initial", 0, 0, [])
+
+    with pytest.raises(ValueError, match="max_relative_anisotropy"):
+        refine_rigid_transform(
+            mask,
+            mask,
+            initial,
+            max_relative_anisotropy=float("inf"),
+        )
 
 
 def test_feature_fallback_rejects_low_overlap_mask_transform() -> None:

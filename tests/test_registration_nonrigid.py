@@ -1,5 +1,6 @@
 import cv2
 import numpy as np
+import pytest
 
 from histopia.registration._nonrigid import (
     displacement_jacobian,
@@ -49,3 +50,17 @@ def test_zero_displacement_is_identity() -> None:
 
     assert np.array_equal(warped, image)
     assert np.allclose(displacement_jacobian(displacement), 1.0)
+
+
+def test_non_rigid_primitive_rejects_invalid_acceptance_gate() -> None:
+    image = np.zeros((8, 8, 3), dtype=np.uint8)
+    mask = np.ones((8, 8), dtype=bool)
+
+    with pytest.raises(ValueError, match="min_jacobian_p01"):
+        estimate_non_rigid_transform(
+            image,
+            image,
+            fixed_mask=mask,
+            rigid_moving_mask=mask,
+            min_jacobian_p01=1.1,
+        )
