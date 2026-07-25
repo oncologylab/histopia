@@ -11,8 +11,10 @@ from histopia.registration import (
     RegistrationConfig,
     _pipeline,
     approve_mask_review,
+    approve_registration_run,
     approve_section_order,
     register_sections,
+    validate_registration_approval,
 )
 from histopia.registration._errors import RegistrationApprovalRequired
 from histopia.registration._masking import TissueMaskResult
@@ -137,6 +139,17 @@ def test_strict_registration_advances_through_exact_review_stages(
     assert load_performance_report(output_dir / PERFORMANCE_FILENAME)["status"] == (
         "completed"
     )
+    approval = approve_registration_run(
+        output_dir,
+        reviewer="Test Reviewer",
+        notes="Masks, order, and registration reviewed.",
+    )
+    approved_result = (output_dir / "registration_result.json").read_bytes()
+
+    register_sections(config)
+
+    assert (output_dir / "registration_result.json").read_bytes() == approved_result
+    assert validate_registration_approval(output_dir) == approval
 
 
 def test_registration_failure_is_observationally_recorded(tmp_path: Path) -> None:
@@ -416,6 +429,138 @@ def test_anchored_order_reuses_exact_distance_cache(
     ) as sequential_cache:
         sequential = sequential_cache["distances"]
     assert np.array_equal(parallel, sequential)
+
+
+def test_registration_reuses_exact_rigid_pair_cache(
+    tmp_path: Path, monkeypatch
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    fixed = np.full((90, 100, 3), 255, dtype=np.uint8)
+    fixed[18:72, 22:78] = np.array([185, 100, 120], dtype=np.uint8)
+    moving = np.roll(fixed, shift=(3, -4), axis=(0, 1))
+    Image.fromarray(fixed).save(input_dir / "fixed.png")
+    Image.fromarray(moving).save(input_dir / "moving.png")
+    config = RegistrationConfig(
+        input_dir=input_dir,
+        output_dir=output_dir,
+        reference_slide="fixed.png",
+        reference_policy="explicit",
+        rigid_method="phase_correlation",
+        align_strategy="reference",
+        max_processed_image_dim_px=100,
+        write_processed_images=False,
+    )
+
+    first = register_sections(config)
+    first_json = (output_dir / "registration_result.json").read_bytes()
+    first_performance = load_performance_report(output_dir / PERFORMANCE_FILENAME)
+
+    def unexpected_estimate(*_args, **_kwargs):
+        raise AssertionError("exact rigid pair should have been loaded from cache")
+
+    monkeypatch.setattr(_pipeline, "_estimate_pair_transform", unexpected_estimate)
+    second = register_sections(config)
+    second_performance = load_performance_report(output_dir / PERFORMANCE_FILENAME)
+
+    assert first.to_json_dict() == second.to_json_dict()
+    assert (output_dir / "registration_result.json").read_bytes() == first_json
+    assert first_performance["rigid_pair_cache_hits"] == 0
+    assert first_performance["rigid_pair_cache_misses"] == 1
+    assert first_performance["rigid_pairs_computed"] == 1
+    assert second_performance["rigid_pair_cache_hits"] == 1
+    assert second_performance["rigid_pair_cache_misses"] == 0
+    assert second_performance["rigid_pairs_computed"] == 0
+    assert len(tuple((output_dir / ".cache" / "rigid_pairs").glob("*.json"))) == 1
+
+
+def test_registration_reuses_checksum_validated_qc_artifacts(
+    tmp_path: Path, monkeypatch
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    fixed = np.full((80, 90, 3), 255, dtype=np.uint8)
+    fixed[16:64, 20:70] = np.array([185, 100, 120], dtype=np.uint8)
+    Image.fromarray(fixed).save(input_dir / "fixed.png")
+    Image.fromarray(np.roll(fixed, shift=(2, -3), axis=(0, 1))).save(
+        input_dir / "moving.png"
+    )
+    config = RegistrationConfig(
+        input_dir=input_dir,
+        output_dir=output_dir,
+        reference_slide="fixed.png",
+        reference_policy="explicit",
+        rigid_method="phase_correlation",
+        align_strategy="reference",
+        max_processed_image_dim_px=90,
+        write_processed_images=True,
+    )
+
+    register_sections(config)
+    first = load_performance_report(output_dir / PERFORMANCE_FILENAME)
+    corrupted_path = output_dir / "qc" / "alignment" / "moving.warped.png"
+    unchanged_path = output_dir / "qc" / "review" / "fixed.review.png"
+    expected_corrupted_bytes = corrupted_path.read_bytes()
+    unchanged_mtime = unchanged_path.stat().st_mtime_ns
+
+    def unexpected_render(*_args, **_kwargs):
+        raise AssertionError("exact QC artifact should have been reused")
+
+    monkeypatch.setattr(_pipeline, "save_rgb", unexpected_render)
+    monkeypatch.setattr(_pipeline, "write_labeled_review_panel", unexpected_render)
+    register_sections(config)
+    second = load_performance_report(output_dir / PERFORMANCE_FILENAME)
+
+    assert first["qc_artifact_cache_hits"] == 0
+    assert first["qc_artifact_cache_misses"] == 5
+    assert first["qc_artifact_bundles_rendered"] == 5
+    assert second["qc_artifact_cache_hits"] == 5
+    assert second["qc_artifact_cache_misses"] == 0
+    assert second["qc_artifact_bundles_rendered"] == 0
+    assert (output_dir / ".cache" / "registration-qc-artifacts.json").is_file()
+
+    monkeypatch.undo()
+    corrupted_path.write_bytes(b"corrupt")
+    register_sections(config)
+    repaired = load_performance_report(output_dir / PERFORMANCE_FILENAME)
+
+    assert corrupted_path.read_bytes() == expected_corrupted_bytes
+    assert unchanged_path.stat().st_mtime_ns == unchanged_mtime
+    assert repaired["qc_artifact_cache_hits"] == 4
+    assert repaired["qc_artifact_cache_misses"] == 1
+    assert repaired["qc_artifact_bundles_rendered"] == 1
+
+
+def test_hybrid_renders_only_final_serial_pair_diagnostics(tmp_path: Path) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    image = np.full((70, 80, 3), 255, dtype=np.uint8)
+    image[14:56, 18:62] = np.array([185, 100, 120], dtype=np.uint8)
+    for index, shift in enumerate((0, 2, 4), start=1):
+        Image.fromarray(np.roll(image, shift=(shift, 0), axis=(0, 1))).save(
+            input_dir / f"section-{index}.png"
+        )
+
+    register_sections(
+        RegistrationConfig(
+            input_dir=input_dir,
+            output_dir=output_dir,
+            reference_slide="section-2.png",
+            reference_policy="explicit",
+            rigid_method="phase_correlation",
+            align_strategy="hybrid",
+            max_processed_image_dim_px=80,
+            write_processed_images=True,
+        )
+    )
+    performance = load_performance_report(output_dir / PERFORMANCE_FILENAME)
+
+    assert len(tuple((output_dir / "qc" / "alignment" / "pair_crops").glob("*"))) == 8
+    assert performance["qc_artifact_cache_misses"] == 9
+    assert performance["qc_artifact_bundles_rendered"] == 9
 
 
 def test_hybrid_registration_reuses_features_without_changing_results(

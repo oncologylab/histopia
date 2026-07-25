@@ -266,6 +266,27 @@ configuration, physical calibration, and algorithm schema match. Missing or
 corrupt entries are regenerated. Set it to `false` for an intentionally cold
 run; review approval fingerprints are enforced independently of this cache.
 
+`alignment_cache = true` independently enables exact directed rigid-pair
+reuse. Each entry binds oriented crop pixels, reviewed masks, crop
+offsets/scales, pair direction, rigid and affine-refinement settings, algorithm
+schema, and OpenCV/NumPy versions. The cached full and crop-space transforms
+carry a content checksum and are loaded only when every bound input matches;
+stale, malformed, or corrupted entries are recomputed atomically. Cache
+hit/miss and actual-computation counts appear in
+`registration_performance.json`.
+
+The same setting enables checksum-validated registration QC reuse. Alignment,
+crop, non-rigid, and labeled review bundles bind their exact render inputs and
+are reused only when every expected file has the recorded path, size, and
+SHA-256. Missing, changed, truncated, or symlinked outputs regenerate only
+their affected bundle. Hybrid alignment no longer renders a direct-reference
+pair diagnostic that the serial diagnostic immediately overwrote; the retained
+pair-crop output is unchanged in purpose. On a 24-slide, 1200-pixel validation
+stack, initial current-code QC population took 264.97 seconds. An exact warm
+rerun verified 46 rigid-pair entries and 93 QC bundles, rendered nothing, and
+completed in 8.49 seconds, a 31.2x speedup with an identical canonical
+registration-result SHA-256.
+
 Set `mask_override_dir` when manual corrections are required and
 `require_approved_masks = true` for production runs. Keep the generated
 `mask_review.json` under the run directory so the final approval can seal it.

@@ -240,7 +240,7 @@ def approve_registration_run(
 
     _write_json_atomic(mask_path, mask_review)
     _write_json_atomic(order_path, order_review)
-    _write_json_atomic(result_path, result)
+    _write_json_atomic(result_path, result, sort_keys=True)
     artifact_hashes = {
         path.name: _sha256_file(path) for path in (result_path, mask_path, order_path)
     }
@@ -412,7 +412,12 @@ def _resolved_override_path(
     return path
 
 
-def _write_json_atomic(path: Path, payload: dict[str, object]) -> None:
+def _write_json_atomic(
+    path: Path,
+    payload: dict[str, object],
+    *,
+    sort_keys: bool = False,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary = tempfile.mkstemp(
         prefix=f".{path.name}.",
@@ -421,7 +426,7 @@ def _write_json_atomic(path: Path, payload: dict[str, object]) -> None:
     )
     try:
         with os.fdopen(descriptor, "w") as stream:
-            json.dump(payload, stream, indent=2)
+            json.dump(payload, stream, indent=2, sort_keys=sort_keys)
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())

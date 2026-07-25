@@ -62,6 +62,10 @@ from histopia.registration._preprocessing_cache import (
     load_or_create_thumbnail,
 )
 from histopia.registration._qc import write_labeled_review_panel
+from histopia.registration._qc_cache import (
+    RegistrationQcCache,
+    qc_artifact_fingerprint,
+)
 from histopia.registration._review import (
     MaskReviewEntry,
     load_mask_review,
@@ -73,6 +77,12 @@ from histopia.registration._rigid import (
     RigidTransformResult,
     estimate_rigid_transform,
     prepare_rigid_features,
+)
+from histopia.registration._rigid_cache import (
+    load_rigid_pair_cache,
+    rigid_crop_fingerprint,
+    rigid_pair_fingerprint,
+    write_rigid_pair_cache,
 )
 from histopia.registration._slides import (
     SlideGeometry,
@@ -168,7 +178,7 @@ class RegistrationResult:
             if path is not None
             else self.output_dir / "registration_result.json"
         )
-        return write_json_atomic(path, self.to_json_dict())
+        return write_json_atomic(path, self.to_json_dict(), sort_keys=True)
 
 
 def register_sections(config: RegistrationConfig) -> RegistrationResult:
@@ -182,6 +192,7 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
             "mask_workers": config.mask_workers,
             "ordering_workers": config.ordering_workers,
             "preprocessing_cache": config.preprocessing_cache,
+            "alignment_cache": config.alignment_cache,
             "max_processed_image_dim_px": config.max_processed_image_dim_px,
             "rigid_method": config.rigid_method,
             "align_strategy": config.align_strategy,
@@ -241,6 +252,9 @@ def _register_sections(
         if config.preprocessing_cache
         else None
     )
+    rigid_pair_cache_dir = (
+        config.output_dir / ".cache" / "rigid_pairs" if config.alignment_cache else None
+    )
     performance.start_stage("thumbnail_load")
     thumbnails, geometries = _load_registration_thumbnails(
         slide_paths,
@@ -255,6 +269,14 @@ def _register_sections(
     artifact_manifest_path = (
         preprocessing_cache_dir / "mask-artifacts.json"
         if preprocessing_cache_dir is not None and config.write_processed_images
+        else None
+    )
+    registration_qc_cache = (
+        RegistrationQcCache(
+            config.output_dir,
+            config.output_dir / ".cache" / "registration-qc-artifacts.json",
+        )
+        if config.alignment_cache and config.write_processed_images
         else None
     )
     artifact_manifest = _load_mask_artifact_manifest(artifact_manifest_path)
@@ -471,6 +493,11 @@ def _register_sections(
         slide_paths = tuple(path_by_name[name] for name in proposal.slides)
     if prepared_features is None:
         prepared_features = _prepare_crop_features(slide_paths, crops, config)
+    rigid_pair_cache = _RigidPairCache.create(
+        crops,
+        config,
+        rigid_pair_cache_dir,
+    )
     performance.start_stage("rigid_alignment")
     if config.reference_slide is not None or config.reference_policy == "explicit":
         reference_path = _select_reference(slide_paths, config.reference_slide)
@@ -490,6 +517,13 @@ def _register_sections(
         config,
         alignment_dir,
         prepared_features=prepared_features,
+        pair_cache=rigid_pair_cache,
+        qc_cache=registration_qc_cache,
+    )
+    performance.update(
+        rigid_pair_cache_hits=rigid_pair_cache.hits,
+        rigid_pair_cache_misses=rigid_pair_cache.misses,
+        rigid_pairs_computed=rigid_pair_cache.computations,
     )
     _apply_affine_overrides(
         transforms_to_reference,
@@ -522,6 +556,7 @@ def _register_sections(
                     reference_image,
                     working_thumbnails[path],
                     working_transform,
+                    cache=registration_qc_cache,
                 )
                 _write_alignment_qc(
                     alignment_dir / "crops",
@@ -533,6 +568,7 @@ def _register_sections(
                         reference_crop,
                         crops[path],
                     ),
+                    cache=registration_qc_cache,
                 )
         non_rigid_transform = None
         if path != reference_path and config.non_rigid_refinement.enabled:
@@ -580,6 +616,7 @@ def _register_sections(
                     reference_image,
                     rigid_moving,
                     non_rigid_transform,
+                    cache=registration_qc_cache,
                 )
         transform = _transform_from_oriented_coordinates(
             working_transform,
@@ -618,7 +655,13 @@ def _register_sections(
     )
     performance.start_stage("review_rendering")
     if config.write_processed_images:
-        _write_primary_review_panels(result, thumbnails, geometries, qc_dir / "review")
+        _write_primary_review_panels(
+            result,
+            thumbnails,
+            geometries,
+            qc_dir / "review",
+            cache=registration_qc_cache,
+        )
     performance.start_stage(
         "full_resolution_warp",
         details={"enabled": config.write_warped_images},
@@ -632,6 +675,15 @@ def _register_sections(
         reference_slide=reference_path.name,
         warning_count=len(warnings),
         registered_slide_count=len(slides),
+        qc_artifact_cache_hits=(
+            registration_qc_cache.hits if registration_qc_cache is not None else 0
+        ),
+        qc_artifact_cache_misses=(
+            registration_qc_cache.misses if registration_qc_cache is not None else 0
+        ),
+        qc_artifact_bundles_rendered=(
+            registration_qc_cache.rendered if registration_qc_cache is not None else 0
+        ),
     )
     return result
 
@@ -704,21 +756,38 @@ def _write_primary_review_panels(
     thumbnails: dict[Path, np.ndarray],
     geometries: dict[Path, SlideGeometry],
     output_dir: Path,
+    *,
+    cache: RegistrationQcCache | None = None,
 ) -> None:
     reference = thumbnails[result.reference_slide]
     for slide in result.slides:
         source = thumbnails[slide.path]
+        geometry = geometries[slide.path]
+        review_status = slide.mask_review.status if slide.mask_review else "untracked"
+        output_path = output_dir / f"{slide.path.stem}.review.png"
+        fingerprint = qc_artifact_fingerprint(
+            "primary-review-panel-v1",
+            arrays=(source, slide.mask.mask, reference),
+            metadata={
+                "slide": slide.path.name,
+                "reference": result.reference_slide.name,
+                "transform": slide.transform.to_json_dict(),
+                "geometry": geometry.to_json_dict(),
+                "mask_review_status": review_status,
+                "mask_method": slide.mask.method,
+            },
+        )
+        if cache is not None and cache.is_current(fingerprint, (output_path,)):
+            continue
         registered = warp_rgb_thumbnail(
             source,
             slide.transform.matrix,
             reference.shape[:2],
         )
         mask_overlay = overlay_mask(source, slide.mask.mask)
-        geometry = geometries[slide.path]
-        review_status = slide.mask_review.status if slide.mask_review else "untracked"
         x, y, width, height = geometry.content_bbox_xywh
         write_labeled_review_panel(
-            output_dir / f"{slide.path.stem}.review.png",
+            output_path,
             panes=[
                 ("Source WSI content", source),
                 ("Approved tissue mask", mask_overlay),
@@ -742,6 +811,8 @@ def _write_primary_review_panels(
                 f"reference={result.reference_slide.name}",
             ],
         )
+        if cache is not None:
+            cache.record(fingerprint, (output_path,))
 
 
 def _write_full_resolution_warps(
@@ -791,7 +862,20 @@ def _write_non_rigid_qc(
     reference_image: np.ndarray,
     rigid_moving: np.ndarray,
     result: NonRigidTransformResult,
+    *,
+    cache: RegistrationQcCache | None = None,
 ) -> None:
+    output_path = output_dir / f"{path.stem}.contact.png"
+    fingerprint = qc_artifact_fingerprint(
+        "non-rigid-contact-v1",
+        arrays=(reference_image, rigid_moving, result.displacement),
+        metadata={
+            "slide": path.name,
+            "result": result.to_json_dict(),
+        },
+    )
+    if cache is not None and cache.is_current(fingerprint, (output_path,)):
+        return
     refined = warp_with_displacement(
         rigid_moving,
         result.displacement,
@@ -805,7 +889,7 @@ def _write_non_rigid_qc(
         axis=2,
     )
     save_rgb(
-        output_dir / f"{path.stem}.contact.png",
+        output_path,
         side_by_side(
             [
                 reference_image,
@@ -817,6 +901,8 @@ def _write_non_rigid_qc(
             ]
         ),
     )
+    if cache is not None:
+        cache.record(fingerprint, (output_path,))
 
 
 def _estimate_transforms_to_reference(
@@ -827,6 +913,8 @@ def _estimate_transforms_to_reference(
     alignment_dir: Path,
     *,
     prepared_features: dict[Path, PreparedRigidFeatures] | None = None,
+    pair_cache: _RigidPairCache | None = None,
+    qc_cache: RegistrationQcCache | None = None,
 ) -> tuple[dict[Path, RigidTransformResult], dict[Path, Path]]:
     if prepared_features is None:
         prepared_features = _prepare_crop_features(slide_paths, crops, config)
@@ -838,6 +926,8 @@ def _estimate_transforms_to_reference(
             config,
             alignment_dir,
             prepared_features=prepared_features,
+            pair_cache=pair_cache,
+            qc_cache=qc_cache,
         )
     if config.align_strategy == "serial":
         return _estimate_serial_transforms(
@@ -847,6 +937,8 @@ def _estimate_transforms_to_reference(
             config,
             alignment_dir,
             prepared_features=prepared_features,
+            pair_cache=pair_cache,
+            qc_cache=qc_cache,
         )
     if config.align_strategy == "hybrid":
         return _estimate_hybrid_transforms(
@@ -856,6 +948,8 @@ def _estimate_transforms_to_reference(
             config,
             alignment_dir,
             prepared_features=prepared_features,
+            pair_cache=pair_cache,
+            qc_cache=qc_cache,
         )
     msg = f"unsupported alignment strategy: {config.align_strategy!r}"
     raise ValueError(msg)
@@ -869,6 +963,9 @@ def _estimate_reference_transforms(
     alignment_dir: Path,
     *,
     prepared_features: dict[Path, PreparedRigidFeatures] | None = None,
+    pair_cache: _RigidPairCache | None = None,
+    qc_cache: RegistrationQcCache | None = None,
+    write_pair_qc: bool = True,
 ) -> tuple[dict[Path, RigidTransformResult], dict[Path, Path]]:
     if prepared_features is None:
         prepared_features = _prepare_crop_features(slide_paths, crops, config)
@@ -877,22 +974,24 @@ def _estimate_reference_transforms(
     for path in slide_paths:
         if path == reference_path:
             continue
-        transform, crop_transform = _estimate_pair_transform(
+        transform, crop_transform = _estimate_pair_transform_cached(
             reference_path,
             path,
             crops,
             config,
             prepared_features,
+            pair_cache,
         )
         transforms[path] = transform
         aligned_to[path] = reference_path
-        if config.write_processed_images:
+        if config.write_processed_images and write_pair_qc:
             _write_alignment_qc(
                 alignment_dir / "pair_crops",
                 path,
                 crops[reference_path].image,
                 crops[path].image,
                 crop_transform,
+                cache=qc_cache,
             )
     return transforms, aligned_to
 
@@ -905,6 +1004,8 @@ def _estimate_serial_transforms(
     alignment_dir: Path,
     *,
     prepared_features: dict[Path, PreparedRigidFeatures] | None = None,
+    pair_cache: _RigidPairCache | None = None,
+    qc_cache: RegistrationQcCache | None = None,
 ) -> tuple[dict[Path, RigidTransformResult], dict[Path, Path]]:
     if prepared_features is None:
         prepared_features = _prepare_crop_features(slide_paths, crops, config)
@@ -916,12 +1017,13 @@ def _estimate_serial_transforms(
     for index in range(reference_index + 1, len(slide_paths)):
         moving_path = slide_paths[index]
         fixed_path = slide_paths[index - 1]
-        pair_transform, crop_transform = _estimate_pair_transform(
+        pair_transform, crop_transform = _estimate_pair_transform_cached(
             fixed_path,
             moving_path,
             crops,
             config,
             prepared_features,
+            pair_cache,
         )
         cumulative[moving_path] = cumulative[fixed_path] @ pair_transform.matrix
         transforms[moving_path] = _composed_transform_result(
@@ -936,17 +1038,19 @@ def _estimate_serial_transforms(
                 crops[fixed_path].image,
                 crops[moving_path].image,
                 crop_transform,
+                cache=qc_cache,
             )
 
     for index in range(reference_index - 1, -1, -1):
         moving_path = slide_paths[index]
         fixed_path = slide_paths[index + 1]
-        pair_transform, crop_transform = _estimate_pair_transform(
+        pair_transform, crop_transform = _estimate_pair_transform_cached(
             fixed_path,
             moving_path,
             crops,
             config,
             prepared_features,
+            pair_cache,
         )
         cumulative[moving_path] = cumulative[fixed_path] @ pair_transform.matrix
         transforms[moving_path] = _composed_transform_result(
@@ -961,6 +1065,7 @@ def _estimate_serial_transforms(
                 crops[fixed_path].image,
                 crops[moving_path].image,
                 crop_transform,
+                cache=qc_cache,
             )
 
     return transforms, aligned_to
@@ -974,6 +1079,8 @@ def _estimate_hybrid_transforms(
     alignment_dir: Path,
     *,
     prepared_features: dict[Path, PreparedRigidFeatures] | None = None,
+    pair_cache: _RigidPairCache | None = None,
+    qc_cache: RegistrationQcCache | None = None,
 ) -> tuple[dict[Path, RigidTransformResult], dict[Path, Path]]:
     if prepared_features is None:
         prepared_features = _prepare_crop_features(slide_paths, crops, config)
@@ -984,6 +1091,9 @@ def _estimate_hybrid_transforms(
         config,
         alignment_dir,
         prepared_features=prepared_features,
+        pair_cache=pair_cache,
+        qc_cache=qc_cache,
+        write_pair_qc=False,
     )
     serial_transforms, serial_aligned_to = _estimate_serial_transforms(
         slide_paths,
@@ -992,6 +1102,8 @@ def _estimate_hybrid_transforms(
         config,
         alignment_dir,
         prepared_features=prepared_features,
+        pair_cache=pair_cache,
+        qc_cache=qc_cache,
     )
 
     transforms: dict[Path, RigidTransformResult] = {}
@@ -1074,6 +1186,31 @@ def _estimate_pair_transform(
     return full_transform, crop_transform
 
 
+def _estimate_pair_transform_cached(
+    fixed_path: Path,
+    moving_path: Path,
+    crops: dict[Path, _Crop],
+    config: RegistrationConfig,
+    prepared_features: dict[Path, PreparedRigidFeatures] | None,
+    pair_cache: _RigidPairCache | None,
+) -> tuple[RigidTransformResult, RigidTransformResult]:
+    if pair_cache is None:
+        return _estimate_pair_transform(
+            fixed_path,
+            moving_path,
+            crops,
+            config,
+            prepared_features,
+        )
+    return pair_cache.estimate(
+        fixed_path,
+        moving_path,
+        crops,
+        config,
+        prepared_features,
+    )
+
+
 def _composed_transform_result(
     matrix: np.ndarray,
     pair_transform: RigidTransformResult,
@@ -1094,6 +1231,98 @@ class _Crop:
     mask: np.ndarray
     offset_xy: np.ndarray
     scale: float
+
+
+@dataclass(slots=True)
+class _RigidPairCache:
+    directory: Path | None
+    crop_fingerprints: dict[Path, str]
+    settings: dict[str, object]
+    hits: int = 0
+    misses: int = 0
+    computations: int = 0
+
+    @classmethod
+    def create(
+        cls,
+        crops: dict[Path, _Crop],
+        config: RegistrationConfig,
+        directory: Path | None,
+    ) -> _RigidPairCache:
+        fingerprints = (
+            {
+                path: rigid_crop_fingerprint(
+                    path,
+                    crop.image,
+                    crop.mask,
+                    crop.offset_xy,
+                    crop.scale,
+                )
+                for path, crop in crops.items()
+            }
+            if directory is not None
+            else {}
+        )
+        return cls(
+            directory=directory,
+            crop_fingerprints=fingerprints,
+            settings=_rigid_pair_cache_settings(config),
+        )
+
+    def estimate(
+        self,
+        fixed_path: Path,
+        moving_path: Path,
+        crops: dict[Path, _Crop],
+        config: RegistrationConfig,
+        prepared_features: dict[Path, PreparedRigidFeatures] | None,
+    ) -> tuple[RigidTransformResult, RigidTransformResult]:
+        fingerprint = None
+        if self.directory is not None:
+            fingerprint = rigid_pair_fingerprint(
+                self.crop_fingerprints[fixed_path],
+                self.crop_fingerprints[moving_path],
+                self.settings,
+            )
+            cached = load_rigid_pair_cache(self.directory, fingerprint)
+            if cached is not None:
+                self.hits += 1
+                return cached
+            self.misses += 1
+        self.computations += 1
+        full, crop = _estimate_pair_transform(
+            fixed_path,
+            moving_path,
+            crops,
+            config,
+            prepared_features,
+        )
+        if self.directory is not None and fingerprint is not None:
+            try:
+                write_rigid_pair_cache(
+                    self.directory,
+                    fingerprint,
+                    full,
+                    crop,
+                )
+            except OSError:
+                pass
+        return full, crop
+
+
+def _rigid_pair_cache_settings(config: RegistrationConfig) -> dict[str, object]:
+    try:
+        import cv2
+
+        opencv_version = str(cv2.__version__)
+    except ImportError:
+        opencv_version = "unavailable"
+    return {
+        "rigid_method": config.rigid_method,
+        "refinement": asdict(config.refinement),
+        "opencv_version": opencv_version,
+        "numpy_version": np.__version__,
+    }
 
 
 def _crop_to_mask(
@@ -1360,30 +1589,49 @@ def _write_alignment_qc(
     reference_image: np.ndarray,
     moving_image: np.ndarray,
     transform: RigidTransformResult,
+    *,
+    cache: RegistrationQcCache | None = None,
 ) -> None:
+    artifact_paths = (
+        output_dir / f"{path.stem}.warped.png",
+        output_dir / f"{path.stem}.blend.png",
+        output_dir / f"{path.stem}.checkerboard.png",
+        output_dir / f"{path.stem}.contact.png",
+    )
+    fingerprint = qc_artifact_fingerprint(
+        "rigid-alignment-bundle-v1",
+        arrays=(reference_image, moving_image),
+        metadata={
+            "slide": path.name,
+            "transform": transform.to_json_dict(),
+        },
+    )
+    if cache is not None and cache.is_current(fingerprint, artifact_paths):
+        return
     warped = warp_rgb_thumbnail(
         moving_image,
         transform.matrix,
         reference_image.shape[:2],
     )
-    save_rgb(output_dir / f"{path.stem}.warped.png", warped)
-    save_rgb(output_dir / f"{path.stem}.blend.png", blend_rgb(reference_image, warped))
+    blended = blend_rgb(reference_image, warped)
+    checkerboard = checkerboard_rgb(reference_image, warped)
+    save_rgb(artifact_paths[0], warped)
+    save_rgb(artifact_paths[1], blended)
+    save_rgb(artifact_paths[2], checkerboard)
     save_rgb(
-        output_dir / f"{path.stem}.checkerboard.png",
-        checkerboard_rgb(reference_image, warped),
-    )
-    save_rgb(
-        output_dir / f"{path.stem}.contact.png",
+        artifact_paths[3],
         side_by_side(
             [
                 reference_image,
                 moving_image,
                 warped,
-                blend_rgb(reference_image, warped),
-                checkerboard_rgb(reference_image, warped),
+                blended,
+                checkerboard,
             ]
         ),
     )
+    if cache is not None:
+        cache.record(fingerprint, artifact_paths)
 
 
 def _write_validation_report(result: RegistrationResult) -> Path:

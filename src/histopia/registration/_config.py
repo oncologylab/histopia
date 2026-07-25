@@ -204,6 +204,7 @@ class RegistrationConfig:
     mask_workers: int = 1
     ordering_workers: int = 1
     preprocessing_cache: bool = True
+    alignment_cache: bool = True
     require_approved_order: bool = False
     mask_review_path: Path | None = None
     mask_override_dir: Path | None = None
@@ -316,6 +317,7 @@ class RegistrationConfig:
         self.mask_workers = positive_int("mask_workers", self.mask_workers)
         for name in (
             "preprocessing_cache",
+            "alignment_cache",
             "require_approved_order",
             "require_approved_masks",
             "wsi_only",
