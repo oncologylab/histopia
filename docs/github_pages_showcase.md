@@ -42,7 +42,9 @@ Rendering is demand-driven. The viewer redraws while sections load and while
 the camera is moving, then stops requesting animation frames when the scene is
 idle. Browser tests verify that the canvas remains populated after rendering
 stops, which reduces background CPU and GPU use without changing scientific
-textures.
+textures. Texture and specimen transitions remain busy until a rendered frame
+is presented. Browser WebGL context loss triggers a bounded repaint of the
+current stack over the stable light viewport.
 
 ## Registration QC Portal
 
