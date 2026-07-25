@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -7,6 +8,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
+import histopia.semantic._preflight as preflight_module
 from histopia.semantic._cli import main
 from histopia.semantic._preflight import (
     preflight_registration,
@@ -19,6 +21,7 @@ def _write_registration(tmp_path: Path) -> Path:
     processed = run / "processed"
     processed.mkdir(parents=True)
     slides = []
+    reviews = []
     for index, name in enumerate(("HE.ndpi", "CK19.ndpi")):
         source = tmp_path / "raw" / name
         source.parent.mkdir(exist_ok=True)
@@ -28,6 +31,16 @@ def _write_registration(tmp_path: Path) -> Path:
         mask[1:7, 2:9] = 255
         Image.fromarray(image).save(processed / f"{source.stem}.thumbnail.png")
         Image.fromarray(mask).save(processed / f"{source.stem}.mask.png")
+        review = {
+            "slide": name,
+            "thumbnail_sha256": f"mask-fingerprint-{index}",
+            "status": "auto_pass",
+            "method": "group_consensus",
+            "reviewer": "Test Reviewer",
+            "notes": "Reviewed.",
+            "override_path": None,
+        }
+        reviews.append(review)
         slides.append(
             {
                 "path": str(source),
@@ -42,16 +55,59 @@ def _write_registration(tmp_path: Path) -> Path:
                 },
                 "transform": {"matrix": np.eye(3).tolist()},
                 "mask": {"accepted": True, "method": "group_consensus"},
-                "mask_review": {"status": "approved", "approved": True},
+                "mask_review": dict(review),
             }
         )
     (run / "registration_result.json").write_text(
         json.dumps({"reference_slide": slides[0]["path"], "slides": slides})
     )
-    (run / "section_order_review.json").write_text(
-        json.dumps({"approved": True, "fingerprint": "accepted-order"})
+    (run / "mask_review.json").write_text(
+        json.dumps({"schema_version": 2, "slides": reviews})
     )
+    (run / "section_order_review.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "approved": True,
+                "fingerprint": "accepted-order",
+                "input_fingerprints": {
+                    slide["slide"]: f"order-input-{index}"
+                    for index, slide in enumerate(reviews)
+                },
+                "slides": [
+                    {"order": index + 1, "slide": slide["slide"]}
+                    for index, slide in enumerate(reviews)
+                ],
+            }
+        )
+    )
+    _seal_registration_approval(run)
     return run
+
+
+def _seal_registration_approval(run: Path) -> None:
+    result = json.loads((run / "registration_result.json").read_text())
+    order = json.loads((run / "section_order_review.json").read_text())
+    artifacts = {}
+    for name in (
+        "registration_result.json",
+        "mask_review.json",
+        "section_order_review.json",
+    ):
+        artifacts[name] = hashlib.sha256((run / name).read_bytes()).hexdigest()
+    (run / "registration_approval.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "reviewer": "Test Reviewer",
+                "reviewed_at": "2026-07-24T10:00:00+00:00",
+                "notes": "Registration reviewed.",
+                "slide_count": len(result["slides"]),
+                "order_fingerprint": order["fingerprint"],
+                "artifacts": artifacts,
+            }
+        )
+    )
 
 
 def test_preflight_records_complete_fingerprinted_registration(tmp_path: Path) -> None:
@@ -62,13 +118,18 @@ def test_preflight_records_complete_fingerprinted_registration(tmp_path: Path) -
     payload = json.loads(output.read_text())
 
     assert result.slide_count == 2
+    assert result.schema_version == 3
     assert result.reference_slide == "HE.ndpi"
     assert len(result.fingerprint) == 64
     assert [slide.slide_name for slide in result.slides] == ["HE.ndpi", "CK19.ndpi"]
     assert all(len(slide.mask_sha256) == 64 for slide in result.slides)
     assert all(slide.mask_method == "group_consensus" for slide in result.slides)
-    assert all(slide.mask_review_status == "approved" for slide in result.slides)
+    assert all(slide.mask_review_status == "auto_pass" for slide in result.slides)
     assert payload["fingerprint"] == result.fingerprint
+    assert (
+        payload["registration_approval_sha256"]
+        == hashlib.sha256((run / "registration_approval.json").read_bytes()).hexdigest()
+    )
     assert payload["order_review_fingerprint"] == "accepted-order"
 
 
@@ -86,6 +147,7 @@ def test_preflight_rejects_nonfinite_transform(tmp_path: Path) -> None:
     payload = json.loads(path.read_text())
     payload["slides"][1]["transform"]["matrix"][0][0] = float("nan")
     path.write_text(json.dumps(payload))
+    _seal_registration_approval(run)
 
     with pytest.raises(ValueError, match="CK19.ndpi.*finite"):
         preflight_registration(run)
@@ -98,8 +160,9 @@ def test_preflight_rejects_unapproved_order_when_manifest_exists(
     (run / "section_order_review.json").write_text(
         json.dumps({"approved": False, "fingerprint": "pending"})
     )
+    _seal_registration_approval(run)
 
-    with pytest.raises(ValueError, match="section order is not approved"):
+    with pytest.raises(ValueError, match="registration approval order fingerprint"):
         preflight_registration(run)
 
 
@@ -110,6 +173,7 @@ def test_run_cli_checks_registration_before_requiring_model_cache(
     (run / "section_order_review.json").write_text(
         json.dumps({"approved": False, "fingerprint": "pending"})
     )
+    _seal_registration_approval(run)
     config = tmp_path / "semantic.json"
     config.write_text(
         json.dumps(
@@ -120,7 +184,7 @@ def test_run_cli_checks_registration_before_requiring_model_cache(
         )
     )
 
-    with pytest.raises(ValueError, match="section order is not approved"):
+    with pytest.raises(ValueError, match="registration approval order fingerprint"):
         main(["run", "--config", str(config)])
 
 
@@ -130,8 +194,9 @@ def test_preflight_rejects_unapproved_mask_review(tmp_path: Path) -> None:
     payload = json.loads(path.read_text())
     payload["slides"][1]["mask_review"] = {"status": "pending"}
     path.write_text(json.dumps(payload))
+    _seal_registration_approval(run)
 
-    with pytest.raises(ValueError, match="CK19.ndpi.*mask review is not approved"):
+    with pytest.raises(ValueError, match="registration approval.*unapproved mask"):
         preflight_registration(run)
 
 
@@ -141,8 +206,43 @@ def test_preflight_rejects_unaccepted_registration_mask(tmp_path: Path) -> None:
     payload = json.loads(path.read_text())
     payload["slides"][1]["mask"]["accepted"] = False
     path.write_text(json.dumps(payload))
+    _seal_registration_approval(run)
 
     with pytest.raises(ValueError, match="CK19.ndpi.*mask is not accepted"):
+        preflight_registration(run)
+
+
+def test_preflight_requires_final_registration_approval(tmp_path: Path) -> None:
+    run = _write_registration(tmp_path)
+    (run / "registration_approval.json").unlink()
+
+    with pytest.raises(ValueError, match="requires a sealed registration approval"):
+        preflight_registration(run)
+
+
+def test_preflight_rejects_approval_changed_during_slide_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = _write_registration(tmp_path)
+    original = preflight_module._validate_slide
+    changed = False
+
+    def mutate_after_validation(*args, **kwargs):
+        nonlocal changed
+        slide = original(*args, **kwargs)
+        if not changed:
+            approval_path = run / "registration_approval.json"
+            approval = json.loads(approval_path.read_text())
+            approval["notes"] = "Changed during semantic preflight."
+            approval_path.write_text(json.dumps(approval))
+            changed = True
+        return slide
+
+    monkeypatch.setattr(preflight_module, "_validate_slide", mutate_after_validation)
+
+    with pytest.raises(
+        ValueError, match="registration approval changed during semantic preflight"
+    ):
         preflight_registration(run)
 
 

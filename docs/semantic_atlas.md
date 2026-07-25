@@ -198,6 +198,13 @@ effective processed-mask checksum, mask method, and review status. This binds
 semantic patch selection to the cleaned mask actually used for registration,
 including reviewed overrides.
 
+New schema-3 preflights additionally require the final
+`registration_approval.json` seal and include its exact SHA-256 in the
+preflight fingerprint. Semantic extraction therefore cannot begin from a
+registration whose masks and order were reviewed but whose completed alignment
+was never finally approved. Historical schema-1 and schema-2 preflights remain
+readable for fitting and approved-result export.
+
 Add an atlas to the section viewer with:
 
 ```bash

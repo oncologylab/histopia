@@ -8,7 +8,7 @@ import math
 import os
 from collections import defaultdict
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -17,6 +17,9 @@ from histopia.semantic._approval import (
     validate_semantic_approval,
 )
 from histopia.semantic._result_validation import validate_semantic_result
+
+if TYPE_CHECKING:
+    from histopia.registration._approval import RegistrationApproval
 
 _SEMANTIC_GEOMETRIES = ("regions", "tiles")
 _SEMANTIC_GEOMETRY_VERSIONS = {
@@ -53,13 +56,19 @@ def export_qupath_bundle(
     semantic_payload = None
     semantic_root = None
     semantic_approval: SemanticApproval | None = None
+    registration_approval: RegistrationApproval | None = None
+    registration_approval_sha256: str | None = None
     semantic_preflight_fingerprint: str | None = None
     palette: list[str] = []
     if semantic_run is not None:
         semantic_root = Path(semantic_run).expanduser().resolve()
         semantic_payload = validate_semantic_result(semantic_root)
         semantic_approval = validate_semantic_approval(semantic_root)
-        semantic_preflight_fingerprint = _validate_registration_binding(
+        (
+            semantic_preflight_fingerprint,
+            registration_approval,
+            registration_approval_sha256,
+        ) = _validate_registration_binding(
             registration_path,
             registration,
             semantic_root,
@@ -81,6 +90,15 @@ def export_qupath_bundle(
         )
         annotation_dir.mkdir(parents=True, exist_ok=True)
     else:
+        try:
+            (
+                registration_approval,
+                registration_approval_sha256,
+            ) = _validate_registration_approval(registration_run)
+        except FileNotFoundError as error:
+            raise ValueError(
+                "QuPath registration export requires a sealed registration approval"
+            ) from error
         output_dir.mkdir(parents=True, exist_ok=True)
 
     semantic_by_id = (
@@ -138,15 +156,25 @@ def export_qupath_bundle(
             row["semantic_patch_count"] = summary["patch_count"]
         slide_rows.append(row)
 
+    registration_sha256 = _file_sha256(registration_path)
+    if registration_approval is not None:
+        if registration_approval_sha256 is None:
+            raise RuntimeError("registration approval digest is missing")
+        if (
+            registration_sha256 != registration_approval.registration_result_sha256
+            or _file_sha256(registration_run / "registration_approval.json")
+            != registration_approval_sha256
+        ):
+            raise ValueError("registration approval changed during QuPath export")
     manifest = {
-        "schema_version": 3,
+        "schema_version": 4 if registration_approval is not None else 3,
         "format": "histopia-qupath-bundle",
         "coordinate_conventions": {
             "semantic_annotations": "source_native_pixels",
             "thumbnail_transform": "moving_thumbnail_to_reference_thumbnail",
             "point_order": "x_y",
         },
-        "registration_sha256": _file_sha256(registration_path),
+        "registration_sha256": registration_sha256,
         "semantic_fingerprint": (
             semantic_payload.get("fingerprint")
             if semantic_payload is not None
@@ -173,6 +201,16 @@ def export_qupath_bundle(
         ),
         "slides": slide_rows,
     }
+    if registration_approval is not None:
+        manifest["registration_approval"] = {
+            "approval_sha256": registration_approval_sha256,
+            "registration_result_sha256": (
+                registration_approval.registration_result_sha256
+            ),
+            "order_fingerprint": registration_approval.order_fingerprint,
+            "reviewer": registration_approval.reviewer,
+            "reviewed_at": registration_approval.reviewed_at,
+        }
     path = output_dir / "histopia-qupath.json"
     _write_json_atomic(path, manifest, compact=False)
     return path
@@ -183,13 +221,13 @@ def _validate_registration_binding(
     registration: dict[str, object],
     semantic_root: Path,
     semantic_payload: dict[str, object],
-) -> str:
+) -> tuple[str, RegistrationApproval | None, str | None]:
     preflight_path = semantic_root / "preflight.json"
     preflight = json.loads(preflight_path.read_text())
     if not isinstance(preflight, dict):
         raise ValueError("semantic preflight root must be an object")
     schema = preflight.get("schema_version")
-    if schema not in {1, 2}:
+    if schema not in {1, 2, 3}:
         raise ValueError("semantic preflight schema is unsupported")
     fingerprint = preflight.get("fingerprint")
     provenance = semantic_payload.get("feature_provenance")
@@ -207,6 +245,10 @@ def _validate_registration_binding(
         "reference_slide": preflight.get("reference_slide"),
         "slides": _portable_preflight_slides(preflight.get("slides")),
     }
+    if schema == 3:
+        core["registration_approval_sha256"] = preflight.get(
+            "registration_approval_sha256"
+        )
     if _json_sha256(core) != fingerprint:
         raise ValueError("semantic preflight record is stale")
     if core["registration_result_sha256"] != _file_sha256(registration_path):
@@ -238,7 +280,34 @@ def _validate_registration_binding(
     ]
     if references != [preflight.get("reference_slide")]:
         raise ValueError("semantic and registration references differ")
-    return fingerprint
+    approval = None
+    approval_sha256 = None
+    if schema == 3:
+        expected_approval = core["registration_approval_sha256"]
+        if not isinstance(expected_approval, str) or not expected_approval:
+            raise ValueError("semantic preflight registration approval is stale")
+        approval, approval_sha256 = _validate_registration_approval(
+            registration_path.parent
+        )
+        if expected_approval != approval_sha256:
+            raise ValueError("semantic preflight registration approval is stale")
+        if approval.registration_result_sha256 != core["registration_result_sha256"]:
+            raise ValueError("registration approval differs from semantic preflight")
+    return fingerprint, approval, approval_sha256
+
+
+def _validate_registration_approval(
+    run_dir: Path,
+) -> tuple[RegistrationApproval, str]:
+    from histopia.registration._approval import validate_registration_approval
+
+    path = run_dir / "registration_approval.json"
+    before = _file_sha256(path)
+    approval = validate_registration_approval(run_dir)
+    after = _file_sha256(path)
+    if before != after:
+        raise ValueError("registration approval changed during validation")
+    return approval, after
 
 
 def _portable_preflight_slides(value: object) -> list[dict[str, object]]:

@@ -126,13 +126,16 @@ and import** tab supports:
 - optionally replacing existing Histopia annotations rather than duplicating
   them
 
-New schema-3 exports bind the semantic approval, semantic preflight, and exact
-registration-result SHA-256. The extension verifies annotation checksums and
-byte sizes, rejects paths or symlinks outside the bundle, and retains import
-compatibility with older schema-1/2 bundles. It invokes the Python package as a
-child process; GPU, WSI, and model dependencies remain in the Python
-environment rather than QuPath's JVM. Configure and test that environment
-independently with `histopia-semantic doctor`.
+Schema-3 exports bind the semantic approval, semantic preflight, and exact
+registration-result SHA-256. New approval-bound workflows emit schema 4, which
+also records the final registration-approval SHA-256, matching registration
+result digest, order fingerprint, reviewer, and timestamp. Registration-only
+exports require this final seal. The extension verifies these schema-4 fields,
+annotation checksums and byte sizes, rejects paths or symlinks outside the
+bundle, and retains import compatibility with schema 1-3. It invokes the
+Python package as a child process; GPU, WSI, and model dependencies remain in
+the Python environment rather than QuPath's JVM. Configure and test that
+environment independently with `histopia-semantic doctor`.
 
 Source code and release history are maintained separately at
 [`oncologylab/qupath-extension-histopia`](https://github.com/oncologylab/qupath-extension-histopia).

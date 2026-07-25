@@ -35,6 +35,7 @@ class SemanticPreflight:
     schema_version: int
     registration_run: str
     registration_result_sha256: str
+    registration_approval_sha256: str
     order_review_fingerprint: str | None
     reference_slide: str
     slides: tuple[SemanticPreflightSlide, ...]
@@ -50,6 +51,16 @@ def preflight_registration(registration_run: Path | str) -> SemanticPreflight:
 
     run = Path(registration_run).expanduser().resolve()
     result_path = run / "registration_result.json"
+    approval_path = run / "registration_approval.json"
+    try:
+        from histopia.registration._approval import validate_registration_approval
+
+        approval = validate_registration_approval(run)
+    except FileNotFoundError as error:
+        raise ValueError(
+            "semantic preflight requires a sealed registration approval"
+        ) from error
+    approval_sha256 = _sha256_file(approval_path)
     payload = json.loads(result_path.read_text())
     rows = payload.get("slides")
     if not isinstance(rows, list) or not rows:
@@ -68,18 +79,30 @@ def preflight_registration(registration_run: Path | str) -> SemanticPreflight:
     slides = tuple(
         _validate_slide(run, name, row) for name, row in zip(names, rows, strict=True)
     )
+    result_sha256 = _sha256_file(result_path)
+    if approval.registration_result_sha256 != result_sha256:
+        raise ValueError("registration approval changed during semantic preflight")
     core = {
-        "schema_version": 2,
-        "registration_result_sha256": _sha256_file(result_path),
+        "schema_version": 3,
+        "registration_result_sha256": result_sha256,
+        "registration_approval_sha256": approval_sha256,
         "order_review_fingerprint": order_fingerprint,
         "reference_slide": references[0],
         "slides": [_portable_slide(slide) for slide in slides],
     }
     fingerprint = _sha256_json(core)
+    final_approval = validate_registration_approval(run)
+    if (
+        final_approval != approval
+        or _sha256_file(approval_path) != approval_sha256
+        or _sha256_file(result_path) != result_sha256
+    ):
+        raise ValueError("registration approval changed during semantic preflight")
     return SemanticPreflight(
-        schema_version=2,
+        schema_version=3,
         registration_run=str(run),
         registration_result_sha256=core["registration_result_sha256"],
+        registration_approval_sha256=core["registration_approval_sha256"],
         order_review_fingerprint=order_fingerprint,
         reference_slide=references[0],
         slides=slides,

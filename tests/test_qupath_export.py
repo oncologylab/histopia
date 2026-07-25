@@ -9,7 +9,10 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+import histopia.qupath._export as qupath_export_module
+import histopia.registration._approval as registration_approval_module
 from histopia.qupath import export_qupath_bundle
+from histopia.registration import approve_registration_run
 from histopia.semantic._result import _seal_semantic_result
 
 
@@ -213,11 +216,113 @@ def test_qupath_bundle_rejects_unknown_semantic_geometry(tmp_path: Path) -> None
         )
 
 
+def test_registration_only_bundle_requires_and_records_final_approval(
+    tmp_path: Path,
+) -> None:
+    registration, _ = _write_runs(tmp_path)
+
+    with pytest.raises(ValueError, match="requires a sealed registration approval"):
+        export_qupath_bundle(registration, tmp_path / "unapproved")
+
+    _approve_synthetic_registration(registration)
+    manifest_path = export_qupath_bundle(registration, tmp_path / "approved")
+    manifest = json.loads(manifest_path.read_text())
+
+    assert manifest["schema_version"] == 4
+    assert manifest["registration_approval"]["reviewer"] == "Test Reviewer"
+    assert (
+        manifest["registration_approval"]["registration_result_sha256"]
+        == manifest["registration_sha256"]
+    )
+    assert len(manifest["registration_approval"]["approval_sha256"]) == 64
+
+
+def test_registration_only_bundle_rejects_approval_changed_during_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registration, _ = _write_runs(tmp_path)
+    _approve_synthetic_registration(registration)
+    original = registration_approval_module.validate_registration_approval
+
+    def mutate_after_validation(run_dir):
+        approval = original(run_dir)
+        path = registration / "registration_approval.json"
+        payload = json.loads(path.read_text())
+        payload["notes"] = "Changed during QuPath export."
+        path.write_text(json.dumps(payload))
+        return approval
+
+    monkeypatch.setattr(
+        registration_approval_module,
+        "validate_registration_approval",
+        mutate_after_validation,
+    )
+
+    with pytest.raises(
+        ValueError, match="registration approval changed during validation"
+    ):
+        export_qupath_bundle(registration, tmp_path / "bundle")
+
+
+def test_registration_only_bundle_rejects_approval_changed_before_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registration, _ = _write_runs(tmp_path)
+    _approve_synthetic_registration(registration)
+    original = qupath_export_module._validate_registration_approval
+
+    def mutate_after_validation(run_dir):
+        approval, digest = original(run_dir)
+        path = registration / "registration_approval.json"
+        payload = json.loads(path.read_text())
+        payload["notes"] = "Changed before manifest write."
+        path.write_text(json.dumps(payload))
+        return approval, digest
+
+    monkeypatch.setattr(
+        qupath_export_module,
+        "_validate_registration_approval",
+        mutate_after_validation,
+    )
+
+    with pytest.raises(
+        ValueError, match="registration approval changed during QuPath export"
+    ):
+        export_qupath_bundle(registration, tmp_path / "bundle")
+
+
+def test_schema_four_semantic_bundle_binds_final_registration_approval(
+    tmp_path: Path,
+) -> None:
+    registration, semantic = _write_runs(tmp_path, approval_bound=True)
+
+    manifest_path = export_qupath_bundle(
+        registration,
+        tmp_path / "bundle",
+        semantic_run=semantic,
+    )
+    manifest = json.loads(manifest_path.read_text())
+
+    assert manifest["schema_version"] == 4
+    assert manifest["registration_approval"]["reviewer"] == "Test Reviewer"
+    approval_path = registration / "registration_approval.json"
+    approval = json.loads(approval_path.read_text())
+    approval["notes"] = "Changed after semantic preflight."
+    approval_path.write_text(json.dumps(approval))
+    with pytest.raises(ValueError, match="registration approval is stale"):
+        export_qupath_bundle(
+            registration,
+            tmp_path / "stale",
+            semantic_run=semantic,
+        )
+
+
 def _write_runs(
     root: Path,
     *,
     grid_rc: np.ndarray | None = None,
     labels: np.ndarray | None = None,
+    approval_bound: bool = False,
 ) -> tuple[Path, Path]:
     grid_rc = np.array([[0, 0], [0, 1]], dtype=np.int32) if grid_rc is None else grid_rc
     labels = np.array([0, 1], dtype=np.int16) if labels is None else labels
@@ -249,6 +354,8 @@ def _write_runs(
             }
         )
     )
+    if approval_bound:
+        _approve_synthetic_registration(registration)
     semantic = root / "semantic"
     labels_dir = semantic / "labels" / "k-2"
     labels_dir.mkdir(parents=True)
@@ -289,7 +396,7 @@ def _write_runs(
         (registration / "registration_result.json").read_bytes()
     ).hexdigest()
     preflight_core = {
-        "schema_version": 2,
+        "schema_version": 3 if approval_bound else 2,
         "registration_result_sha256": registration_sha256,
         "order_review_fingerprint": None,
         "reference_slide": source.name,
@@ -308,6 +415,10 @@ def _write_runs(
             }
         ],
     }
+    if approval_bound:
+        preflight_core["registration_approval_sha256"] = hashlib.sha256(
+            (registration / "registration_approval.json").read_bytes()
+        ).hexdigest()
     preflight_fingerprint = hashlib.sha256(
         json.dumps(
             preflight_core,
@@ -347,6 +458,45 @@ def _write_runs(
         )
     )
     return registration, semantic
+
+
+def _approve_synthetic_registration(registration: Path) -> None:
+    result_path = registration / "registration_result.json"
+    result = json.loads(result_path.read_text())
+    slide = result["slides"][0]
+    slide_id = Path(slide["path"]).name
+    review = {
+        "slide": slide_id,
+        "thumbnail_sha256": "mask-fingerprint",
+        "status": "auto_pass",
+        "method": "test",
+        "reviewer": "Test Reviewer",
+        "notes": "Reviewed.",
+        "override_path": None,
+    }
+    slide["mask"] = {"accepted": True}
+    slide["mask_review"] = dict(review)
+    result_path.write_text(json.dumps(result))
+    (registration / "mask_review.json").write_text(
+        json.dumps({"schema_version": 2, "slides": [review]})
+    )
+    (registration / "section_order_review.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "approved": True,
+                "fingerprint": "order-fingerprint",
+                "input_fingerprints": {slide_id: "order-input"},
+                "slides": [{"order": 1, "slide": slide_id}],
+            }
+        )
+    )
+    approve_registration_run(
+        registration,
+        reviewer="Test Reviewer",
+        notes="Registration reviewed.",
+        reviewed_at="2026-07-24T18:00:00+00:00",
+    )
 
 
 def _reseal_semantic_result(root: Path) -> None:
