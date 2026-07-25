@@ -40,11 +40,13 @@ must not be applied as native-pixel transforms.
 
 The exporter validates the complete semantic result, requires exact semantic
 approval, binds the atlas preflight to the selected registration-result
-SHA-256, and requires exact equality between each label grid and its
-corresponding extracted source grid. It uses the same rounded native-pixel
-patch dimensions as feature extraction. Selecting an unavailable K, pairing a
-different registration, missing a slide, changing grid rows, or using
-uncalibrated geometry fails before a new manifest is presented as complete.
+SHA-256, and reconstructs native tile bounds from each result-sealed label
+grid, calibrated patch scale, and preflight-bound registration content
+geometry. Mutable compact feature files are not trusted during export. It uses
+the same rounded native-pixel patch dimensions as feature extraction.
+Selecting an unavailable K, pairing a different registration, missing a slide,
+changing grid rows, or using uncalibrated geometry fails before a new manifest
+is presented as complete.
 Fingerprinted annotation directories keep an older manifest internally
 consistent while a new export is being written.
 

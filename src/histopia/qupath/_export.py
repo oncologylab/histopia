@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 from collections import defaultdict
 from pathlib import Path
@@ -53,7 +54,6 @@ def export_qupath_bundle(
     semantic_root = None
     semantic_approval: SemanticApproval | None = None
     semantic_preflight_fingerprint: str | None = None
-    feature_paths: dict[str, Path] = {}
     palette: list[str] = []
     if semantic_run is not None:
         semantic_root = Path(semantic_run).expanduser().resolve()
@@ -72,7 +72,6 @@ def export_qupath_bundle(
         clusters = selected if clusters is None else clusters
         if clusters not in available:
             raise ValueError(f"K={clusters} is unavailable; choose one of {available}")
-        feature_paths = _index_feature_paths(semantic_root / "features")
         palette = [str(value) for value in semantic_payload["palette"]]
         if not palette:
             raise ValueError("semantic palette is empty")
@@ -115,9 +114,8 @@ def export_qupath_bundle(
             )
         if semantic_payload is not None and semantic_root is not None:
             semantic_row = semantic_by_id.get(slide_id)
-            feature_path = feature_paths.get(slide_id)
-            if semantic_row is None or feature_path is None:
-                raise ValueError(f"semantic features are missing for {slide_id}")
+            if semantic_row is None:
+                raise ValueError(f"semantic labels are missing for {slide_id}")
             label_path = semantic_root / semantic_row["labels"][str(clusters)]
             relative = (
                 annotation_dir.relative_to(output_dir)
@@ -126,7 +124,6 @@ def export_qupath_bundle(
             summary = _write_semantic_geojson(
                 output_dir / relative,
                 slide_id=slide_id,
-                feature_path=feature_path,
                 label_path=label_path,
                 geometry=geometry,
                 clusters=int(clusters),
@@ -263,71 +260,102 @@ def _json_sha256(value: object) -> str:
     ).hexdigest()
 
 
-def _index_feature_paths(feature_dir: Path) -> dict[str, Path]:
-    indexed: dict[str, Path] = {}
-    for path in sorted(feature_dir.glob("*.npz")):
-        try:
-            with np.load(path, allow_pickle=False) as data:
-                slide_id = str(data["slide_id"].item())
-        except (KeyError, OSError, ValueError) as exc:
-            raise ValueError(f"invalid semantic feature artifact: {path.name}") from exc
-        if slide_id in indexed:
-            raise ValueError(f"duplicate semantic features for {slide_id}")
-        indexed[slide_id] = path
-    return indexed
-
-
 def _write_semantic_geojson(
     path: Path,
     *,
     slide_id: str,
-    feature_path: Path,
     label_path: Path,
     geometry: dict[str, Any],
     clusters: int,
     palette: list[str],
     semantic_geometry: str,
 ) -> dict[str, int]:
-    with np.load(feature_path, allow_pickle=False) as features:
-        native_xy = np.asarray(features["native_xy"], dtype=np.float64)
-        feature_grid_rc = np.asarray(features["grid_rc"], dtype=np.int32)
-        feature_slide_id = str(features["slide_id"].item())
     with np.load(label_path, allow_pickle=False) as labels_data:
-        labels = np.asarray(labels_data["labels"], dtype=np.int32)
-        label_grid_rc = np.asarray(labels_data["grid_rc"], dtype=np.int32)
-        patch_um = float(labels_data["patch_size_px"]) * float(
-            labels_data["analysis_mpp"]
-        )
+        raw_labels = np.asarray(labels_data["labels"])
+        raw_grid_rc = np.asarray(labels_data["grid_rc"])
+        raw_grid_shape = np.asarray(labels_data["grid_shape"])
+        patch_size_px = np.asarray(labels_data["patch_size_px"])
+        analysis_mpp = np.asarray(labels_data["analysis_mpp"])
     if (
-        feature_slide_id != slide_id
-        or len(native_xy) != len(labels)
-        or feature_grid_rc.shape != label_grid_rc.shape
-        or not np.array_equal(feature_grid_rc, label_grid_rc)
+        raw_labels.ndim != 1
+        or not np.issubdtype(raw_labels.dtype, np.integer)
+        or raw_grid_rc.ndim != 2
+        or raw_grid_rc.shape[1] != 2
+        or not np.issubdtype(raw_grid_rc.dtype, np.integer)
+        or raw_grid_shape.shape != (2,)
+        or not np.issubdtype(raw_grid_shape.dtype, np.integer)
+        or patch_size_px.shape != ()
+        or analysis_mpp.shape != ()
     ):
-        raise ValueError(f"semantic coordinates do not match labels for {slide_id}")
-    if (
-        native_xy.ndim != 2
-        or native_xy.shape[1] != 2
-        or not np.all(np.isfinite(native_xy))
-        or feature_grid_rc.ndim != 2
-        or feature_grid_rc.shape[1] != 2
-        or len(np.unique(feature_grid_rc, axis=0)) != len(feature_grid_rc)
-    ):
-        raise ValueError(f"semantic coordinates are invalid for {slide_id}")
+        raise ValueError(f"semantic label grid is invalid for {slide_id}")
+    labels = raw_labels.astype(np.int64, copy=False)
+    grid_rc = raw_grid_rc.astype(np.int64, copy=False)
+    grid_shape = tuple(int(value) for value in raw_grid_shape)
+    patch_size = float(patch_size_px)
+    analysis_scale = float(analysis_mpp)
     if labels.size and (int(labels.min()) < 0 or int(labels.max()) >= clusters):
         raise ValueError(f"semantic labels are outside K={clusters} for {slide_id}")
+    if (
+        len(labels) != len(grid_rc)
+        or not len(labels)
+        or len(np.unique(grid_rc, axis=0)) != len(grid_rc)
+        or min(grid_shape) <= 0
+        or np.any(grid_rc < 0)
+        or np.any(grid_rc[:, 0] >= grid_shape[0])
+        or np.any(grid_rc[:, 1] >= grid_shape[1])
+        or not math.isfinite(patch_size)
+        or not patch_size.is_integer()
+        or patch_size <= 0
+        or not math.isfinite(analysis_scale)
+        or analysis_scale <= 0
+    ):
+        raise ValueError(f"semantic label grid is invalid for {slide_id}")
     mpp = geometry.get("mpp_xy")
     native_shape = geometry.get("native_shape")
+    content_bbox = geometry.get("content_bbox_xywh")
     if (
         not isinstance(mpp, list)
         or len(mpp) != 2
         or not isinstance(native_shape, list)
         or len(native_shape) != 2
+        or not isinstance(content_bbox, list)
+        or len(content_bbox) != 4
     ):
         raise ValueError(f"calibrated native geometry is required for {slide_id}")
-    half_width = max(1, round(patch_um / float(mpp[0]))) / 2
-    half_height = max(1, round(patch_um / float(mpp[1]))) / 2
+    mpp_xy = tuple(float(value) for value in mpp)
     native_height, native_width = (int(value) for value in native_shape)
+    content_x, content_y, content_width, content_height = (
+        int(value) for value in content_bbox
+    )
+    if (
+        not np.all(np.isfinite(mpp_xy))
+        or min(mpp_xy) <= 0
+        or min(native_height, native_width, content_width, content_height) <= 0
+        or content_x < 0
+        or content_y < 0
+        or content_x + content_width > native_width
+        or content_y + content_height > native_height
+    ):
+        raise ValueError(f"calibrated native geometry is required for {slide_id}")
+    patch_um = patch_size * analysis_scale
+    native_patch_width = max(1, round(patch_um / mpp_xy[0]))
+    native_patch_height = max(1, round(patch_um / mpp_xy[1]))
+    expected_grid_shape = (
+        content_height // native_patch_height,
+        content_width // native_patch_width,
+    )
+    if grid_shape != expected_grid_shape:
+        raise ValueError(
+            f"semantic label grid differs from registration geometry for {slide_id}"
+        )
+    native_xy = np.column_stack(
+        (
+            content_x + grid_rc[:, 1] * native_patch_width + native_patch_width / 2,
+            content_y + grid_rc[:, 0] * native_patch_height + native_patch_height / 2,
+        )
+    )
+    half_width = native_patch_width / 2
+    half_height = native_patch_height / 2
     features_json = []
     region_count = 0
     for label in range(clusters):
@@ -337,7 +365,7 @@ def _write_semantic_geojson(
             continue
         rectangles = (
             _coalesce_patch_rectangles(
-                feature_grid_rc[selected],
+                grid_rc[selected],
                 points,
                 half_width=half_width,
                 half_height=half_height,

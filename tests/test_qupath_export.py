@@ -56,7 +56,7 @@ def test_qupath_bundle_exports_native_semantic_geojson(tmp_path: Path) -> None:
     assert first["properties"]["objectType"] == "annotation"
     assert first["properties"]["classification"]["color"] == [215, 48, 39]
     assert first["geometry"]["type"] == "MultiPolygon"
-    assert first["geometry"]["coordinates"][0][0][0] == [88.0, 88.0]
+    assert first["geometry"]["coordinates"][0][0][0] == [0.0, 0.0]
 
 
 def test_qupath_bundle_rejects_unavailable_k(tmp_path: Path) -> None:
@@ -110,9 +110,6 @@ def test_qupath_bundle_coalesces_adjacent_tiles_and_preserves_audit_mode(
     registration, semantic = _write_runs(
         tmp_path,
         grid_rc=np.array([[0, 0], [0, 1], [1, 0], [1, 1]], dtype=np.int32),
-        native_xy=np.array(
-            [[200.0, 200.0], [424.0, 200.0], [200.0, 424.0], [424.0, 424.0]]
-        ),
         labels=np.zeros(4, dtype=np.int16),
     )
 
@@ -145,30 +142,57 @@ def test_qupath_bundle_coalesces_adjacent_tiles_and_preserves_audit_mode(
     )
     polygon = region_geojson["features"][0]["geometry"]["coordinates"][0][0]
     assert polygon == [
-        [88, 88],
-        [536, 88],
-        [536, 536],
-        [88, 536],
-        [88, 88],
+        [0, 0],
+        [448, 0],
+        [448, 448],
+        [0, 448],
+        [0, 0],
     ]
 
 
-def test_qupath_bundle_rejects_feature_and_label_grid_mismatch(
+def test_qupath_bundle_does_not_trust_mutable_feature_coordinates(
     tmp_path: Path,
 ) -> None:
     registration, semantic = _write_runs(tmp_path)
-    feature_path = semantic / "features" / "001-section.npz"
-    with np.load(feature_path, allow_pickle=False) as feature:
-        slide_id = feature["slide_id"]
-        native_xy = feature["native_xy"]
+    feature_dir = semantic / "features"
+    feature_dir.mkdir()
     np.savez_compressed(
-        feature_path,
-        slide_id=slide_id,
-        native_xy=native_xy,
-        grid_rc=np.array([[0, 0], [1, 0]], dtype=np.int32),
+        feature_dir / "stale.npz",
+        slide_id=np.asarray("section.ndpi"),
+        native_xy=np.array([[900.0, 900.0]]),
+        grid_rc=np.array([[99, 99]], dtype=np.int32),
     )
 
-    with pytest.raises(ValueError, match="coordinates do not match labels"):
+    manifest_path = export_qupath_bundle(
+        registration,
+        tmp_path / "bundle",
+        semantic_run=semantic,
+        clusters=2,
+    )
+
+    manifest = json.loads(manifest_path.read_text())
+    annotation_path = (
+        manifest_path.parent / manifest["slides"][0]["semantic_annotations"]
+    )
+    annotations = json.loads(annotation_path.read_text())
+    assert annotations["features"][0]["geometry"]["coordinates"][0][0][0] == [
+        0.0,
+        0.0,
+    ]
+
+
+def test_qupath_bundle_rejects_label_grid_inconsistent_with_registration(
+    tmp_path: Path,
+) -> None:
+    registration, semantic = _write_runs(tmp_path)
+    label_path = semantic / "labels" / "k-2" / "001.npz"
+    with np.load(label_path, allow_pickle=False) as data:
+        arrays = {name: data[name] for name in data.files}
+    arrays["grid_shape"] = np.array([1, 2], dtype=np.int32)
+    np.savez_compressed(label_path, **arrays)
+    _reseal_semantic_result(semantic)
+
+    with pytest.raises(ValueError, match="differs from registration geometry"):
         export_qupath_bundle(
             registration,
             tmp_path / "bundle",
@@ -193,13 +217,9 @@ def _write_runs(
     root: Path,
     *,
     grid_rc: np.ndarray | None = None,
-    native_xy: np.ndarray | None = None,
     labels: np.ndarray | None = None,
 ) -> tuple[Path, Path]:
     grid_rc = np.array([[0, 0], [0, 1]], dtype=np.int32) if grid_rc is None else grid_rc
-    native_xy = (
-        np.array([[200.0, 200.0], [400.0, 200.0]]) if native_xy is None else native_xy
-    )
     labels = np.array([0, 1], dtype=np.int16) if labels is None else labels
     registration = root / "registration"
     registration.mkdir()
@@ -231,9 +251,13 @@ def _write_runs(
     )
     semantic = root / "semantic"
     labels_dir = semantic / "labels" / "k-2"
-    features_dir = semantic / "features"
     labels_dir.mkdir(parents=True)
-    features_dir.mkdir()
+    native_xy = np.column_stack(
+        (
+            112 + grid_rc[:, 1] * 224,
+            112 + grid_rc[:, 0] * 224,
+        )
+    )
     np.savez_compressed(
         labels_dir / "001.npz",
         labels=labels,
@@ -241,15 +265,9 @@ def _write_runs(
         grid_rc=grid_rc,
         reference_um_xy=native_xy * 0.5,
         tissue_fraction=np.ones(len(labels), dtype=np.float32),
-        grid_shape=np.max(grid_rc, axis=0) + 1,
+        grid_shape=np.array([4, 5], dtype=np.int32),
         patch_size_px=np.int32(224),
         analysis_mpp=np.float64(0.5),
-    )
-    np.savez_compressed(
-        features_dir / "001-section.npz",
-        slide_id=np.asarray(source.name),
-        native_xy=native_xy,
-        grid_rc=grid_rc,
     )
     np.savez_compressed(semantic / "atlas_model.npz", pca_mean=np.zeros(2))
     core = {
@@ -329,6 +347,21 @@ def _write_runs(
         )
     )
     return registration, semantic
+
+
+def _reseal_semantic_result(root: Path) -> None:
+    path = root / "semantic_result.json"
+    payload = json.loads(path.read_text())
+    core = {
+        key: value
+        for key, value in payload.items()
+        if key not in {"artifacts", "fingerprint"}
+    }
+    sealed = _seal_semantic_result(root, core)
+    path.write_text(json.dumps(sealed))
+    review = json.loads((root / "semantic_review.json").read_text())
+    review["fingerprint"] = sealed["fingerprint"]
+    (root / "semantic_review.json").write_text(json.dumps(review))
 
 
 def test_qupath_import_does_not_load_heavy_workflow_modules() -> None:
