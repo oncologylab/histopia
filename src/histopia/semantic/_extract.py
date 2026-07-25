@@ -140,15 +140,7 @@ def feature_cache_matches(
 
 
 def _geometry_from_json(data: dict[str, Any]) -> SlideGeometry:
-    mpp = data.get("mpp_xy")
-    return SlideGeometry(
-        native_shape=tuple(int(x) for x in data["native_shape"]),
-        content_bbox_xywh=tuple(int(x) for x in data["content_bbox_xywh"]),
-        thumbnail_shape=tuple(int(x) for x in data["thumbnail_shape"]),
-        bounds_source=str(data["bounds_source"]),
-        mpp_xy=tuple(float(x) for x in mpp) if mpp is not None else None,
-        mpp_source=str(data.get("mpp_source", "unavailable")),
-    )
+    return SlideGeometry.from_json_dict(data)
 
 
 class _VipsPatchReader:

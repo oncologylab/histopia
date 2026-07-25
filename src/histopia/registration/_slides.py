@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import math
+from collections.abc import Mapping
 from dataclasses import dataclass
+from numbers import Integral, Real
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +28,79 @@ class SlideGeometry:
     bounds_source: str
     mpp_xy: tuple[float, float] | None = None
     mpp_source: str = "unavailable"
+
+    def __post_init__(self) -> None:
+        native_shape = _positive_integer_tuple(
+            "native_shape",
+            self.native_shape,
+            2,
+        )
+        content_bbox = _integer_tuple(
+            "content_bbox_xywh",
+            self.content_bbox_xywh,
+            4,
+        )
+        x, y, width, height = content_bbox
+        native_height, native_width = native_shape
+        if (
+            min(x, y) < 0
+            or min(width, height) <= 0
+            or x + width > native_width
+            or y + height > native_height
+        ):
+            raise ValueError("content_bbox_xywh must be inside native_shape")
+        thumbnail_shape = _positive_integer_tuple(
+            "thumbnail_shape",
+            self.thumbnail_shape,
+            2,
+        )
+        if not isinstance(self.bounds_source, str) or not self.bounds_source:
+            raise ValueError("bounds_source must be a non-empty string")
+        if not isinstance(self.mpp_source, str) or not self.mpp_source:
+            raise ValueError("mpp_source must be a non-empty string")
+        mpp_xy: tuple[float, float] | None = None
+        if self.mpp_xy is not None:
+            values = tuple(self.mpp_xy)
+            if len(values) != 2 or any(
+                isinstance(value, bool)
+                or not isinstance(value, Real)
+                or not math.isfinite(float(value))
+                or float(value) <= 0
+                for value in values
+            ):
+                raise ValueError("mpp_xy must contain two positive finite values")
+            mpp_xy = (float(values[0]), float(values[1]))
+        object.__setattr__(self, "native_shape", native_shape)
+        object.__setattr__(self, "content_bbox_xywh", content_bbox)
+        object.__setattr__(self, "thumbnail_shape", thumbnail_shape)
+        object.__setattr__(self, "mpp_xy", mpp_xy)
+
+    @classmethod
+    def from_json_dict(cls, payload: object) -> SlideGeometry:
+        """Load validated geometry while ignoring derived matrix fields."""
+
+        if not isinstance(payload, Mapping):
+            raise TypeError("slide geometry must be an object")
+        try:
+            native_shape = tuple(payload["native_shape"])
+            content_bbox = tuple(payload["content_bbox_xywh"])
+            thumbnail_shape = tuple(payload["thumbnail_shape"])
+            bounds_source = payload["bounds_source"]
+            mpp_xy = (
+                tuple(payload["mpp_xy"]) if payload.get("mpp_xy") is not None else None
+            )
+        except KeyError as error:
+            raise ValueError(f"slide geometry is missing {error.args[0]}") from error
+        except TypeError as error:
+            raise ValueError("slide geometry arrays must be iterable") from error
+        return cls(
+            native_shape=native_shape,
+            content_bbox_xywh=content_bbox,
+            thumbnail_shape=thumbnail_shape,
+            bounds_source=bounds_source,
+            mpp_xy=mpp_xy,
+            mpp_source=payload.get("mpp_source") or "unavailable",
+        )
 
     @property
     def thumbnail_to_native(self) -> np.ndarray:
@@ -104,6 +180,36 @@ class SlideRecord:
             "format": self.format,
             "geometry": self.geometry.to_json_dict(),
         }
+
+
+def _positive_integer_tuple(
+    name: str,
+    values: object,
+    length: int,
+) -> tuple[int, ...]:
+    normalized = _integer_tuple(name, values, length)
+    if min(normalized) <= 0:
+        raise ValueError(f"{name} must contain positive dimensions")
+    return normalized
+
+
+def _integer_tuple(
+    name: str,
+    values: object,
+    length: int,
+) -> tuple[int, ...]:
+    try:
+        normalized = tuple(values)
+    except TypeError as error:
+        raise TypeError(f"{name} must be iterable") from error
+    if len(normalized) != length:
+        raise ValueError(f"{name} must contain {length} integers")
+    if any(
+        isinstance(value, bool) or not isinstance(value, Integral)
+        for value in normalized
+    ):
+        raise TypeError(f"{name} must contain integers")
+    return tuple(int(value) for value in normalized)
 
 
 def discover_slides(

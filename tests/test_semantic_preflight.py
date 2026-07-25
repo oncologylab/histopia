@@ -256,6 +256,20 @@ def test_preflight_rejects_mask_shape_mismatch(tmp_path: Path) -> None:
         preflight_registration(run)
 
 
+def test_preflight_rejects_content_bounds_outside_native_slide(
+    tmp_path: Path,
+) -> None:
+    run = _write_registration(tmp_path)
+    path = run / "registration_result.json"
+    payload = json.loads(path.read_text())
+    payload["slides"][1]["geometry"]["content_bbox_xywh"] = [90, 0, 20, 80]
+    path.write_text(json.dumps(payload))
+    _seal_registration_approval(run)
+
+    with pytest.raises(ValueError, match="CK19.ndpi.*invalid slide geometry"):
+        preflight_registration(run)
+
+
 def test_preflight_cli_writes_output_manifest(tmp_path: Path) -> None:
     run = _write_registration(tmp_path)
     output = tmp_path / "semantic"

@@ -329,15 +329,7 @@ def _write_group_mask_entry(
 
 
 def _geometry_from_json(payload: dict[str, Any]) -> SlideGeometry:
-    mpp = payload.get("mpp_xy")
-    return SlideGeometry(
-        native_shape=tuple(int(value) for value in payload["native_shape"]),
-        content_bbox_xywh=tuple(int(value) for value in payload["content_bbox_xywh"]),
-        thumbnail_shape=tuple(int(value) for value in payload["thumbnail_shape"]),
-        bounds_source=str(payload["bounds_source"]),
-        mpp_xy=tuple(float(value) for value in mpp) if mpp is not None else None,
-        mpp_source=str(payload.get("mpp_source", "unavailable")),
-    )
+    return SlideGeometry.from_json_dict(payload)
 
 
 def _float_mapping(payload: dict[str, Any]) -> dict[str, float]:

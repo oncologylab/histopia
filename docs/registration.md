@@ -15,6 +15,11 @@ python -m pip install -e ".[dev,registration,wsi]" \
 The WSI loader uses `pyvips`, which also requires native `libvips`. See
 `docs/dependency_management.md`.
 
+All `SlideGeometry` coordinates use the raw scanner pixel frame. Histopia does
+not apply EXIF/TIFF auto-orientation during native warping or semantic patch
+reads. Reviewed quarter-turn decisions are converted back into that source
+frame before transforms are saved.
+
 ## Current Scope
 
 Implemented now:

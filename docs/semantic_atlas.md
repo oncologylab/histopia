@@ -155,6 +155,11 @@ before starting PCA or clustering; unrelated stale NPZ files are never admitted
 to the atlas. New results record the ordered content seals for all schema-3
 features; a mixed sealed/unsealed campaign is rejected.
 
+Preflight also validates the complete native scanner geometry: positive native
+and thumbnail dimensions, in-bounds content coordinates, and positive finite
+MPP. Registration, native WSI export, and semantic patch extraction share this
+raw, non-auto-oriented coordinate contract.
+
 By default, independent five-seed fits are evaluated for K=5 through K=15.
 Selection balances silhouette, seed stability, within-section coherence, and
 accepted cross-section continuity, rejects tiny clusters, and prefers smaller

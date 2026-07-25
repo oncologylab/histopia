@@ -14,7 +14,7 @@ from histopia.registration import (
     warp_saved_registration,
     warp_slide_to_reference,
 )
-from histopia.registration._wsi import _as_rgb_uchar
+from histopia.registration._wsi import _as_rgb_uchar, read_slide_shape
 
 
 def test_slide_geometry_maps_thumbnail_pixels_to_micrometres() -> None:
@@ -37,6 +37,22 @@ def test_slide_geometry_rejects_uncalibrated_physical_mapping() -> None:
 
     with pytest.raises(ValueError, match="spacing is unavailable"):
         _ = geometry.thumbnail_to_physical
+
+
+@pytest.mark.integration
+def test_full_resolution_reader_preserves_raw_scanner_orientation(
+    tmp_path: Path,
+) -> None:
+    image_module = pytest.importorskip("PIL.Image")
+    pytest.importorskip("pyvips")
+    path = tmp_path / "oriented.jpg"
+    pixels = np.full((10, 20, 3), 255, dtype=np.uint8)
+    pixels[1:4, 2:6] = [255, 0, 0]
+    exif = image_module.Exif()
+    exif[274] = 6
+    image_module.fromarray(pixels).save(path, exif=exif)
+
+    assert read_slide_shape(path) == (10, 20)
 
 
 def test_thumbnail_matrix_scales_to_full_resolution_coordinates() -> None:

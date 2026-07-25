@@ -108,7 +108,7 @@ def geometry_thumbnail_to_native_matrix(
 
 
 def read_slide_shape(path: Path | str) -> tuple[int, int]:
-    """Return auto-oriented full-resolution slide shape as ``(height, width)``."""
+    """Return native scanner slide shape as ``(height, width)``."""
 
     image = _load_slide(Path(path))
     return image.height, image.width
@@ -676,51 +676,13 @@ def _geometry_from_result(
 ) -> SlideGeometry | None:
     if payload is None:
         return None
-    if not isinstance(payload, dict):
-        raise ValueError(f"saved slide geometry must be an object: {slide_path}")
     try:
-        native_shape = tuple(int(value) for value in payload["native_shape"])
-        bbox = tuple(int(value) for value in payload["content_bbox_xywh"])
-        saved_thumbnail_shape = tuple(
-            int(value) for value in payload["thumbnail_shape"]
-        )
-    except (KeyError, TypeError, ValueError) as error:
+        geometry = SlideGeometry.from_json_dict(payload)
+    except (TypeError, ValueError) as error:
         raise ValueError(f"saved slide geometry is invalid: {slide_path}") from error
-    if len(native_shape) != 2 or min(native_shape) <= 0:
-        raise ValueError(f"saved native slide shape is invalid: {slide_path}")
-    if len(bbox) != 4:
-        raise ValueError(f"saved slide content bounds are invalid: {slide_path}")
-    x, y, width, height = bbox
-    native_height, native_width = native_shape
-    if (
-        min(x, y) < 0
-        or min(width, height) <= 0
-        or x + width > native_width
-        or y + height > native_height
-    ):
-        raise ValueError(f"saved slide content bounds are invalid: {slide_path}")
-    if saved_thumbnail_shape != thumbnail_shape or min(thumbnail_shape) <= 0:
+    if geometry.thumbnail_shape != thumbnail_shape:
         raise ValueError(f"saved thumbnail shape does not match image: {slide_path}")
-    bounds_source = payload.get("bounds_source")
-    if not isinstance(bounds_source, str) or not bounds_source:
-        raise ValueError(f"saved slide bounds source is invalid: {slide_path}")
-    mpp_value = payload.get("mpp_xy")
-    mpp: tuple[float, float] | None = None
-    if mpp_value is not None:
-        try:
-            mpp = tuple(float(value) for value in mpp_value)
-        except (TypeError, ValueError) as error:
-            raise ValueError(f"saved slide MPP is invalid: {slide_path}") from error
-        if len(mpp) != 2 or not np.all(np.isfinite(mpp)) or min(mpp) <= 0:
-            raise ValueError(f"saved slide MPP is invalid: {slide_path}")
-    return SlideGeometry(
-        native_shape=native_shape,
-        content_bbox_xywh=bbox,
-        thumbnail_shape=saved_thumbnail_shape,
-        bounds_source=bounds_source,
-        mpp_xy=mpp,
-        mpp_source=str(payload.get("mpp_source", "unavailable")),
-    )
+    return geometry
 
 
 def _load_warp_summary(path: Path) -> dict[str, dict[str, Any]]:
@@ -960,7 +922,7 @@ def _import_pyvips() -> Any:
 
 def _load_slide(path: Path) -> Any:
     pyvips = _import_pyvips()
-    return pyvips.Image.new_from_file(str(path), access="sequential").autorot()
+    return pyvips.Image.new_from_file(str(path), access="sequential")
 
 
 def _as_rgb_uchar(image: Any) -> Any:

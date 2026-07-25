@@ -10,6 +10,54 @@ from histopia.registration import _slides
 from histopia.registration._masking import create_tissue_mask
 
 
+def test_slide_geometry_json_round_trip_normalizes_legacy_metadata() -> None:
+    geometry = _slides.SlideGeometry.from_json_dict(
+        {
+            "native_shape": [100, 200],
+            "content_bbox_xywh": [10, 20, 150, 60],
+            "thumbnail_shape": [30, 75],
+            "bounds_source": "openslide.bounds",
+            "mpp_xy": [0.5, 0.25],
+            "mpp_source": None,
+            "thumbnail_to_native": [[1, 0, 0], [0, 1, 0], [0, 0, 1]],
+        }
+    )
+
+    assert geometry.native_shape == (100, 200)
+    assert geometry.content_bbox_xywh == (10, 20, 150, 60)
+    assert geometry.mpp_xy == (0.5, 0.25)
+    assert geometry.mpp_source == "unavailable"
+    assert _slides.SlideGeometry.from_json_dict(geometry.to_json_dict()) == geometry
+
+
+@pytest.mark.parametrize(
+    ("changes", "error"),
+    [
+        ({"native_shape": [0, 200]}, "positive dimensions"),
+        ({"content_bbox_xywh": [190, 0, 20, 50]}, "inside native_shape"),
+        ({"thumbnail_shape": [20.5, 40]}, "must contain integers"),
+        ({"bounds_source": ""}, "non-empty string"),
+        ({"mpp_xy": [float("nan"), 0.5]}, "positive finite"),
+        ({"mpp_xy": [0.0, 0.5]}, "positive finite"),
+    ],
+)
+def test_slide_geometry_rejects_invalid_coordinate_metadata(
+    changes: dict[str, object],
+    error: str,
+) -> None:
+    payload = {
+        "native_shape": [100, 200],
+        "content_bbox_xywh": [0, 0, 200, 100],
+        "thumbnail_shape": [20, 40],
+        "bounds_source": "full_slide",
+        "mpp_xy": [0.5, 0.5],
+        **changes,
+    }
+
+    with pytest.raises((TypeError, ValueError), match=error):
+        _slides.SlideGeometry.from_json_dict(payload)
+
+
 def test_exact_slide_selection_preserves_external_ui_order(tmp_path: Path) -> None:
     first = tmp_path / "first.ndpi"
     second = tmp_path / "second.scn"

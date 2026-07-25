@@ -11,6 +11,7 @@ from typing import Any
 import numpy as np
 
 from histopia._atomic import write_json_atomic
+from histopia.registration._slides import SlideGeometry
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,13 +129,14 @@ def _validate_slide(
     source = Path(str(row["path"])).expanduser()
     if not source.is_file():
         raise FileNotFoundError(f"{slide_name}: source slide is missing")
-    geometry = row.get("geometry", {})
-    shape = tuple(int(value) for value in geometry.get("thumbnail_shape", ()))
-    if len(shape) != 2 or min(shape) <= 0:
-        raise ValueError(f"{slide_name}: invalid thumbnail shape")
-    mpp = tuple(float(value) for value in geometry.get("mpp_xy") or ())
-    if len(mpp) != 2 or not np.all(np.isfinite(mpp)) or min(mpp) <= 0:
+    try:
+        geometry = SlideGeometry.from_json_dict(row.get("geometry"))
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{slide_name}: invalid slide geometry") from error
+    shape = geometry.thumbnail_shape
+    if geometry.mpp_xy is None:
         raise ValueError(f"{slide_name}: positive finite MPP is required")
+    mpp = geometry.mpp_xy
     matrix = np.asarray(row.get("transform", {}).get("matrix"), dtype=float)
     if matrix.shape != (3, 3) or not np.all(np.isfinite(matrix)):
         raise ValueError(f"{slide_name}: transform must be a finite 3x3 matrix")
