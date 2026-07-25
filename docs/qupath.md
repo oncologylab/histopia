@@ -64,14 +64,16 @@ The primary **Project workflow** tab supports:
 - QuPath project order, morphology-only sorting, or morphology sorting with a
   selected reference fixed at position 1
 - automatic or explicit registration reference selection
-- registration resolution and worker controls
+- registration resolution and bounded thumbnail, mask, ordering, and QC
+  worker controls
 - semantic device including explicit `cuda:N`, K range, batch-size,
   patch-reader, optional native libvips thread cap, bounded global-fit threads,
   and model-cache controls
 - an in-panel compute check that reports the resolved Python/Torch backend and
   accelerator before extraction
-- a conservative automatic registration worker count capped at four, with an
-  editable override for measured host-specific tuning
+- a conservative automatic registration worker count capped at four, including
+  concurrent QC rendering, with an editable override for measured host-specific
+  tuning
 - live process output, review-note redaction, and complete process-tree
   cancellation with bounded force escalation
 - one self-contained browser portal that opens at the mask-only preparation

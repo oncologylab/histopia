@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 import numpy as np
@@ -21,6 +22,7 @@ class RegistrationQcCache:
         self.run_dir = Path(run_dir).resolve()
         self.manifest_path = Path(manifest_path)
         self._entries = _load_entries(self.manifest_path)
+        self._lock = Lock()
         self.hits = 0
         self.misses = 0
         self.rendered = 0
@@ -34,7 +36,8 @@ class RegistrationQcCache:
 
         relative_paths = self._relative_paths(artifact_paths)
         key = relative_paths[0]
-        entry = self._entries.get(key)
+        with self._lock:
+            entry = self._entries.get(key)
         expected_rows = entry.get("artifacts") if isinstance(entry, dict) else None
         current = bool(
             isinstance(entry, dict)
@@ -49,10 +52,11 @@ class RegistrationQcCache:
                 if isinstance(row, dict)
             )
         )
-        if current:
-            self.hits += 1
-        else:
-            self.misses += 1
+        with self._lock:
+            if current:
+                self.hits += 1
+            else:
+                self.misses += 1
         return current
 
     def record(
@@ -74,23 +78,24 @@ class RegistrationQcCache:
                     "sha256": _sha256_file(path),
                 }
             )
-        self._entries[relative_paths[0]] = {
-            "fingerprint": fingerprint,
-            "artifacts": rows,
-        }
-        self.rendered += 1
-        try:
-            write_json_atomic(
-                self.manifest_path,
-                {
-                    "schema": _SCHEMA,
-                    "entries": self._entries,
-                },
-                sort_keys=True,
-            )
-        except OSError:
-            # Cache metadata must not determine scientific execution.
-            pass
+        with self._lock:
+            self._entries[relative_paths[0]] = {
+                "fingerprint": fingerprint,
+                "artifacts": rows,
+            }
+            self.rendered += 1
+            try:
+                write_json_atomic(
+                    self.manifest_path,
+                    {
+                        "schema": _SCHEMA,
+                        "entries": self._entries,
+                    },
+                    sort_keys=True,
+                )
+            except OSError:
+                # Cache metadata must not determine scientific execution.
+                pass
 
     def _relative_paths(self, paths: tuple[Path, ...]) -> list[str]:
         if not paths:

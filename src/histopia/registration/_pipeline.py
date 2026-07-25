@@ -6,9 +6,10 @@ import csv
 import hashlib
 import json
 import os
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -191,6 +192,7 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
             "thumbnail_workers": config.thumbnail_workers,
             "mask_workers": config.mask_workers,
             "ordering_workers": config.ordering_workers,
+            "qc_workers": config.qc_workers,
             "preprocessing_cache": config.preprocessing_cache,
             "alignment_cache": config.alignment_cache,
             "max_processed_image_dim_px": config.max_processed_image_dim_px,
@@ -535,6 +537,7 @@ def _register_sections(
 
     performance.start_stage("refinement_and_metrics")
     slides: list[SlideRegistration] = []
+    refinement_qc_jobs: list[Callable[[], None]] = []
     for path in slide_paths:
         if path == reference_path:
             working_transform = RigidTransformResult(
@@ -550,25 +553,31 @@ def _register_sections(
                 f"{path.name}: {warning}" for warning in working_transform.warnings
             )
             if config.write_processed_images:
-                _write_alignment_qc(
-                    alignment_dir,
-                    path,
-                    reference_image,
-                    working_thumbnails[path],
-                    working_transform,
-                    cache=registration_qc_cache,
+                refinement_qc_jobs.append(
+                    partial(
+                        _write_alignment_qc,
+                        alignment_dir,
+                        path,
+                        reference_image,
+                        working_thumbnails[path],
+                        working_transform,
+                        cache=registration_qc_cache,
+                    )
                 )
-                _write_alignment_qc(
-                    alignment_dir / "crops",
-                    path,
-                    reference_crop.image,
-                    crops[path].image,
-                    _full_transform_to_crop_transform(
-                        working_transform.matrix,
-                        reference_crop,
-                        crops[path],
-                    ),
-                    cache=registration_qc_cache,
+                refinement_qc_jobs.append(
+                    partial(
+                        _write_alignment_qc,
+                        alignment_dir / "crops",
+                        path,
+                        reference_crop.image,
+                        crops[path].image,
+                        _full_transform_to_crop_transform(
+                            working_transform.matrix,
+                            reference_crop,
+                            crops[path],
+                        ),
+                        cache=registration_qc_cache,
+                    )
                 )
         non_rigid_transform = None
         if path != reference_path and config.non_rigid_refinement.enabled:
@@ -610,13 +619,16 @@ def _register_sections(
                     displacement_path.relative_to(config.output_dir)
                 )
             if config.write_processed_images:
-                _write_non_rigid_qc(
-                    non_rigid_dir,
-                    path,
-                    reference_image,
-                    rigid_moving,
-                    non_rigid_transform,
-                    cache=registration_qc_cache,
+                refinement_qc_jobs.append(
+                    partial(
+                        _write_non_rigid_qc,
+                        non_rigid_dir,
+                        path,
+                        reference_image,
+                        rigid_moving,
+                        non_rigid_transform,
+                        cache=registration_qc_cache,
+                    )
                 )
         transform = _transform_from_oriented_coordinates(
             working_transform,
@@ -646,6 +658,7 @@ def _register_sections(
                 non_rigid_transform=non_rigid_transform,
             )
         )
+    _run_qc_jobs(refinement_qc_jobs, config.qc_workers)
 
     result = RegistrationResult(
         output_dir=config.output_dir,
@@ -661,6 +674,7 @@ def _register_sections(
             geometries,
             qc_dir / "review",
             cache=registration_qc_cache,
+            workers=config.qc_workers,
         )
     performance.start_stage(
         "full_resolution_warp",
@@ -758,9 +772,11 @@ def _write_primary_review_panels(
     output_dir: Path,
     *,
     cache: RegistrationQcCache | None = None,
+    workers: int = 1,
 ) -> None:
     reference = thumbnails[result.reference_slide]
-    for slide in result.slides:
+
+    def write(slide: SlideRegistration) -> None:
         source = thumbnails[slide.path]
         geometry = geometries[slide.path]
         review_status = slide.mask_review.status if slide.mask_review else "untracked"
@@ -778,7 +794,7 @@ def _write_primary_review_panels(
             },
         )
         if cache is not None and cache.is_current(fingerprint, (output_path,)):
-            continue
+            return
         registered = warp_rgb_thumbnail(
             source,
             slide.transform.matrix,
@@ -813,6 +829,33 @@ def _write_primary_review_panels(
         )
         if cache is not None:
             cache.record(fingerprint, (output_path,))
+
+    _run_qc_jobs(
+        (partial(write, slide) for slide in result.slides),
+        workers,
+    )
+
+
+def _run_qc_jobs(
+    jobs: Iterable[Callable[[], None]],
+    workers: int,
+) -> None:
+    """Run deterministic, independent QC renders with bounded concurrency."""
+
+    pending = tuple(jobs)
+    if workers == 1:
+        for job in pending:
+            job()
+        return
+    with ThreadPoolExecutor(
+        max_workers=workers,
+        thread_name_prefix="histopia-qc",
+    ) as executor:
+        tuple(executor.map(_run_qc_job, pending))
+
+
+def _run_qc_job(job: Callable[[], None]) -> None:
+    job()
 
 
 def _write_full_resolution_warps(
@@ -971,6 +1014,7 @@ def _estimate_reference_transforms(
         prepared_features = _prepare_crop_features(slide_paths, crops, config)
     transforms: dict[Path, RigidTransformResult] = {}
     aligned_to: dict[Path, Path] = {}
+    qc_jobs: list[Callable[[], None]] = []
     for path in slide_paths:
         if path == reference_path:
             continue
@@ -985,14 +1029,18 @@ def _estimate_reference_transforms(
         transforms[path] = transform
         aligned_to[path] = reference_path
         if config.write_processed_images and write_pair_qc:
-            _write_alignment_qc(
-                alignment_dir / "pair_crops",
-                path,
-                crops[reference_path].image,
-                crops[path].image,
-                crop_transform,
-                cache=qc_cache,
+            qc_jobs.append(
+                partial(
+                    _write_alignment_qc,
+                    alignment_dir / "pair_crops",
+                    path,
+                    crops[reference_path].image,
+                    crops[path].image,
+                    crop_transform,
+                    cache=qc_cache,
+                )
             )
+    _run_qc_jobs(qc_jobs, config.qc_workers)
     return transforms, aligned_to
 
 
@@ -1013,6 +1061,7 @@ def _estimate_serial_transforms(
     transforms: dict[Path, RigidTransformResult] = {}
     aligned_to: dict[Path, Path] = {}
     cumulative: dict[Path, np.ndarray] = {reference_path: np.eye(3, dtype=float)}
+    qc_jobs: list[Callable[[], None]] = []
 
     for index in range(reference_index + 1, len(slide_paths)):
         moving_path = slide_paths[index]
@@ -1032,13 +1081,16 @@ def _estimate_serial_transforms(
         )
         aligned_to[moving_path] = fixed_path
         if config.write_processed_images:
-            _write_alignment_qc(
-                alignment_dir / "pair_crops",
-                moving_path,
-                crops[fixed_path].image,
-                crops[moving_path].image,
-                crop_transform,
-                cache=qc_cache,
+            qc_jobs.append(
+                partial(
+                    _write_alignment_qc,
+                    alignment_dir / "pair_crops",
+                    moving_path,
+                    crops[fixed_path].image,
+                    crops[moving_path].image,
+                    crop_transform,
+                    cache=qc_cache,
+                )
             )
 
     for index in range(reference_index - 1, -1, -1):
@@ -1059,15 +1111,19 @@ def _estimate_serial_transforms(
         )
         aligned_to[moving_path] = fixed_path
         if config.write_processed_images:
-            _write_alignment_qc(
-                alignment_dir / "pair_crops",
-                moving_path,
-                crops[fixed_path].image,
-                crops[moving_path].image,
-                crop_transform,
-                cache=qc_cache,
+            qc_jobs.append(
+                partial(
+                    _write_alignment_qc,
+                    alignment_dir / "pair_crops",
+                    moving_path,
+                    crops[fixed_path].image,
+                    crops[moving_path].image,
+                    crop_transform,
+                    cache=qc_cache,
+                )
             )
 
+    _run_qc_jobs(qc_jobs, config.qc_workers)
     return transforms, aligned_to
 
 

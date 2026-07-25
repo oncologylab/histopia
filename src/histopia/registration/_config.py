@@ -203,6 +203,7 @@ class RegistrationConfig:
     thumbnail_workers: int = 1
     mask_workers: int = 1
     ordering_workers: int = 1
+    qc_workers: int = 1
     preprocessing_cache: bool = True
     alignment_cache: bool = True
     require_approved_order: bool = False
@@ -315,6 +316,7 @@ class RegistrationConfig:
             self.thumbnail_workers,
         )
         self.mask_workers = positive_int("mask_workers", self.mask_workers)
+        self.qc_workers = positive_int("qc_workers", self.qc_workers)
         for name in (
             "preprocessing_cache",
             "alignment_cache",

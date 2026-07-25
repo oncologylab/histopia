@@ -8,6 +8,8 @@ section_order_strategy = "natural"
 thumbnail_workers = 1
 mask_workers = 1
 ordering_workers = 1
+# Bound concurrent registration QC encoders; increase only with enough RAM.
+qc_workers = 1
 # Reuse source/config-bound thumbnails, masks, and mask-review artifacts.
 preprocessing_cache = true
 # Reuse exact directed rigid pairs and checksum-validated registration QC.

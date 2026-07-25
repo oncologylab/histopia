@@ -71,9 +71,11 @@ histopia-semantic extract --config atlas.toml --device cuda:0 \
 histopia-semantic fit --config atlas.toml --fit-threads 4
 ```
 
-Registration ordering and viewer assets use exact, checksummed caches. Any
-change to reviewed masks, geometry, orientation, transforms, semantic labels,
-or encoding settings invalidates the affected cache.
+Registration exposes bounded thumbnail, mask, ordering, and QC worker controls;
+semantic extraction and fitting expose device and thread controls. Registration
+ordering and viewer assets use exact, checksummed caches. Any change to reviewed
+masks, geometry, orientation, transforms, semantic labels, or encoding settings
+invalidates the affected cache.
 
 ## Development
 

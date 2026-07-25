@@ -26,6 +26,7 @@ def test_registration_config_normalizes_paths_and_defaults(tmp_path: Path) -> No
     assert config.thumbnail_workers == 1
     assert config.mask_workers == 1
     assert config.ordering_workers == 1
+    assert config.qc_workers == 1
     assert config.preprocessing_cache is True
     assert config.alignment_cache is True
 
@@ -147,6 +148,7 @@ def test_refinement_configs_reject_invalid_acceptance_gates(
         ("thumbnail_workers", True, TypeError),
         ("mask_workers", 1.5, TypeError),
         ("ordering_workers", 0, ValueError),
+        ("qc_workers", 0, ValueError),
         ("wsi_jpeg_quality", 101, ValueError),
         ("wsi_tile_size", -1, ValueError),
         ("write_warped_images", 1, TypeError),
@@ -184,13 +186,15 @@ def test_registration_mapping_parser_does_not_mutate_input(tmp_path: Path) -> No
     assert payload == original
 
 
-def test_registration_mapping_parses_alignment_cache(tmp_path: Path) -> None:
+def test_registration_mapping_parses_alignment_controls(tmp_path: Path) -> None:
     config = _config_from_mapping(
         {
             "input_dir": str(tmp_path / "input"),
             "output_dir": str(tmp_path / "output"),
             "alignment_cache": False,
+            "qc_workers": 3,
         }
     )
 
     assert config.alignment_cache is False
+    assert config.qc_workers == 3

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -98,3 +99,34 @@ def test_qc_fingerprint_binds_array_and_metadata() -> None:
         )
         != baseline
     )
+
+
+def test_qc_cache_records_parallel_bundles_without_losing_entries(
+    tmp_path: Path,
+) -> None:
+    cache = RegistrationQcCache(tmp_path, tmp_path / ".cache" / "qc.json")
+    artifacts = tuple(tmp_path / "qc" / f"panel-{index}.png" for index in range(12))
+    artifacts[0].parent.mkdir()
+    for index, path in enumerate(artifacts):
+        path.write_bytes(f"panel-{index}".encode())
+
+    def record(item: tuple[int, Path]) -> None:
+        index, path = item
+        fingerprint = f"{index:064x}"
+        assert not cache.is_current(fingerprint, (path,))
+        cache.record(fingerprint, (path,))
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        tuple(executor.map(record, enumerate(artifacts)))
+
+    payload = json.loads(cache.manifest_path.read_text())
+    assert sorted(payload["entries"]) == sorted(
+        f"qc/panel-{index}.png" for index in range(12)
+    )
+    assert cache.misses == 12
+    assert cache.rendered == 12
+    assert all(
+        cache.is_current(f"{index:064x}", (path,))
+        for index, path in enumerate(artifacts)
+    )
+    assert cache.hits == 12

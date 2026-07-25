@@ -329,6 +329,22 @@ def test_thumbnail_workers_must_be_positive(tmp_path: Path) -> None:
         RegistrationConfig(tmp_path, tmp_path / "output", thumbnail_workers=0)
 
 
+def test_qc_workers_run_in_bounded_named_pool() -> None:
+    barrier = threading.Barrier(3)
+    thread_names: set[str] = set()
+    lock = threading.Lock()
+
+    def job() -> None:
+        with lock:
+            thread_names.add(threading.current_thread().name)
+        barrier.wait(timeout=5)
+
+    _pipeline._run_qc_jobs((job for _ in range(3)), workers=3)
+
+    assert len(thread_names) == 3
+    assert all(name.startswith("histopia-qc") for name in thread_names)
+
+
 def test_automatic_mask_snapshot_requires_exact_hash_and_slide_set(
     tmp_path: Path,
 ) -> None:
@@ -495,6 +511,7 @@ def test_registration_reuses_checksum_validated_qc_artifacts(
         rigid_method="phase_correlation",
         align_strategy="reference",
         max_processed_image_dim_px=90,
+        qc_workers=3,
         write_processed_images=True,
     )
 
@@ -516,6 +533,7 @@ def test_registration_reuses_checksum_validated_qc_artifacts(
     assert first["qc_artifact_cache_hits"] == 0
     assert first["qc_artifact_cache_misses"] == 5
     assert first["qc_artifact_bundles_rendered"] == 5
+    assert first["controls"]["qc_workers"] == 3
     assert second["qc_artifact_cache_hits"] == 5
     assert second["qc_artifact_cache_misses"] == 0
     assert second["qc_artifact_bundles_rendered"] == 0
@@ -531,6 +549,49 @@ def test_registration_reuses_checksum_validated_qc_artifacts(
     assert repaired["qc_artifact_cache_hits"] == 4
     assert repaired["qc_artifact_cache_misses"] == 1
     assert repaired["qc_artifact_bundles_rendered"] == 1
+
+
+def test_parallel_qc_rendering_is_byte_identical_to_serial(
+    tmp_path: Path,
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    image = np.full((75, 85, 3), 255, dtype=np.uint8)
+    image[15:60, 20:65] = np.array([185, 100, 120], dtype=np.uint8)
+    for index, shift in enumerate((0, 2, 4), start=1):
+        Image.fromarray(np.roll(image, shift=(shift, -shift), axis=(0, 1))).save(
+            input_dir / f"section-{index}.png"
+        )
+    config = RegistrationConfig(
+        input_dir=input_dir,
+        output_dir=output_dir,
+        reference_slide="section-2.png",
+        reference_policy="explicit",
+        rigid_method="phase_correlation",
+        align_strategy="hybrid",
+        max_processed_image_dim_px=85,
+        qc_workers=1,
+        alignment_cache=False,
+        write_processed_images=True,
+    )
+
+    register_sections(config)
+    serial = {
+        str(path.relative_to(output_dir)): path.read_bytes()
+        for path in sorted((output_dir / "qc").rglob("*.png"))
+    }
+    serial_result = (output_dir / "registration_result.json").read_bytes()
+
+    config.qc_workers = 3
+    register_sections(config)
+    parallel = {
+        str(path.relative_to(output_dir)): path.read_bytes()
+        for path in sorted((output_dir / "qc").rglob("*.png"))
+    }
+
+    assert parallel == serial
+    assert (output_dir / "registration_result.json").read_bytes() == serial_result
 
 
 def test_hybrid_renders_only_final_serial_pair_diagnostics(tmp_path: Path) -> None:

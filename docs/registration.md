@@ -259,6 +259,17 @@ complete, and worker count does not change mask pixels. Each worker holds
 several thumbnail-sized arrays, so `1` remains the memory-conservative default;
 benchmark `2` or `4` on representative cohorts before increasing it further.
 
+Set `qc_workers` above one to render independent pair-crop, registered-view,
+non-rigid, and primary-review bundles concurrently. Bundle filenames, pixels,
+checksums, cache manifests, registration results, and approval fingerprints are
+independent of this execution control. Each active alignment renderer can hold
+several processed-image arrays plus a wide contact sheet, so `1` is the
+memory-conservative default; measure peak RSS before using `2` or `4` for
+1200-pixel cohorts. On a 24-slide cached scientific run with all 93 QC bundles
+removed, four workers reduced total wall time from 269.78 to 77.49 seconds
+(3.48x) while peak RSS rose from 1.36 to 1.58 GB. All 300 retained PNGs, the
+QC manifest, and the canonical registration result were byte-identical.
+
 `preprocessing_cache = true` is the default. Histopia reuses decoded
 thumbnails, independent mask candidates, group-refined masks, and rendered
 mask-review artifacts only when their source metadata, pixel data,
