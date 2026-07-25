@@ -6,10 +6,43 @@ import argparse
 import sys
 from pathlib import Path
 
-from histopia.visualization._qc_showcase import export_registration_qc_showcase
-from histopia.visualization._server import serve_viewer
-from histopia.visualization._showcase import export_static_showcase
-from histopia.visualization._viewer import build_section_viewer
+
+def build_section_viewer(*args, **kwargs) -> Path:
+    """Lazily dispatch viewer generation without importing optional dependencies."""
+
+    from histopia.visualization._viewer import build_section_viewer as build
+
+    return build(*args, **kwargs)
+
+
+def export_static_showcase(source: Path, output: Path, mice: list[str]) -> Path:
+    """Lazily dispatch static showcase export."""
+
+    from histopia.visualization._showcase import export_static_showcase as export
+
+    return export(source, output, mice)
+
+
+def export_registration_qc_showcase(
+    source: Path,
+    output: Path,
+    mice: list[str],
+) -> Path:
+    """Lazily dispatch registration QC showcase export."""
+
+    from histopia.visualization._qc_showcase import (
+        export_registration_qc_showcase as export,
+    )
+
+    return export(source, output, mice)
+
+
+def serve_viewer(root: Path, *, bind: str, port: int) -> None:
+    """Lazily dispatch the static viewer server."""
+
+    from histopia.visualization._server import serve_viewer as serve
+
+    serve(root, bind=bind, port=port)
 
 
 def _named_path(value: str) -> tuple[str, Path]:

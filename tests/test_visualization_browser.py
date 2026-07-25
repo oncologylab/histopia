@@ -27,7 +27,7 @@ def test_viewer_fits_desktop_and_ignores_stale_mouse_loads(tmp_path: Path) -> No
     assets.mkdir(parents=True)
     mice = [
         _browser_mouse(assets, "first", 2, (170, 40, 40)),
-        _browser_mouse(assets, "second", 3, (30, 120, 180)),
+        _browser_mouse(assets, "second", 3, (30, 120, 180), semantic=True),
     ]
     (site / "manifest.json").write_text(json.dumps({"schema_version": 1, "mice": mice}))
     (site / "index.html").write_text(_INDEX_HTML)
@@ -76,9 +76,59 @@ def test_viewer_fits_desktop_and_ignores_stale_mouse_loads(tmp_path: Path) -> No
             )
             page.wait_for_function(
                 """() => document.querySelector('#mouse').value === 'second'
-                  && document.querySelectorAll('#sections li').length === 3"""
+                  && document.querySelectorAll('#sections li').length === 3
+                  && document.querySelector('#viewport').getAttribute('aria-busy')
+                    === 'false'"""
             )
             assert page.url.endswith("/histopia/?mouse=second")
+            ready_screenshot = page.locator("canvas").screenshot()
+            ready_pixels = np.asarray(
+                Image.open(io.BytesIO(ready_screenshot)).convert("RGB")
+            )
+            assert np.ptp(ready_pixels.reshape(-1, 3), axis=0).max() > 20
+            page.locator("#mode button[data-mode='semantic']").click()
+            page.wait_for_function(
+                """() => document.querySelector('#viewport')
+                    .getAttribute('aria-busy') === 'false'
+                  && document.querySelector(
+                    "#mode button[data-mode='semantic']"
+                  ).classList.contains('active')"""
+            )
+            semantic_screenshot = page.locator("canvas").screenshot()
+            semantic_pixels = np.asarray(
+                Image.open(io.BytesIO(semantic_screenshot)).convert("RGB")
+            )
+            assert np.ptp(semantic_pixels.reshape(-1, 3), axis=0).max() > 20
+            assert page.evaluate(
+                """() => {
+                  const canvas = document.querySelector('canvas');
+                  const gl = canvas.getContext('webgl2');
+                  window.__histopiaLoseContext =
+                    gl.getExtension('WEBGL_lose_context');
+                  if (!window.__histopiaLoseContext) return false;
+                  window.__histopiaLoseContext.loseContext();
+                  return true;
+                }"""
+            )
+            page.wait_for_function(
+                """() => document.querySelector('#viewport')
+                  .getAttribute('aria-busy') === 'true'"""
+            )
+            page.evaluate("window.__histopiaLoseContext.restoreContext()")
+            page.wait_for_function(
+                """() => document.querySelector('#viewport')
+                  .getAttribute('aria-busy') === 'false'"""
+            )
+            restored_screenshot = page.locator("canvas").screenshot()
+            restored_pixels = np.asarray(
+                Image.open(io.BytesIO(restored_screenshot)).convert("RGB")
+            )
+            assert np.ptp(restored_pixels.reshape(-1, 3), axis=0).max() > 20
+            np.testing.assert_allclose(
+                restored_pixels[0, 0],
+                [244, 245, 243],
+                atol=2,
+            )
             page.wait_for_timeout(1800)
             page.evaluate("window.__histopiaRafCount = 0")
             page.wait_for_timeout(500)
@@ -113,7 +163,9 @@ def test_viewer_fits_desktop_and_ignores_stale_mouse_loads(tmp_path: Path) -> No
             )
             page.wait_for_function(
                 """() => document.querySelector('#mouse').value === 'second'
-                  && document.querySelectorAll('#sections li').length === 3"""
+                  && document.querySelectorAll('#sections li').length === 3
+                  && document.querySelector('#viewport').getAttribute('aria-busy')
+                    === 'false'"""
             )
             assert page.url.endswith("/histopia/?mouse=second")
             page.locator("#next-slide").click()
@@ -147,6 +199,8 @@ def _browser_mouse(
     mouse_id: str,
     slide_count: int,
     color: tuple[int, int, int],
+    *,
+    semantic: bool = False,
 ) -> dict[str, object]:
     mouse_assets = assets / mouse_id
     mouse_assets.mkdir()
@@ -160,20 +214,49 @@ def _browser_mouse(
         )
         filename = f"{index + 1:03d}.webp"
         Image.fromarray(image).save(mouse_assets / filename, "WEBP")
-        slides.append(
-            {
-                "id": f"{mouse_id}-{index + 1}.ndpi",
-                "label": f"Section {index + 1}",
-                "order": index + 1,
-                "texture": f"assets/{mouse_id}/{filename}",
-                "reference": index == 0,
-            }
-        )
+        slide = {
+            "id": f"{mouse_id}-{index + 1}.ndpi",
+            "label": f"Section {index + 1}",
+            "order": index + 1,
+            "texture": f"assets/{mouse_id}/{filename}",
+            "reference": index == 0,
+        }
+        if semantic:
+            semantic_image = image.copy()
+            semantic_image[30:130, 45:195, :3] = (215, 50, 65)
+            semantic_name = f"{index + 1:03d}-k5-semantic.webp"
+            blend_name = f"{index + 1:03d}-blend.webp"
+            Image.fromarray(semantic_image).save(
+                mouse_assets / semantic_name,
+                "WEBP",
+            )
+            Image.fromarray((image // 2 + semantic_image // 2).astype(np.uint8)).save(
+                mouse_assets / blend_name,
+                "WEBP",
+            )
+            slide["semantic_textures"] = {"5": f"assets/{mouse_id}/{semantic_name}"}
+            slide["semantic_texture"] = f"assets/{mouse_id}/{semantic_name}"
+            slide["blend_texture"] = f"assets/{mouse_id}/{blend_name}"
+        slides.append(slide)
     return {
         "id": mouse_id,
         "provisional_order": False,
         "width": 240,
         "height": 160,
         "slides": slides,
-        "semantic": None,
+        "semantic": (
+            {
+                "selected_k": 5,
+                "cluster_counts": [5],
+                "palette": ["#d73027", "#1a9850", "#4575b4", "#fee08b", "#984ea3"],
+                "batch_correction": None,
+                "k_selection": [],
+                "review": {"approved": False, "fingerprint_matches": True},
+                "qc": None,
+                "links_url": None,
+                "link_pair_count": 0,
+            }
+            if semantic
+            else None
+        ),
     }

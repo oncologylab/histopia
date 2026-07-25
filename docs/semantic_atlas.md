@@ -182,6 +182,17 @@ the target hardware. The real CPU path is supported but substantially slower:
 the same model required about 5.8 GiB peak process memory and 2.7 seconds for a
 single-patch validation inference.
 
+A four-cohort validation campaign processed 80 approved serial sections and
+729,452 accepted UNI2-h patches. Every adjacent section pair retained accepted
+topology links, with cohort topology coverage from 82.4 to 91.0 percent. The
+batch-correction guard accepted all four proposals and reduced between-section
+centroid variance from 0.194-0.323 before correction to 0.0020-0.0053 after
+correction. The largest cohort contained 24 sections and 524,317 patches; its
+end-to-end extraction, atlas fit, and artifact generation took 38.7 minutes on
+a 40 GiB A100 host. These are observational validation results, not portable
+performance guarantees, and the semantic review records remained unapproved
+until visual review.
+
 CLI extraction reports each cached, started, and completed slide, including
 patch count and elapsed time. Feature files are committed atomically, so an
 interrupted campaign resumes only exact, provenance-valid completed slides.
@@ -300,7 +311,10 @@ texture set, disposes replaced GPU textures, and displays at most the 500
 highest-confidence links while preserving complete correspondences in result
 artifacts. Browser checks are available through the `browser-test` optional
 dependency and verify desktop layout, WebGL output, assets, and rapid sample
-switching.
+switching. Texture changes and sample loads keep the viewport busy until a
+rendered frame is available. If the browser loses its WebGL context, the viewer
+restores the light canvas background, repaints the current stack, and clears
+the busy state only after rendering resumes.
 
 Viewer builds checksum their generated WEBP assets and reuse exact matches.
 `build-report.json` records elapsed time and encoded/reused asset counts for

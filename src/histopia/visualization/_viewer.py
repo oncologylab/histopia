@@ -1726,10 +1726,10 @@ const manifest = await (await fetch('manifest.json')).json();
 const viewport = document.querySelector('#viewport');
 const renderer = new THREE.WebGLRenderer({
   antialias: true,
-  alpha: false,
+  alpha: true,
 });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-renderer.setClearColor(0xf4f5f3);
+renderer.setClearColor(0xf4f5f3, 0);
 viewport.append(renderer.domElement);
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 10000);
@@ -1749,6 +1749,10 @@ let focusedSlideIndex = null;
 let renderRequested = false;
 let renderUntil = 0;
 let updatingControls = false;
+let renderWaiters = [];
+let transitionSerial = 0;
+let activeTransition = 0;
+let contextLost = false;
 function disposeTexture(texture) { if (texture) texture.dispose(); }
 async function loadTexture(url) {
   const texture = await loader.loadAsync(url);
@@ -1770,8 +1774,41 @@ function render() {
   controls.update();
   updatingControls = false;
   renderer.render(scene, camera);
+  const completed = renderWaiters;
+  renderWaiters = [];
+  if (completed.length)
+    requestAnimationFrame(() => completed.forEach(resolve => resolve()));
   if (performance.now() < renderUntil) requestRender();
 }
+function waitForRender() {
+  return new Promise(resolve => {
+    renderWaiters.push(resolve);
+    requestRender();
+  });
+}
+function beginTransition() {
+  activeTransition = ++transitionSerial;
+  viewport.setAttribute('aria-busy', 'true');
+  return activeTransition;
+}
+async function finishTransition(transition) {
+  await waitForRender();
+  if (transition !== activeTransition) return;
+  activeTransition = 0;
+  if (!contextLost) viewport.setAttribute('aria-busy', 'false');
+}
+renderer.domElement.addEventListener('webglcontextlost', () => {
+  contextLost = true;
+  viewport.setAttribute('aria-busy', 'true');
+});
+renderer.domElement.addEventListener('webglcontextrestored', async () => {
+  contextLost = false;
+  renderer.setClearColor(0xf4f5f3, 0);
+  requestRenderBurst(2500);
+  await waitForRender();
+  if (activeTransition === 0)
+    viewport.setAttribute('aria-busy', 'false');
+});
 
 function resize() {
   const box = viewport.getBoundingClientRect();
@@ -1967,6 +2004,7 @@ async function setMode(mode, force = false) {
   if (!current || (mode !== 'histology' && !current.semantic) || (!force && mode === currentMode)) return;
   const mouse = current;
   const generation = ++textureGeneration;
+  const transition = beginTransition();
   const textures = await Promise.all(mouse.slides.map(async slide => {
     return loadTexture(textureUrl(slide, mode));
   }));
@@ -1983,6 +2021,7 @@ async function setMode(mode, force = false) {
   });
   updateModeControls();
   requestRenderBurst();
+  await finishTransition(transition);
 }
 async function loadTopologyLinks(mouse) {
   if (!mouse.semantic) return [];
@@ -1998,9 +2037,9 @@ async function loadTopologyLinks(mouse) {
 async function loadMouse(mouse) {
   const generation = ++loadGeneration;
   ++textureGeneration;
+  const transition = beginTransition();
   const progress = document.querySelector('#slide-focus');
   progress.textContent = `Loading ${mouse.id}...`;
-  viewport.setAttribute('aria-busy', 'true');
   const requestedMode =
     mouse.semantic || currentMode === 'histology' ? currentMode : 'histology';
   const requestedK = mouse.semantic?.selected_k ?? null;
@@ -2057,11 +2096,12 @@ async function loadMouse(mouse) {
   });
   buildList(); layout(); updateModeControls(); resetCamera();
   requestRenderBurst();
-  viewport.setAttribute('aria-busy', 'false');
+  await finishTransition(transition);
 }
 function reportLoadError(error) {
   document.querySelector('#slide-focus').textContent = 'Load failed';
-  viewport.setAttribute('aria-busy', 'false');
+  activeTransition = 0;
+  if (!contextLost) viewport.setAttribute('aria-busy', 'false');
   console.error(error);
 }
 const select = document.querySelector('#mouse');
@@ -2082,7 +2122,7 @@ document.querySelector('#spacing').addEventListener('input', layout);
 document.querySelector('#opacity').addEventListener('input', layout);
 document.querySelector('#clusters').addEventListener('change', async event => {
   currentK = Number(event.target.value);
-  await setMode('semantic', true);
+  try { await setMode('semantic', true); } catch (error) { reportLoadError(error); }
 });
 document.querySelector('#reset').addEventListener('click', resetCamera);
 document.querySelector('#previous-slide').addEventListener('click', () => stepSlide(-1));
@@ -2102,7 +2142,8 @@ document.querySelector('#export').addEventListener('click', () => {
   const link = document.createElement('a'); link.href = URL.createObjectURL(blob); link.download = `${current.id}-section-order.json`; link.click(); URL.revokeObjectURL(link.href);
 });
 document.querySelectorAll('#mode button').forEach(button =>
-  button.addEventListener('click', () => setMode(button.dataset.mode)));
+  button.addEventListener('click', () =>
+    setMode(button.dataset.mode).catch(reportLoadError)));
 controls.addEventListener('change', () => {
   if (!updatingControls) requestRender();
 });
@@ -2112,4 +2153,4 @@ try { await loadMouse(initialMouse); } catch (error) { reportLoadError(error); }
 requestRender();
 """
 
-_STYLES_CSS = """*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden}body{font-family:Arial,sans-serif;color:#202426;background:#f4f5f3}main{display:grid;grid-template-columns:300px minmax(0,1fr);width:100%;height:100%;overflow:hidden}aside{min-width:0;min-height:0;padding:18px;border-right:1px solid #c9ceca;background:#fff;overflow-y:auto;overflow-x:hidden}h1{font-size:22px;margin:0 0 18px}label{display:grid;gap:6px;font-size:13px;margin:14px 0}select,input{width:100%}.commands,.segmented,.visibility-commands{display:flex;gap:8px;margin:16px 0}button{border:1px solid #88918b;background:#fff;padding:7px 10px;border-radius:4px;cursor:pointer}.segmented{gap:0}.segmented button{flex:1;border-radius:0;margin-left:-1px}.segmented button:first-child{margin-left:0;border-radius:4px 0 0 4px}.segmented button:last-child{border-radius:0 4px 4px 0}.segmented button.active{background:#202426;color:#fff}.segmented button:disabled{color:#a7aca8;cursor:default}.slide-navigation{display:grid;grid-template-columns:36px minmax(0,1fr) 36px;align-items:center;gap:8px;margin:16px 0}.slide-navigation button{width:36px;height:32px;padding:0;font-size:18px}.slide-navigation output{text-align:center;font-size:12px;white-space:nowrap}.visibility-commands button{flex:1}#legend{display:grid;grid-template-columns:1fr 1fr;gap:5px;font-size:11px}#legend span{display:flex;align-items:center;gap:5px}#legend i{display:block;width:12px;height:12px;border:1px solid #555}#order-status{font-size:12px;color:#8a4f12}ol{padding:0;list-style:none}li{display:grid;grid-template-columns:20px minmax(0,1fr);align-items:center;min-height:32px;border-bottom:1px solid #eceeec;font-size:12px;cursor:grab}li span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}li input{width:14px}#viewport{position:relative;min-width:0;min-height:0;width:100%;height:100%;overflow:hidden}canvas{display:block;width:100%!important;height:100%!important}@media(max-width:720px){main{grid-template-columns:1fr;grid-template-rows:250px minmax(0,1fr)}aside{border-right:0;border-bottom:1px solid #c9ceca}#sections{display:none}}"""
+_STYLES_CSS = """*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden}body{font-family:Arial,sans-serif;color:#202426;background:#f4f5f3}main{display:grid;grid-template-columns:300px minmax(0,1fr);width:100%;height:100%;overflow:hidden}aside{min-width:0;min-height:0;padding:18px;border-right:1px solid #c9ceca;background:#fff;overflow-y:auto;overflow-x:hidden}h1{font-size:22px;margin:0 0 18px}label{display:grid;gap:6px;font-size:13px;margin:14px 0}select,input{width:100%}.commands,.segmented,.visibility-commands{display:flex;gap:8px;margin:16px 0}button{border:1px solid #88918b;background:#fff;padding:7px 10px;border-radius:4px;cursor:pointer}.segmented{gap:0}.segmented button{flex:1;border-radius:0;margin-left:-1px}.segmented button:first-child{margin-left:0;border-radius:4px 0 0 4px}.segmented button:last-child{border-radius:0 4px 4px 0}.segmented button.active{background:#202426;color:#fff}.segmented button:disabled{color:#a7aca8;cursor:default}.slide-navigation{display:grid;grid-template-columns:36px minmax(0,1fr) 36px;align-items:center;gap:8px;margin:16px 0}.slide-navigation button{width:36px;height:32px;padding:0;font-size:18px}.slide-navigation output{text-align:center;font-size:12px;white-space:nowrap}.visibility-commands button{flex:1}#legend{display:grid;grid-template-columns:1fr 1fr;gap:5px;font-size:11px}#legend span{display:flex;align-items:center;gap:5px}#legend i{display:block;width:12px;height:12px;border:1px solid #555}#order-status{font-size:12px;color:#8a4f12}ol{padding:0;list-style:none}li{display:grid;grid-template-columns:20px minmax(0,1fr);align-items:center;min-height:32px;border-bottom:1px solid #eceeec;font-size:12px;cursor:grab}li span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}li input{width:14px}#viewport{position:relative;min-width:0;min-height:0;width:100%;height:100%;overflow:hidden;background:#f4f5f3}canvas{display:block;width:100%!important;height:100%!important}@media(max-width:720px){main{grid-template-columns:1fr;grid-template-rows:250px minmax(0,1fr)}aside{border-right:0;border-bottom:1px solid #c9ceca}#sections{display:none}}"""

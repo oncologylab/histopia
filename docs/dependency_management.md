@@ -13,6 +13,10 @@ python -m pip install \
     "histopia @ git+https://github.com/oncologylab/histopia.git@main"
 ```
 
+The base install keeps workflow namespaces lazy. Package imports and every
+command's `--help` remain available without NumPy or a workflow extra; executing
+scientific work still requires the matching profile below.
+
 Local development:
 
 ```bash
