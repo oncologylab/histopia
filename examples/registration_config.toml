@@ -7,6 +7,7 @@ reference_policy = "best_connected"
 section_order_strategy = "natural"
 thumbnail_workers = 1
 # Bounds independent, group-aware, and artifact-writing mask phases.
+# Start with 2 or 4; use 8 only after measuring peak memory on the target host.
 mask_workers = 1
 ordering_workers = 1
 # Bound concurrent registration QC encoders; increase only with enough RAM.

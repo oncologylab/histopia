@@ -262,7 +262,11 @@ bytes. Each worker holds several thumbnail-sized arrays, so `1` remains the
 memory-conservative default; benchmark `2` or `4` before increasing it. On a
 24-slide, 1200-pixel cold-mask run, four workers reduced mask preparation from
 407.43 seconds to 112.64 seconds (3.62x) at 1.10 GB peak RSS; all 504 artifacts
-and the mask review were byte-identical. An exact warm rerun took 2.33 seconds.
+and the mask review were byte-identical. Eight workers completed in 66.06
+seconds at 1.58 GB, while 16 workers required 51.91 seconds at 2.53 GB. Eight
+is therefore the measured high-throughput setting for this 24-slide workload;
+16 provided only another 1.27x speedup for 60% more peak memory. An exact warm
+rerun took 2.33 seconds.
 
 Set `qc_workers` above one to render independent pair-crop, registered-view,
 non-rigid, and primary-review bundles concurrently. Bundle filenames, pixels,
