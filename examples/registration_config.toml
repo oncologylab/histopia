@@ -6,6 +6,7 @@ output_dir = "/tmp/histopia-registration-runs/4577/example"
 reference_policy = "best_connected"
 section_order_strategy = "natural"
 thumbnail_workers = 1
+# Bounds independent, group-aware, and artifact-writing mask phases.
 mask_workers = 1
 ordering_workers = 1
 # Bound concurrent registration QC encoders; increase only with enough RAM.

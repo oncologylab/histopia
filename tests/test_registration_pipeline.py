@@ -271,6 +271,62 @@ def test_parallel_mask_creation_matches_sequential_results(tmp_path: Path) -> No
             )
 
 
+def test_parallel_group_masks_and_artifacts_match_serial_pipeline(
+    tmp_path: Path,
+) -> None:
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    image = np.full((90, 110, 3), 255, dtype=np.uint8)
+    image[20:72, 25:85] = [175, 95, 120]
+    for index, shift in enumerate((0, 3, 6)):
+        Image.fromarray(np.roll(image, shift=(shift, -shift), axis=(0, 1))).save(
+            input_dir / f"section-{index}.png"
+        )
+
+    outputs: list[tuple[dict[str, bytes], bytes, dict[str, object]]] = []
+    for workers, name in ((1, "serial"), (3, "parallel")):
+        output_dir = tmp_path / name
+        register_sections(
+            RegistrationConfig(
+                input_dir,
+                output_dir,
+                reference_slide="section-0.png",
+                reference_policy="explicit",
+                rigid_method="phase_correlation",
+                align_strategy="reference",
+                max_processed_image_dim_px=110,
+                mask_workers=workers,
+                write_processed_images=True,
+            )
+        )
+        artifact_paths = (
+            *sorted((output_dir / "processed").glob("*.png")),
+            *sorted(output_dir.glob("qc/*.mask_overlay.png")),
+            *sorted((output_dir / "qc" / "mask_candidates").glob("*.png")),
+        )
+        outputs.append(
+            (
+                {
+                    str(path.relative_to(output_dir)): path.read_bytes()
+                    for path in artifact_paths
+                },
+                (output_dir / "mask_review.json").read_bytes(),
+                load_performance_report(output_dir / PERFORMANCE_FILENAME),
+            )
+        )
+
+    serial, parallel = outputs
+    assert serial[0] == parallel[0]
+    assert serial[1] == parallel[1]
+    assert serial[2]["mask_artifact_slides_rendered"] == 3
+    assert parallel[2]["mask_artifact_slides_rendered"] == 3
+    assert parallel[2]["mask_artifact_slides_reused"] == 0
+    assert parallel[2]["controls"]["mask_workers"] == 3
+    assert parallel[2]["independent_mask_seconds"] >= 0
+    assert parallel[2]["group_mask_seconds"] >= 0
+    assert parallel[2]["mask_artifact_seconds"] >= 0
+
+
 def test_mask_workers_must_be_positive(tmp_path: Path) -> None:
     with np.testing.assert_raises_regex(ValueError, "mask_workers must be positive"):
         RegistrationConfig(tmp_path, tmp_path / "output", mask_workers=0)

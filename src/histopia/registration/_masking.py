@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, TypeVar
 
@@ -193,6 +195,7 @@ def refine_group_tissue_masks(
     images: dict[MaskKey, np.ndarray] | None = None,
     normalized_shape: tuple[int, int] = (256, 256),
     min_group_support: float = 0.12,
+    workers: int = 1,
 ) -> dict[MaskKey, TissueMaskResult]:
     """Remove slide-specific objects using the cohort's recurring topology.
 
@@ -202,6 +205,10 @@ def refine_group_tissue_masks(
     gradual changes in tissue shape and size.
     """
 
+    if isinstance(workers, bool) or not isinstance(workers, int):
+        raise TypeError("group mask workers must be an integer")
+    if workers <= 0:
+        raise ValueError("group mask workers must be positive")
     if len(results) < 3:
         return dict(results)
     keys = list(results)
@@ -225,8 +232,8 @@ def refine_group_tissue_masks(
     expected_physical_area = _expected_group_physical_area(
         results, physical_pixel_areas
     )
-    selected: dict[MaskKey, TissueMaskResult] = {}
-    for key in keys:
+
+    def select_group_candidate(key: MaskKey) -> TissueMaskResult:
         result = results[key]
         peer_support = _aligned_group_support(
             [proposal_normalized[peer] for peer in keys if peer != key],
@@ -286,13 +293,20 @@ def refine_group_tissue_masks(
                     candidate_masks=ranked.candidate_masks,
                 )
         ranked = _polish_selected_mask(ranked)
-        selected[key] = ranked
+        return ranked
+
+    selected = _map_group_mask_results(
+        keys,
+        select_group_candidate,
+        workers,
+    )
     if images is not None:
         selected = _recover_undercovered_pale_tissue(
             selected,
             images,
             physical_pixel_areas=physical_pixel_areas,
             normalized_shape=normalized_shape,
+            workers=workers,
         )
     normalized = {
         key: _resize_binary(selected[key].mask, normalized_shape) for key in keys
@@ -300,13 +314,12 @@ def refine_group_tissue_masks(
     expected_selected_fraction = float(
         np.median([np.mean(mask) for mask in normalized.values()])
     )
-    refined: dict[MaskKey, TissueMaskResult] = {}
-    for key in keys:
+
+    def refine_group_components(key: MaskKey) -> TissueMaskResult:
         result = selected[key]
         labels, count = ndi.label(result.mask)
         if count <= 1:
-            refined[key] = result
-            continue
+            return result
         peer_support = _aligned_group_support(
             [normalized[peer] for peer in keys if peer != key],
             normalized[key],
@@ -437,8 +450,7 @@ def refine_group_tissue_masks(
                 keep[label] = True
         if not np.any(keep):
             if not component_support:
-                refined[key] = result
-                continue
+                return result
             support_order = sorted(
                 component_support,
                 key=lambda label: (
@@ -453,19 +465,16 @@ def refine_group_tissue_masks(
                 component_support[support_order[1]] if len(support_order) > 1 else 0.0
             )
             if best_support < 0.02 or best_support - second_support < 0.05:
-                refined[key] = result
-                continue
+                return result
             keep[best_supported_label] = True
         mask = keep[labels]
         if np.count_nonzero(mask) < np.count_nonzero(result.mask) * 0.25:
-            refined[key] = result
-            continue
+            return result
         if np.array_equal(mask, result.mask):
-            refined[key] = result
-            continue
+            return result
         metrics = _mask_metrics(mask)
         warnings = _mask_warnings(mask, BrightfieldMaskConfig())
-        refined[key] = TissueMaskResult(
+        return TissueMaskResult(
             mask=mask,
             method=f"{result.method}+group_consensus",
             metrics=metrics,
@@ -475,16 +484,24 @@ def refine_group_tissue_masks(
             candidate_warnings=result.candidate_warnings,
             candidate_masks=result.candidate_masks,
         )
+
+    refined = _map_group_mask_results(
+        keys,
+        refine_group_components,
+        workers,
+    )
     if images is not None:
-        for key, result in refined.items():
+
+        def clean_image_frame(key: MaskKey) -> TissueMaskResult:
+            result = refined[key]
             image = images.get(key)
             if image is None:
-                continue
+                return result
             cleaned = _remove_image_frame_exterior(result.mask, image)
             if np.array_equal(cleaned, result.mask):
-                continue
+                return result
             warnings = _mask_warnings(cleaned, BrightfieldMaskConfig())
-            refined[key] = TissueMaskResult(
+            return TissueMaskResult(
                 mask=cleaned,
                 method=f"{result.method}+frame_cleanup",
                 metrics=_mask_metrics(cleaned),
@@ -494,6 +511,12 @@ def refine_group_tissue_masks(
                 candidate_warnings=result.candidate_warnings,
                 candidate_masks=result.candidate_masks,
             )
+
+        refined = _map_group_mask_results(
+            keys,
+            clean_image_frame,
+            workers,
+        )
 
     final_normalized = {
         key: _resize_binary(result.mask, normalized_shape)
@@ -524,6 +547,22 @@ def refine_group_tissue_masks(
                 physical_area / final_expected_physical_area
             )
     return refined
+
+
+def _map_group_mask_results(
+    keys: list[MaskKey],
+    function: Callable[[MaskKey], TissueMaskResult],
+    workers: int,
+) -> dict[MaskKey, TissueMaskResult]:
+    if workers == 1:
+        values = map(function, keys)
+    else:
+        with ThreadPoolExecutor(
+            max_workers=workers,
+            thread_name_prefix="histopia-mask-group",
+        ) as executor:
+            values = tuple(executor.map(function, keys))
+    return dict(zip(keys, values, strict=True))
 
 
 def _aligned_group_support(
@@ -599,6 +638,7 @@ def _recover_undercovered_pale_tissue(
     *,
     physical_pixel_areas: dict[MaskKey, float | None] | None,
     normalized_shape: tuple[int, int],
+    workers: int = 1,
 ) -> dict[MaskKey, TissueMaskResult]:
     """Recover image-supported tissue only on strong cohort undercoverage."""
 
@@ -619,13 +659,13 @@ def _recover_undercovered_pale_tissue(
     expected_physical_area = (
         float(np.median(list(physical_areas.values()))) if physical_areas else None
     )
-    recovered: dict[MaskKey, TissueMaskResult] = {}
     keys = list(results)
-    for key, result in results.items():
+
+    def recover(key: MaskKey) -> TissueMaskResult:
+        result = results[key]
         image = images.get(key)
         if image is None:
-            recovered[key] = result
-            continue
+            return result
         normalized_area_ratio = (
             normalized_fractions[key] / expected_fraction
             if expected_fraction > 0
@@ -662,23 +702,19 @@ def _recover_undercovered_pale_tissue(
             ),
         )
         if np.count_nonzero(candidate) <= np.count_nonzero(result.mask) * 1.02:
-            recovered[key] = result
-            continue
+            return result
         if expected_physical_area is not None and key in physical_areas:
             pixel_area = (physical_pixel_areas or {}).get(key)
             if pixel_area is None:
-                recovered[key] = result
-                continue
+                return result
             candidate_area = float(np.count_nonzero(candidate) * pixel_area)
             maximum_area_ratio = 1.35 if missing_group_object else 1.25
             if candidate_area > expected_physical_area * maximum_area_ratio:
-                recovered[key] = result
-                continue
+                return result
         warnings = _mask_warnings(candidate, BrightfieldMaskConfig())
         if warnings:
-            recovered[key] = result
-            continue
-        recovered[key] = TissueMaskResult(
+            return result
+        return TissueMaskResult(
             mask=candidate,
             method=f"{result.method}+group_pale_recovery",
             metrics=_mask_metrics(candidate),
@@ -688,7 +724,8 @@ def _recover_undercovered_pale_tissue(
             candidate_warnings=result.candidate_warnings,
             candidate_masks=result.candidate_masks,
         )
-    return recovered
+
+    return _map_group_mask_results(keys, recover, workers)
 
 
 def _recover_supported_pale_pixels(

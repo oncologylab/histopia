@@ -1,3 +1,5 @@
+from copy import deepcopy
+
 import numpy as np
 from scipy import ndimage as ndi
 
@@ -602,6 +604,50 @@ def test_group_consensus_rejects_one_slide_artifact() -> None:
     assert not refined["first"].mask[5:25, 95:115].any()
     assert refined["first"].method.endswith("+group_consensus")
     assert refined["first"].metrics["group_foreground_fraction_ratio"] > 0
+
+
+def test_parallel_group_refinement_matches_sequential() -> None:
+    images: dict[str, np.ndarray] = {}
+    results: dict[str, TissueMaskResult] = {}
+    for index, shift in enumerate((0, 3, 6, 9)):
+        image = np.full((120, 150, 3), 255, dtype=np.uint8)
+        image[30 + shift : 95 + shift, 35:115] = [215, 155, 145]
+        if index == 0:
+            image[8:18, 125:142] = [175, 95, 115]
+        key = f"section-{index}"
+        images[key] = image
+        results[key] = create_tissue_mask(image)
+
+    sequential = refine_group_tissue_masks(
+        deepcopy(results),
+        images=images,
+        workers=1,
+    )
+    parallel = refine_group_tissue_masks(
+        deepcopy(results),
+        images=images,
+        workers=4,
+    )
+
+    assert sequential.keys() == parallel.keys()
+    for key in sequential:
+        assert sequential[key].to_json_dict() == parallel[key].to_json_dict()
+        assert np.array_equal(sequential[key].mask, parallel[key].mask)
+        assert sequential[key].candidate_masks.keys() == (
+            parallel[key].candidate_masks.keys()
+        )
+        for method in sequential[key].candidate_masks:
+            assert np.array_equal(
+                sequential[key].candidate_masks[method],
+                parallel[key].candidate_masks[method],
+            )
+
+
+def test_group_refinement_rejects_invalid_workers() -> None:
+    with np.testing.assert_raises_regex(TypeError, "workers must be an integer"):
+        refine_group_tissue_masks({}, workers=True)
+    with np.testing.assert_raises_regex(ValueError, "workers must be positive"):
+        refine_group_tissue_masks({}, workers=0)
 
 
 def test_group_consensus_rejects_medium_component_without_direct_recurrence() -> None:

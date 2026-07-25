@@ -6,6 +6,7 @@ import csv
 import hashlib
 import json
 import os
+import time
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
@@ -284,6 +285,8 @@ def _register_sections(
     artifact_manifest = _load_mask_artifact_manifest(artifact_manifest_path)
 
     performance.start_stage("mask_preparation")
+    independent_mask_seconds = 0.0
+    group_mask_seconds = 0.0
     if config.automatic_mask_snapshot_path is not None:
         masks = _load_automatic_mask_snapshot(
             config.automatic_mask_snapshot_path,
@@ -291,16 +294,19 @@ def _register_sections(
             thumbnails,
         )
     else:
+        independent_started = time.perf_counter()
         masks = _create_tissue_masks(
             thumbnails,
             config,
             cache_dir=preprocessing_cache_dir,
         )
+        independent_mask_seconds = time.perf_counter() - independent_started
         physical_pixel_areas = {
             path: _thumbnail_physical_pixel_area(geometry)
             for path, geometry in geometries.items()
         }
         independent_masks = masks
+        group_started = time.perf_counter()
         masks = load_or_create_group_masks(
             independent_masks,
             thumbnails,
@@ -310,8 +316,12 @@ def _register_sections(
                 independent_masks,
                 physical_pixel_areas=physical_pixel_areas,
                 images=thumbnails,
+                workers=config.mask_workers,
             ),
         )
+        group_mask_seconds = time.perf_counter() - group_started
+
+    review_resolution_started = time.perf_counter()
     for path in slide_paths:
         image = thumbnails[path]
         geometry = geometries[path]
@@ -329,7 +339,20 @@ def _register_sections(
         review_entries[path.name] = review
         resolved_reviews[path] = review
         warnings.extend(f"{path.name}: {warning}" for warning in mask.warnings)
-        if config.write_processed_images:
+    review_resolution_seconds = time.perf_counter() - review_resolution_started
+
+    artifact_started = time.perf_counter()
+    artifact_rows: tuple[
+        tuple[Path, str, tuple[Path, ...], bool],
+        ...,
+    ] = ()
+    if config.write_processed_images:
+
+        def render_mask_artifacts(
+            path: Path,
+        ) -> tuple[Path, str, tuple[Path, ...], bool]:
+            image = thumbnails[path]
+            mask = masks[path]
             artifact_paths = _mask_artifact_paths(
                 processed_dir,
                 qc_dir,
@@ -338,13 +361,14 @@ def _register_sections(
                 mask,
             )
             artifact_fingerprint = _mask_artifact_fingerprint(path, image, mask)
-            if not _mask_artifacts_are_current(
+            current = _mask_artifacts_are_current(
                 artifact_manifest,
                 path,
                 artifact_fingerprint,
                 artifact_paths,
                 config.output_dir,
-            ):
+            )
+            if not current:
                 save_rgb(processed_dir / f"{path.stem}.thumbnail.png", image)
                 save_rgb(
                     processed_dir / f"{path.stem}.mask.png",
@@ -360,6 +384,18 @@ def _register_sections(
                     image,
                     mask,
                 )
+            return path, artifact_fingerprint, artifact_paths, not current
+
+        if config.mask_workers == 1:
+            rendered_rows = map(render_mask_artifacts, slide_paths)
+        else:
+            with ThreadPoolExecutor(
+                max_workers=config.mask_workers,
+                thread_name_prefix="histopia-mask-artifacts",
+            ) as executor:
+                rendered_rows = tuple(executor.map(render_mask_artifacts, slide_paths))
+        artifact_rows = tuple(rendered_rows)
+        for path, artifact_fingerprint, artifact_paths, _rendered in artifact_rows:
             _record_mask_artifacts(
                 artifact_manifest,
                 path,
@@ -369,6 +405,15 @@ def _register_sections(
             )
     if artifact_manifest_path is not None:
         _write_mask_artifact_manifest(artifact_manifest_path, artifact_manifest)
+    artifact_seconds = time.perf_counter() - artifact_started
+    performance.update(
+        independent_mask_seconds=round(independent_mask_seconds, 6),
+        group_mask_seconds=round(group_mask_seconds, 6),
+        mask_review_resolution_seconds=round(review_resolution_seconds, 6),
+        mask_artifact_seconds=round(artifact_seconds, 6),
+        mask_artifact_slides_rendered=sum(row[3] for row in artifact_rows),
+        mask_artifact_slides_reused=sum(not row[3] for row in artifact_rows),
+    )
 
     performance.start_stage("mask_review")
     write_mask_review(review_path, review_entries)

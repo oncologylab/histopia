@@ -254,10 +254,15 @@ scientific fingerprint. Start conservatively because each worker also invokes
 native OpenCV routines and holds image crops; `1` is the portable default.
 
 Set `mask_workers` above one to create per-slide mask candidate sets in
-parallel on CPU. Group consensus still runs after all independent masks are
-complete, and worker count does not change mask pixels. Each worker holds
-several thumbnail-sized arrays, so `1` remains the memory-conservative default;
-benchmark `2` or `4` on representative cohorts before increasing it further.
+parallel on CPU. Cohort-aware ranking, pale-tissue recovery, component
+consensus, frame cleanup, and artifact encoding also use bounded ordered maps,
+with a full cohort barrier between every scientifically dependent phase.
+Worker count does not change mask pixels, review JSON, or rendered artifact
+bytes. Each worker holds several thumbnail-sized arrays, so `1` remains the
+memory-conservative default; benchmark `2` or `4` before increasing it. On a
+24-slide, 1200-pixel cold-mask run, four workers reduced mask preparation from
+407.43 seconds to 112.64 seconds (3.62x) at 1.10 GB peak RSS; all 504 artifacts
+and the mask review were byte-identical. An exact warm rerun took 2.33 seconds.
 
 Set `qc_workers` above one to render independent pair-crop, registered-view,
 non-rigid, and primary-review bundles concurrently. Bundle filenames, pixels,
@@ -359,6 +364,9 @@ mask or order pause is recorded as `review_required`; cancellation is
 `interrupted`, and an actual exception is `failed`. This file is observational:
 it is excluded from the registration result and approval fingerprints, so
 timing differences cannot invalidate or alter scientific results.
+Mask telemetry additionally separates independent candidate extraction, group
+refinement, review resolution, artifact encoding, and rendered/reused slide
+counts.
 
 After reviewing the completed mask, order, and registration views, seal the
 exact artifacts without recomputing unchanged transforms:
