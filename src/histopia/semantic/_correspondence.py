@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
+
+_RANKING_SOURCE_BATCH = 1_024
+_RANKING_TARGET_CANDIDATE_EDGES = 8_192
 
 
 @dataclass(frozen=True, slots=True)
@@ -297,49 +302,53 @@ def _reciprocal_matches(
     config: CorrespondenceConfig,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     tree = _ckdtree(target_xy)
-    candidates = tree.query_ball_point(source_xy + field, radius_um)
+    candidates = tree.query_ball_point(
+        source_xy + field,
+        radius_um,
+        return_sorted=True,
+    )
     source_best = np.full(len(source_xy), -1, dtype=np.int64)
     source_margin = np.zeros(len(source_xy), dtype=np.float32)
     best_similarity = np.full(len(source_xy), -1.0, dtype=np.float32)
     target_best = np.full(len(target_xy), -1, dtype=np.int64)
     target_best_score = np.full(len(target_xy), -np.inf, dtype=np.float32)
     target_second_score = np.full(len(target_xy), -np.inf, dtype=np.float32)
-    for source_index, candidate_indices in enumerate(candidates):
-        indices = np.asarray(sorted(candidate_indices), dtype=np.int64)
-        if not len(indices):
-            continue
-        similarities = target_descriptor[indices] @ source_descriptor[source_index]
-        distances = np.linalg.norm(
-            target_xy[indices] - (source_xy[source_index] + field[source_index]),
-            axis=1,
+    for start in range(0, len(source_xy), _RANKING_SOURCE_BATCH):
+        stop = min(start + _RANKING_SOURCE_BATCH, len(source_xy))
+        ranked = _score_candidate_window(
+            candidates[start:stop],
+            source_start=start,
+            source_xy=source_xy,
+            target_xy=target_xy,
+            source_descriptor=source_descriptor,
+            target_descriptor=target_descriptor,
+            field=field,
+            config=config,
         )
-        geometry = np.exp(-0.5 * (distances / config.patch_width_um) ** 2)
-        feature_rank = np.clip((similarities + 1.0) / 2.0, 0.0, 1.0)
-        geometry_weight = (
-            min(0.20, config.geometry_score_weight)
-            if float(np.max(similarities)) >= config.min_feature_similarity
-            else config.geometry_score_weight
-        )
-        scores = (1.0 - geometry_weight) * feature_rank + geometry_weight * geometry
-        order = np.lexsort((indices, -scores))
-        best = int(order[0])
-        source_best[source_index] = indices[best]
-        best_similarity[source_index] = similarities[best]
-        source_margin[source_index] = (
-            float(scores[best] - scores[order[1]]) if len(order) > 1 else 0.0
-        )
-        current_scores = target_best_score[indices]
-        current_sources = target_best[indices]
-        replace_best = (scores > current_scores) | (
-            (scores == current_scores) & (source_index < current_sources)
-        )
-        replaced_targets = indices[replace_best]
-        target_second_score[replaced_targets] = current_scores[replace_best]
-        target_best_score[replaced_targets] = scores[replace_best]
-        target_best[replaced_targets] = source_index
+        for offset, row in enumerate(ranked):
+            if row is None:
+                continue
+            source_index = start + offset
+            indices, similarities, scores = row
+            order = np.lexsort((indices, -scores))
+            best = int(order[0])
+            source_best[source_index] = indices[best]
+            best_similarity[source_index] = similarities[best]
+            source_margin[source_index] = (
+                float(scores[best] - scores[order[1]]) if len(order) > 1 else 0.0
+            )
+            current_scores = target_best_score[indices]
+            current_sources = target_best[indices]
+            replace_best = (scores > current_scores) | (
+                (scores == current_scores) & (source_index < current_sources)
+            )
+            replaced_targets = indices[replace_best]
+            target_second_score[replaced_targets] = current_scores[replace_best]
+            target_best_score[replaced_targets] = scores[replace_best]
+            target_best[replaced_targets] = source_index
 
-        replace_second = (~replace_best) & (scores > target_second_score[indices])
-        target_second_score[indices[replace_second]] = scores[replace_second]
+            replace_second = (~replace_best) & (scores > target_second_score[indices])
+            target_second_score[indices[replace_second]] = scores[replace_second]
 
     has_runner_up = np.isfinite(target_second_score)
     target_margin = np.zeros(len(target_xy), dtype=np.float32)
@@ -359,6 +368,83 @@ def _reciprocal_matches(
         best_similarity[matched_source],
         margin.astype(np.float32),
     )
+
+
+def _score_candidate_window(
+    candidates: Sequence[list[int]],
+    *,
+    source_start: int,
+    source_xy: np.ndarray,
+    target_xy: np.ndarray,
+    source_descriptor: np.ndarray,
+    target_descriptor: np.ndarray,
+    field: np.ndarray,
+    config: CorrespondenceConfig,
+) -> list[tuple[np.ndarray, np.ndarray, np.ndarray] | None]:
+    """Score one bounded source window while retaining scalar-kernel arithmetic."""
+
+    grouped: dict[int, list[tuple[int, int, np.ndarray]]] = defaultdict(list)
+    ranked: list[tuple[np.ndarray, np.ndarray, np.ndarray] | None] = [None] * len(
+        candidates
+    )
+    for offset, candidate_indices in enumerate(candidates):
+        indices = np.asarray(candidate_indices, dtype=np.int64)
+        if len(indices):
+            grouped[len(indices)].append((offset, source_start + offset, indices))
+
+    high_geometry_weight = min(0.20, config.geometry_score_weight)
+    for candidate_count, entries in grouped.items():
+        batch_size = max(
+            1,
+            min(
+                _RANKING_SOURCE_BATCH,
+                _RANKING_TARGET_CANDIDATE_EDGES // candidate_count,
+            ),
+        )
+        for batch_start in range(0, len(entries), batch_size):
+            batch = entries[batch_start : batch_start + batch_size]
+            offsets = [entry[0] for entry in batch]
+            source_indices = np.asarray([entry[1] for entry in batch], dtype=np.int64)
+            target_indices = np.stack([entry[2] for entry in batch])
+            similarities = np.matmul(
+                target_descriptor[target_indices],
+                source_descriptor[source_indices, :, None],
+            )[..., 0]
+            distances = np.linalg.norm(
+                target_xy[target_indices]
+                - (source_xy[source_indices, None] + field[source_indices, None]),
+                axis=2,
+            )
+            geometry = np.exp(-0.5 * (distances / config.patch_width_um) ** 2)
+            feature_rank = np.clip((similarities + 1.0) / 2.0, 0.0, 1.0)
+            high_similarity = (
+                np.max(similarities, axis=1) >= config.min_feature_similarity
+            )
+            feature_score = np.empty_like(feature_rank)
+            geometry_score = np.empty_like(geometry)
+            if np.any(high_similarity):
+                feature_score[high_similarity] = (
+                    1.0 - high_geometry_weight
+                ) * feature_rank[high_similarity]
+                geometry_score[high_similarity] = (
+                    high_geometry_weight * geometry[high_similarity]
+                )
+            low_similarity = ~high_similarity
+            if np.any(low_similarity):
+                feature_score[low_similarity] = (
+                    1.0 - config.geometry_score_weight
+                ) * feature_rank[low_similarity]
+                geometry_score[low_similarity] = (
+                    config.geometry_score_weight * geometry[low_similarity]
+                )
+            scores = feature_score + geometry_score
+            for row, offset in enumerate(offsets):
+                ranked[offset] = (
+                    target_indices[row],
+                    similarities[row],
+                    scores[row],
+                )
+    return ranked
 
 
 def _smooth_displacement_field(

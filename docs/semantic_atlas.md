@@ -227,6 +227,19 @@ batch-correction proposal is rejected, Histopia also retains the original
 topology graph because the accepted feature matrix is unchanged; accepted
 corrections still trigger a complete correspondence rebuild.
 
+Candidate rows with equal neighbourhood sizes are additionally ranked in
+bounded matrix batches. Each source window contains at most 1,024 patches and
+each scoring batch targets at most 8,192 candidate edges; one source
+neighbourhood remains indivisible. This limits descriptor gathers while
+preserving the original floating-point operation order and sequential target
+tie-breaking. On a 16-section, 80,307-patch atlas, the complete cold fit fell
+from 82.13 to 66.01 seconds and the atlas phase from 76.47 to 60.94 seconds,
+with slightly lower peak memory. On a larger 24-section,
+524,317-patch stress atlas, the complete measured fit fell from 566.23 to
+553.24 seconds and the atlas phase from 540.99 to 529.50 seconds. The selected
+K, result fingerprints, and all 194 and 290 scientific artifacts,
+respectively, remained byte-for-byte identical.
+
 ## Review And Viewer
 
 Every fit writes `semantic_result.json`, per-slide label grids,

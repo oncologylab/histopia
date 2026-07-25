@@ -11,6 +11,7 @@ from histopia.semantic._correspondence import (
     _context_descriptors,
     _neighborhood_consistency,
     _reciprocal_matches,
+    _score_candidate_window,
     match_adjacent_sections,
 )
 
@@ -289,6 +290,75 @@ def test_reciprocal_target_ranking_retains_runner_up_and_tie_breaking() -> None:
     np.testing.assert_array_equal(source, [0])
     np.testing.assert_array_equal(target, [0])
     np.testing.assert_array_equal(margin, [0.0])
+
+
+def test_batched_candidate_scores_are_bit_exact_with_scalar_ranking() -> None:
+    rng = np.random.default_rng(401)
+    source_count = 19
+    target_count = 47
+    dimensions = 64
+    source_xy = rng.normal(size=(source_count, 2)) * 100
+    target_xy = rng.normal(size=(target_count, 2)) * 100
+    field = rng.normal(size=(source_count, 2)) * 5
+    source_descriptor = rng.normal(size=(source_count, dimensions)).astype(np.float32)
+    target_descriptor = rng.normal(size=(target_count, dimensions)).astype(np.float32)
+    source_descriptor /= np.linalg.norm(
+        source_descriptor,
+        axis=1,
+        keepdims=True,
+    )
+    target_descriptor /= np.linalg.norm(
+        target_descriptor,
+        axis=1,
+        keepdims=True,
+    )
+    candidates = [
+        sorted(
+            rng.choice(
+                target_count,
+                size=index % 7,
+                replace=False,
+            ).tolist()
+        )
+        for index in range(source_count)
+    ]
+    config = CorrespondenceConfig(patch_width_um=112.0)
+
+    observed = _score_candidate_window(
+        candidates,
+        source_start=0,
+        source_xy=source_xy,
+        target_xy=target_xy,
+        source_descriptor=source_descriptor,
+        target_descriptor=target_descriptor,
+        field=field,
+        config=config,
+    )
+
+    for source_index, candidate_indices in enumerate(candidates):
+        if not candidate_indices:
+            assert observed[source_index] is None
+            continue
+        indices = np.asarray(candidate_indices, dtype=np.int64)
+        similarities = target_descriptor[indices] @ source_descriptor[source_index]
+        distances = np.linalg.norm(
+            target_xy[indices] - (source_xy[source_index] + field[source_index]),
+            axis=1,
+        )
+        geometry = np.exp(-0.5 * (distances / config.patch_width_um) ** 2)
+        feature_rank = np.clip((similarities + 1.0) / 2.0, 0.0, 1.0)
+        geometry_weight = (
+            min(0.20, config.geometry_score_weight)
+            if float(np.max(similarities)) >= config.min_feature_similarity
+            else config.geometry_score_weight
+        )
+        scores = (1.0 - geometry_weight) * feature_rank + geometry_weight * geometry
+        ranked = observed[source_index]
+        assert ranked is not None
+        observed_indices, observed_similarities, observed_scores = ranked
+        np.testing.assert_array_equal(observed_indices, indices)
+        np.testing.assert_array_equal(observed_similarities, similarities)
+        np.testing.assert_array_equal(observed_scores, scores)
 
 
 def test_matching_rejects_an_isolated_near_decoy_without_runner_up() -> None:
