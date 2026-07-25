@@ -553,6 +553,16 @@ reduced a cold build from 46.5 to 24.5 seconds while peak resident memory rose
 from 241 to 378 MiB. The exact warm cache rebuilt the same viewer in 0.06
 seconds without encoding an asset.
 
+On a larger five-cohort benchmark with 134 sections and 1,742 WebPs, increasing
+from four to eight workers reduced the cold internal build time only from
+227.479 to 218.551 seconds (1.04x); the eight-worker process used 502 MiB peak
+resident memory. An exact warm build reused all five mouse payloads and every
+asset in 0.666 seconds of internal build time (1.07 seconds wall time, 72 MiB
+peak resident memory). All scientific images, runtime files, manifests, and
+cache records were byte-identical between the cold worker counts and the warm
+build. This confirms that four remains the balanced cold-build setting and
+that exact cache reuse is the important optimization for repeated review.
+
 ## Non-Rigid Refinement
 
 Non-rigid refinement is opt-in. Set `non_rigid = true` or
