@@ -103,6 +103,13 @@ review portal there and opens its local `index.html`; it does not start a
 server or make external requests. **Open semantic QC** starts an
 ephemeral loopback-only server on `127.0.0.1` so the WebGL viewer's modules and
 assets load correctly; it is replaced the next time semantic QC is opened.
+Reopening the tools refreshes a newly opened project while preserving the
+selected cohort and reference for the same project. Missing or malformed local
+project entries are reported and skipped without preventing usable WSI entries
+from loading. Controls are locked while a child process is active. Semantic
+launch verifies the existing selection manifest and registration seal before
+atomically updating only the semantic runtime config, leaving reviewed
+registration provenance untouched.
 
 The QuPath **Device** control selects the backend for UNI2-h feature extraction.
 The global semantic atlas then uses the validated CPU implementation;
