@@ -47,10 +47,16 @@ def build_registration_review(
             workers=workers,
         )
         order = json.loads((order_index.parent / "manifest.json").read_text())
+        area_continuity = order.get("physical_area_continuity")
+        area_review_recommended = bool(
+            isinstance(area_continuity, dict)
+            and area_continuity.get("review_recommended") is True
+        )
         manifest["order"] = {
             "approved": bool(order.get("approved")),
             "fingerprint": str(order.get("fingerprint", "")),
             "slide_count": len(order.get("slides", [])),
+            "review_recommended": area_review_recommended,
             "href": "order/index.html",
         }
     registration_result = registration_run / "registration_result.json"
@@ -127,6 +133,13 @@ def build_registration_cohort_review(
                 "approved": approved,
                 "slide_count": slide_count,
             }
+            review_recommended = row.get("review_recommended")
+            if review_recommended is not None:
+                if not isinstance(review_recommended, bool):
+                    raise ValueError(
+                        f"{name} {stage} review recommendation must be a boolean"
+                    )
+                stage_summary[stage]["review_recommended"] = review_recommended
         if not stages:
             raise ValueError(f"{name} registration review has no prepared stages")
         if len(slide_counts) != 1:
@@ -199,12 +212,13 @@ button[aria-pressed="true"]{border-bottom-color:#117864;color:#0b5345;font-weigh
 #status{margin-left:auto;color:#566573;font-size:13px;white-space:nowrap}
 main,iframe{width:100%;height:100%;min-width:0;min-height:0;border:0}
 @media(max-width:700px){
-  body{grid-template-rows:76px minmax(0,1fr)}
-  header{gap:6px;padding:4px 8px;flex-wrap:wrap}
-  header strong{width:100%;font-size:13px}
-  nav{height:34px}
+  body{grid-template-rows:82px minmax(0,1fr)}
+  header{display:grid;grid-template-rows:20px 30px 20px;gap:2px;padding:4px 8px}
+  header strong{grid-row:1;width:100%;font-size:13px}
+  nav{grid-row:2;height:30px}
   button{padding:0 9px;font-size:12px}
-  #status{font-size:11px}
+  #status{grid-row:3;margin-left:0;min-width:0;overflow:hidden;
+    text-overflow:ellipsis;font-size:11px}
 }
 """
 
@@ -223,7 +237,8 @@ function select(stage){
     "aria-pressed",String(button.dataset.stage===selected)));
   frame.src=row.href;
   const approval=row.approved?"approved":"review required";
-  status.textContent=`${row.slide_count} slides · ${approval}`;
+  const continuity=row.review_recommended?" · area continuity flag":"";
+  status.textContent=`${row.slide_count} slides · ${approval}${continuity}`;
   const url=new URL(location.href);
   url.searchParams.set("stage",selected);
   history.replaceState(null,"",url);
@@ -300,7 +315,9 @@ function choose(id){
   const parts=row.stages.map(stage=>{
     const summary=row.stage_summary?.[stage];
     if(!summary)return names[stage]||stage;
-    return `${names[stage]||stage} ${summary.approved?"approved":"review required"}`;
+    const continuity=summary.review_recommended?" (continuity flag)":"";
+    return `${names[stage]||stage} ${
+      summary.approved?"approved":"review required"}${continuity}`;
   });
   const count=Number.isInteger(row.slide_count)?`${row.slide_count} slides · `:"";
   status.textContent=count+parts.join(" · ");

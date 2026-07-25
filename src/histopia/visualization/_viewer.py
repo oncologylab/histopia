@@ -1396,6 +1396,7 @@ def build_section_order_review(
         "runner_up_objective": payload.get("runner_up_objective"),
         "confidence_margin": payload.get("confidence_margin"),
         "physically_calibrated": bool(payload.get("physically_calibrated")),
+        "physical_area_continuity": payload.get("physical_area_continuity"),
         "slides": review_slides,
     }
     (output_dir / "manifest.json").write_text(
@@ -1671,6 +1672,9 @@ const rowCount = innerWidth >= 2400
 slides.style.setProperty('--rows', rowCount);
 slides.style.setProperty('--columns', Math.ceil(data.slides.length / rowCount));
 document.querySelector('#status').textContent =
+  `${data.physical_area_continuity?.review_recommended
+    ? 'Area continuity review | '
+    : ''}` +
   `${data.approved ? 'Approved' : 'Approval required'} | ` +
   `${data.physically_calibrated ? 'physical scale' : 'pixel scale'}`;
 document.querySelector('#score').textContent =
@@ -1713,6 +1717,7 @@ article.fixed{border:3px solid #e0b84b}img{display:block;width:100%;height:calc(
 @media(max-width:600px){
   header{height:32px;gap:8px;padding:4px 7px;font-size:10px;white-space:nowrap}
   header strong{font-size:12px}header #score,header #summary,header code{display:none}
+  header #status{min-width:0;overflow:hidden;text-overflow:ellipsis}
   main{height:calc(100vh - 32px);gap:3px;padding:3px}
   img{height:calc(100% - 32px)}
   .label,.metrics{height:16px;padding:1px 4px}.metrics{font-size:10px}

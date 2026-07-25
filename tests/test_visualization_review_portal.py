@@ -52,6 +52,9 @@ def test_registration_review_builds_path_free_fixed_viewport_portal(
                 {
                     "approved": True,
                     "fingerprint": "order-fingerprint",
+                    "physical_area_continuity": {
+                        "review_recommended": True,
+                    },
                     "slides": [{}, {}],
                 }
             )
@@ -78,6 +81,7 @@ def test_registration_review_builds_path_free_fixed_viewport_portal(
         "href": "mask/index.html",
     }
     assert manifest["order"]["approved"] is True
+    assert manifest["order"]["review_recommended"] is True
     assert str(tmp_path) not in (output / "index.html").read_text()
     assert (output / "manifest-data.js").is_file()
     assert "manifest-data.js" in (output / "index.html").read_text()
@@ -147,6 +151,7 @@ def test_registration_cohort_review_builds_one_path_free_entrypoint(
                     "order": {
                         "approved": False,
                         "slide_count": slide_count,
+                        "review_recommended": run == runs["8471"],
                     },
                 }
             )
@@ -169,7 +174,16 @@ def test_registration_cohort_review_builds_one_path_free_entrypoint(
     assert manifest["reviews"][0]["slide_count"] == 17
     assert manifest["reviews"][0]["stage_summary"] == {
         "mask": {"approved": True, "slide_count": 17},
-        "order": {"approved": False, "slide_count": 17},
+        "order": {
+            "approved": False,
+            "slide_count": 17,
+            "review_recommended": False,
+        },
+    }
+    assert manifest["reviews"][1]["stage_summary"]["order"] == {
+        "approved": False,
+        "slide_count": 12,
+        "review_recommended": True,
     }
     assert str(tmp_path) not in index.read_text()
     assert "overflow:hidden" in (output / "cohort-review.css").read_text()
@@ -225,7 +239,11 @@ def test_registration_cohort_review_shows_full_mobile_approval_status(
             json.dumps(
                 {
                     "mask": {"approved": True, "slide_count": slide_count},
-                    "order": {"approved": False, "slide_count": slide_count},
+                    "order": {
+                        "approved": False,
+                        "slide_count": slide_count,
+                        "review_recommended": run == runs["8471"],
+                    },
                 }
             )
         )
@@ -254,7 +272,7 @@ def test_registration_cohort_review_shows_full_mobile_approval_status(
             "() => document.querySelector('#status').textContent.includes('12 slides')"
         )
         assert page.locator("#status").inner_text() == (
-            "12 slides · masks approved · order review required"
+            "12 slides · masks approved · order review required (continuity flag)"
         )
         status_width = page.locator("#status").evaluate(
             "(element) => [element.clientWidth, element.scrollWidth]"

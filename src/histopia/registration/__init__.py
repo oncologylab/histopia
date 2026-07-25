@@ -12,6 +12,10 @@ _PUBLIC_IMPORTS = {
         "histopia.registration._ordering",
         "CavityContinuitySummary",
     ),
+    "PhysicalAreaContinuitySummary": (
+        "histopia.registration._ordering",
+        "PhysicalAreaContinuitySummary",
+    ),
     "GroupOrientation": (
         "histopia.registration._orientation",
         "GroupOrientation",
@@ -133,6 +137,10 @@ _PUBLIC_IMPORTS = {
         "histopia.registration._ordering",
         "summarize_cavity_continuity",
     ),
+    "summarize_physical_area_continuity": (
+        "histopia.registration._ordering",
+        "summarize_physical_area_continuity",
+    ),
     "thumbnail_to_full_resolution_matrix": (
         "histopia.registration._wsi",
         "thumbnail_to_full_resolution_matrix",
@@ -188,6 +196,7 @@ __all__ = [
     "SlideRecord",
     "SectionOrderProposal",
     "CavityContinuitySummary",
+    "PhysicalAreaContinuitySummary",
     "WsiWarpResult",
     "build_kpf_manifest",
     "approve_mask_review",
@@ -208,6 +217,7 @@ __all__ = [
     "orient_section_group",
     "register_sections",
     "summarize_cavity_continuity",
+    "summarize_physical_area_continuity",
     "thumbnail_to_full_resolution_matrix",
     "warp_saved_registration",
     "warp_slide_to_reference",

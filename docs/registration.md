@@ -150,13 +150,16 @@ When no anchor manifest is supplied, an explicit registration reference is
 fixed at position 1. Supply a manifest to place one or more anchors elsewhere.
 The proposal records adjacent distances, physical areas, a runner-up margin,
 the largest internal-cavity fraction for each slide, a graded cavity-continuity
-summary, and a fingerprint. Pairwise cavity distance is continuous after a
-small noise floor, so nearly identical sections on opposite sides of a review
-threshold cannot receive a categorical penalty. Substantial cavities seed
-continuity blocks, neighboring weaker cavities extend them, and a single
-borderline section may bridge a block. Multiple separated blocks are marked
-for human review. Set `require_approved_order = true` to stop before
-registration until the exact fingerprint is approved.
+summary, a calibrated-area continuity diagnostic, and a fingerprint. The area
+diagnostic marks strong jumps or reversals for review but does not alter the
+proposed order, because similarity ordering is not a measured physical z-axis.
+Pairwise cavity distance is continuous after a small noise floor, so nearly
+identical sections on opposite sides of a review threshold cannot receive a
+categorical penalty. Substantial cavities seed continuity blocks, neighboring
+weaker cavities extend them, and a single borderline section may bridge a
+block. Multiple separated blocks are marked for human review. Set
+`require_approved_order = true` to stop before registration until the exact
+fingerprint is approved.
 
 Quarter-turn proposals produced by `orient_section_group(...).to_json_dict()`
 can be passed directly as `section_orientation_path`. The loader also accepts

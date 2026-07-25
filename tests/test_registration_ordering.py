@@ -7,6 +7,7 @@ from histopia.registration._ordering import (
     order_is_approved,
     propose_anchored_order,
     summarize_cavity_continuity,
+    summarize_physical_area_continuity,
     write_order_proposal,
 )
 from histopia.registration._pipeline import (
@@ -173,8 +174,62 @@ def test_order_proposal_records_physical_calibration() -> None:
     payload = proposal.to_json_dict()
 
     assert payload["physically_calibrated"] is True
+    assert payload["physical_area_continuity"]["available"] is True
+    assert payload["physical_area_continuity"]["review_recommended"] is False
     assert payload["slides"][1]["distance_from_previous"] == 0.2
     assert payload["slides"][1]["physical_tissue_area_um2"] == 1_800_000.0
+
+
+def test_physical_area_continuity_accepts_gradual_monotonic_change() -> None:
+    names = ("A", "B", "C", "D")
+    summary = summarize_physical_area_continuity(
+        names,
+        {"A": 100.0, "B": 90.0, "C": 80.0, "D": 70.0},
+    )
+
+    assert summary.available is True
+    assert summary.trend == "nonincreasing"
+    assert summary.normalized_rmse == 0
+    assert summary.max_residual_fraction == 0
+    assert summary.max_adjacent_orders == (3, 4)
+    assert summary.review_recommended is False
+
+
+def test_physical_area_continuity_flags_strong_reversal() -> None:
+    names = ("A", "B", "C", "D", "E")
+    summary = summarize_physical_area_continuity(
+        names,
+        {"A": 100.0, "B": 80.0, "C": 60.0, "D": 80.0, "E": 100.0},
+    )
+
+    assert summary.available is True
+    assert summary.max_residual_fraction is not None
+    assert summary.max_residual_fraction >= summary.residual_threshold
+    assert summary.review_recommended is True
+    assert summary.to_json_dict()["review_recommended"] is True
+
+
+def test_physical_area_continuity_flags_large_adjacent_jump() -> None:
+    names = ("A", "B", "C")
+    summary = summarize_physical_area_continuity(
+        names,
+        {"A": 100.0, "B": 100.0, "C": 150.0},
+    )
+
+    assert summary.max_adjacent_relative_change == 0.4
+    assert summary.max_adjacent_orders == (2, 3)
+    assert summary.review_recommended is True
+
+
+def test_physical_area_continuity_is_unavailable_without_complete_calibration() -> None:
+    summary = summarize_physical_area_continuity(
+        ("A", "B"),
+        {"A": 100.0, "B": None},
+    )
+
+    assert summary.available is False
+    assert summary.review_recommended is False
+    assert summary.to_json_dict()["trend"] is None
 
 
 def test_order_proposal_records_cavity_continuity() -> None:
