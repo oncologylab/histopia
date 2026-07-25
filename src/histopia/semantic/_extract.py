@@ -19,6 +19,11 @@ from histopia.semantic._features import (
     PatchFeatures,
     extract_patch_features,
 )
+from histopia.semantic._performance import (
+    elapsed_seconds,
+    utc_timestamp,
+    write_performance_stage,
+)
 from histopia.semantic._preflight import (
     SemanticPreflight,
     preflight_registration,
@@ -60,66 +65,143 @@ def extract_registration_features(
     feature_dir = config.output_dir / "features"
     feature_dir.mkdir(parents=True, exist_ok=True)
     output_paths: list[Path] = []
-    for order, slide in enumerate(slides, start=1):
-        slide_path = Path(slide["path"])
-        output = feature_artifact_path(feature_dir, order, slide_path.name)
-        output_paths.append(output)
-        source = preflight_slides[slide_path.name]
-        provenance = {
-            "preflight_fingerprint": preflight.fingerprint,
-            "slide_name": source.slide_name,
-            "source_sha256": source.source_sha256,
-            "mask_sha256": source.mask_sha256,
-            "transform_sha256": source.transform_sha256,
-            "model_fingerprint": str(model_fingerprint),
-            "analysis_mpp": config.analysis_mpp,
-            "patch_size_px": config.patch_size_px,
-            "min_tissue_fraction": config.min_tissue_fraction,
+    extraction_started = time.perf_counter()
+    performance_rows: list[dict[str, object]] = []
+    performance: dict[str, object] = {
+        "status": "running",
+        "started_at": utc_timestamp(),
+        "preflight_fingerprint": preflight.fingerprint,
+        "slide_count": len(slides),
+        "completed_slides": 0,
+        "cached_slides": 0,
+        "extracted_slides": 0,
+        "total_patches": 0,
+        "elapsed_seconds": 0.0,
+        "controls": {
             "batch_size": config.batch_size,
-            "encoder_runtime": runtime_provenance,
-            "extraction_method": _EXTRACTION_METHOD,
-            "patch_reader": _VipsPatchReader.provenance_id,
-        }
-        if (
-            output.exists()
-            and not overwrite
-            and feature_cache_matches(output, provenance)
-        ):
-            if progress is not None:
-                progress(f"[{order}/{len(slides)}] cached {slide_path.name}")
-            continue
-        if progress is not None:
-            progress(f"[{order}/{len(slides)}] extracting {slide_path.name}")
-        started = time.perf_counter()
-        geometry = _geometry_from_json(slide["geometry"])
-        mask = _read_mask(
-            config.registration_run / "processed" / f"{slide_path.stem}.mask.png"
+            "patch_workers": config.patch_workers,
+            "vips_threads": config.vips_threads,
+            **_safe_encoder_runtime(runtime_provenance, config.device),
+        },
+        "slides": performance_rows,
+    }
+
+    def checkpoint() -> None:
+        performance["completed_slides"] = len(performance_rows)
+        performance["cached_slides"] = sum(
+            row["status"] == "cached" for row in performance_rows
         )
-        reader = _VipsPatchReader(slide_path)
-        artifact = extract_patch_features(
-            slide_id=slide_path.name,
-            geometry=geometry,
-            tissue_mask=mask,
-            moving_to_reference_thumbnail=np.asarray(
-                slide["transform"]["matrix"], dtype=float
-            ),
-            reference_geometry=reference_geometry,
-            reader=reader,
-            encoder=encoder,
-            analysis_mpp=config.analysis_mpp,
-            patch_size_px=config.patch_size_px,
-            min_tissue_fraction=config.min_tissue_fraction,
-            batch_size=config.batch_size,
-            patch_workers=config.patch_workers,
-            provenance=provenance,
+        performance["extracted_slides"] = sum(
+            row["status"] == "extracted" for row in performance_rows
         )
-        artifact.save(output)
-        if progress is not None:
-            progress(
-                f"[{order}/{len(slides)}] completed {slide_path.name}: "
-                f"{len(artifact.features):,} patches in "
-                f"{time.perf_counter() - started:.1f}s"
+        performance["total_patches"] = sum(
+            int(row["patches"]) for row in performance_rows
+        )
+        performance["elapsed_seconds"] = elapsed_seconds(extraction_started)
+        write_performance_stage(config.output_dir, "extraction", performance)
+
+    write_performance_stage(
+        config.output_dir,
+        "extraction",
+        performance,
+        clear_stages=("fit",),
+    )
+    try:
+        for order, slide in enumerate(slides, start=1):
+            slide_started = time.perf_counter()
+            slide_path = Path(slide["path"])
+            output = feature_artifact_path(feature_dir, order, slide_path.name)
+            output_paths.append(output)
+            source = preflight_slides[slide_path.name]
+            provenance = {
+                "preflight_fingerprint": preflight.fingerprint,
+                "slide_name": source.slide_name,
+                "source_sha256": source.source_sha256,
+                "mask_sha256": source.mask_sha256,
+                "transform_sha256": source.transform_sha256,
+                "model_fingerprint": str(model_fingerprint),
+                "analysis_mpp": config.analysis_mpp,
+                "patch_size_px": config.patch_size_px,
+                "min_tissue_fraction": config.min_tissue_fraction,
+                "batch_size": config.batch_size,
+                "encoder_runtime": runtime_provenance,
+                "extraction_method": _EXTRACTION_METHOD,
+                "patch_reader": _VipsPatchReader.provenance_id,
+            }
+            cached = (
+                _matching_feature_cache(output, provenance)
+                if output.exists() and not overwrite
+                else None
             )
+            if cached is not None:
+                elapsed = elapsed_seconds(slide_started)
+                performance_rows.append(
+                    _performance_slide_row(
+                        order,
+                        slide_path.name,
+                        status="cached",
+                        patches=len(cached.features),
+                        elapsed_seconds=elapsed,
+                    )
+                )
+                checkpoint()
+                if progress is not None:
+                    progress(f"[{order}/{len(slides)}] cached {slide_path.name}")
+                continue
+            if progress is not None:
+                progress(f"[{order}/{len(slides)}] extracting {slide_path.name}")
+            geometry = _geometry_from_json(slide["geometry"])
+            mask = _read_mask(
+                config.registration_run / "processed" / f"{slide_path.stem}.mask.png"
+            )
+            reader = _VipsPatchReader(slide_path)
+            artifact = extract_patch_features(
+                slide_id=slide_path.name,
+                geometry=geometry,
+                tissue_mask=mask,
+                moving_to_reference_thumbnail=np.asarray(
+                    slide["transform"]["matrix"], dtype=float
+                ),
+                reference_geometry=reference_geometry,
+                reader=reader,
+                encoder=encoder,
+                analysis_mpp=config.analysis_mpp,
+                patch_size_px=config.patch_size_px,
+                min_tissue_fraction=config.min_tissue_fraction,
+                batch_size=config.batch_size,
+                patch_workers=config.patch_workers,
+                provenance=provenance,
+            )
+            artifact.save(output)
+            elapsed = elapsed_seconds(slide_started)
+            performance_rows.append(
+                _performance_slide_row(
+                    order,
+                    slide_path.name,
+                    status="extracted",
+                    patches=len(artifact.features),
+                    elapsed_seconds=elapsed,
+                )
+            )
+            checkpoint()
+            if progress is not None:
+                progress(
+                    f"[{order}/{len(slides)}] completed {slide_path.name}: "
+                    f"{len(artifact.features):,} patches in {elapsed:.1f}s"
+                )
+    except BaseException as exc:
+        performance["status"] = (
+            "interrupted"
+            if isinstance(exc, (KeyboardInterrupt, SystemExit))
+            else "failed"
+        )
+        performance["failure_type"] = type(exc).__name__
+        performance["completed_at"] = utc_timestamp()
+        checkpoint()
+        raise
+    performance["status"] = "completed"
+    performance["completed_at"] = utc_timestamp()
+    checkpoint()
     return tuple(output_paths)
 
 
@@ -128,15 +210,63 @@ def feature_cache_matches(
 ) -> bool:
     """Return whether an artifact is a valid cache for exact campaign inputs."""
 
+    return _matching_feature_cache(path, expected_provenance) is not None
+
+
+def _matching_feature_cache(
+    path: Path | str, expected_provenance: dict[str, object]
+) -> PatchFeatures | None:
     try:
         artifact = PatchFeatures.load(path)
     except (BadZipFile, EOFError, KeyError, OSError, ValueError):
-        return False
-    return (
+        return None
+    matches = (
         artifact.fingerprint is not None
         and artifact.content_fingerprint is not None
         and artifact.provenance == expected_provenance
     )
+    return artifact if matches else None
+
+
+def _safe_encoder_runtime(
+    runtime: object,
+    fallback_device: str,
+) -> dict[str, object]:
+    values = runtime if isinstance(runtime, dict) else {}
+    summary: dict[str, object] = {
+        "device": str(values.get("device", fallback_device)),
+    }
+    precision = values.get("precision")
+    if isinstance(precision, str):
+        summary["precision"] = precision
+    accelerator = values.get("accelerator")
+    if isinstance(accelerator, dict):
+        safe_accelerator = {
+            key: accelerator[key]
+            for key in ("name", "compute_capability")
+            if isinstance(accelerator.get(key), (str, list, tuple))
+        }
+        if safe_accelerator:
+            summary["accelerator"] = safe_accelerator
+    return summary
+
+
+def _performance_slide_row(
+    order: int,
+    slide_id: str,
+    *,
+    status: str,
+    patches: int,
+    elapsed_seconds: float,
+) -> dict[str, object]:
+    return {
+        "order": order,
+        "slide_id": slide_id,
+        "status": status,
+        "patches": patches,
+        "elapsed_seconds": elapsed_seconds,
+        "patches_per_second": round(patches / max(elapsed_seconds, 1e-9), 3),
+    }
 
 
 def _geometry_from_json(data: dict[str, Any]) -> SlideGeometry:

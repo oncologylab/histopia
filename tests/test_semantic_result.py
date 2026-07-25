@@ -8,6 +8,7 @@ import pytest
 
 from histopia.semantic import PatchFeatures, approve_semantic_result
 from histopia.semantic._atlas import AtlasClustering, JointAtlas
+from histopia.semantic._performance import write_performance_stage
 from histopia.semantic._result import (
     _common_feature_provenance,
     validate_semantic_result,
@@ -55,6 +56,10 @@ def test_write_atlas_result_is_review_gated_and_keeps_per_slide_grids(
     assert payload["slides"][0]["labels"]["2"].endswith("001.npz")
     assert not review["approved"]
     assert review["fingerprint"] == payload["fingerprint"]
+    write_performance_stage(tmp_path, "fit", {"elapsed_seconds": 1.25})
+    validated = validate_semantic_result(tmp_path)
+    assert validated["fingerprint"] == payload["fingerprint"]
+    assert "semantic_performance.json" not in validated["artifacts"]
     with np.load(tmp_path / payload["slides"][1]["labels"]["2"]) as saved:
         np.testing.assert_array_equal(saved["labels"], [1, 0])
         np.testing.assert_array_equal(saved["grid_rc"], [[0, 0], [0, 1]])

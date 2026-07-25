@@ -138,6 +138,7 @@ def test_fit_uses_preflight_order_and_ignores_stale_extra_features(
         assert args[0] is atlas
         assert kwargs["primary_clusters"] == 2
         assert kwargs["fit_threads"] == 4
+        result.write_text(json.dumps({"fingerprint": "result-fingerprint"}))
         return result
 
     monkeypatch.setattr(pipeline, "fit_joint_atlas", capture_fit)
@@ -159,6 +160,13 @@ def test_fit_uses_preflight_order_and_ignores_stale_extra_features(
     assert captured == [("z-section.ndpi", "a-section.ndpi")]
     assert thread_limits == [4]
     assert runtime_events == ["runtime-loaded", "limit-enter", "fit"]
+    performance = json.loads(
+        (config.output_dir / "semantic_performance.json").read_text()
+    )
+    assert performance["fit"]["status"] == "completed"
+    assert performance["fit"]["fit_threads"] == 4
+    assert performance["fit"]["semantic_result_fingerprint"] == "result-fingerprint"
+    assert performance["fit"]["total_patches"] == 4
 
 
 def test_fit_rejects_wrong_feature_slide_before_global_computation(
@@ -197,6 +205,11 @@ def test_fit_rejects_wrong_feature_slide_before_global_computation(
     with pytest.raises(ValueError, match="slide identity differs"):
         pipeline.fit_saved_features(config)
     assert loaded == ["001-z-section.npz"]
+    performance = json.loads(
+        (config.output_dir / "semantic_performance.json").read_text()
+    )
+    assert performance["fit"]["status"] == "failed"
+    assert performance["fit"]["failure_type"] == "ValueError"
 
 
 def test_fit_rejects_stale_feature_provenance_before_global_computation(

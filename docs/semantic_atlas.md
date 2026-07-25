@@ -213,6 +213,15 @@ incomplete artifacts are rejected before QC or viewer generation. Scientific
 interpretation should wait until semantic overlays and sensitivity fits have
 been reviewed.
 
+`semantic_performance.json` is a separate atomic observational record. During
+extraction it reports running/completed/failed state, effective device and
+worker controls, per-slide cache status, patch counts, elapsed time, and patch
+throughput. Fitting adds feature-load, native-runtime preparation, atlas-fit,
+and artifact-write durations plus the result fingerprint. A fresh extraction
+clears stale fit timing. This file is deliberately excluded from semantic
+result artifacts, fingerprints, and approval because elapsed time is
+machine-dependent and has no scientific meaning.
+
 Approve the exact reviewed fingerprint with:
 
 ```bash

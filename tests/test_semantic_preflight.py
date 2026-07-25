@@ -9,7 +9,13 @@ import pytest
 from PIL import Image
 
 import histopia.semantic._preflight as preflight_module
+from histopia.semantic import PatchFeatures, SemanticAtlasConfig
 from histopia.semantic._cli import main
+from histopia.semantic._extract import extract_registration_features
+from histopia.semantic._performance import (
+    load_performance_report,
+    write_performance_stage,
+)
 from histopia.semantic._preflight import (
     preflight_registration,
     write_preflight,
@@ -131,6 +137,118 @@ def test_preflight_records_complete_fingerprinted_registration(tmp_path: Path) -
         == hashlib.sha256((run / "registration_approval.json").read_bytes()).hexdigest()
     )
     assert payload["order_review_fingerprint"] == "accepted-order"
+
+
+def test_extraction_records_cache_and_compute_performance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run = _write_registration(tmp_path)
+    preflight = preflight_registration(run)
+    output = tmp_path / "semantic"
+    config = SemanticAtlasConfig(
+        registration_run=run,
+        output_dir=output,
+        batch_size=8,
+        patch_workers=2,
+        vips_threads=3,
+    )
+
+    class Encoder:
+        model_fingerprint = "model-fingerprint"
+        runtime_provenance = {
+            "device": "cuda:0",
+            "precision": "bfloat16-autocast",
+            "accelerator": {
+                "name": "Test GPU",
+                "compute_capability": [8, 0],
+            },
+        }
+
+    class Reader:
+        provenance_id = "test-reader"
+
+        def __init__(self, _path: Path) -> None:
+            pass
+
+    def extract(**kwargs: object) -> PatchFeatures:
+        slide_id = str(kwargs["slide_id"])
+        provenance = kwargs["provenance"]
+        return PatchFeatures(
+            slide_id=slide_id,
+            features=np.ones((3, 4), dtype=np.float32),
+            grid_rc=np.array([[0, 0], [0, 1], [1, 0]], dtype=np.int32),
+            native_xy=np.array([[1, 1], [2, 1], [1, 2]], dtype=np.float64),
+            reference_um_xy=np.array([[1, 1], [2, 1], [1, 2]], dtype=np.float64),
+            tissue_fraction=np.ones(3, dtype=np.float32),
+            grid_shape=(2, 2),
+            patch_size_px=config.patch_size_px,
+            analysis_mpp=config.analysis_mpp,
+            provenance=provenance,
+        )
+
+    import histopia.semantic._extract as extraction
+
+    monkeypatch.setattr(extraction, "configure_vips_threads", lambda _value: None)
+    monkeypatch.setattr(extraction, "_VipsPatchReader", Reader)
+    monkeypatch.setattr(
+        extraction,
+        "_read_mask",
+        lambda _path: np.ones((8, 10), dtype=bool),
+    )
+    monkeypatch.setattr(extraction, "extract_patch_features", extract)
+    write_performance_stage(output, "fit", {"status": "stale"})
+
+    paths = extract_registration_features(config, Encoder(), preflight=preflight)
+    first = load_performance_report(output / "semantic_performance.json")
+
+    assert len(paths) == 2
+    assert "fit" not in first
+    assert first["extraction"]["status"] == "completed"
+    assert first["extraction"]["extracted_slides"] == 2
+    assert first["extraction"]["cached_slides"] == 0
+    assert first["extraction"]["total_patches"] == 6
+    assert first["extraction"]["controls"] == {
+        "batch_size": 8,
+        "patch_workers": 2,
+        "vips_threads": 3,
+        "device": "cuda:0",
+        "precision": "bfloat16-autocast",
+        "accelerator": {
+            "name": "Test GPU",
+            "compute_capability": [8, 0],
+        },
+    }
+
+    monkeypatch.setattr(
+        extraction,
+        "extract_patch_features",
+        lambda **_kwargs: pytest.fail("valid feature cache should be reused"),
+    )
+    extract_registration_features(config, Encoder(), preflight=preflight)
+    second = load_performance_report(output / "semantic_performance.json")
+
+    assert second["extraction"]["status"] == "completed"
+    assert second["extraction"]["cached_slides"] == 2
+    assert second["extraction"]["extracted_slides"] == 0
+    assert second["extraction"]["total_patches"] == 6
+
+    def fail_extract(**_kwargs: object) -> None:
+        raise RuntimeError("test failure")
+
+    monkeypatch.setattr(extraction, "extract_patch_features", fail_extract)
+    with pytest.raises(RuntimeError, match="test failure"):
+        extract_registration_features(
+            config,
+            Encoder(),
+            preflight=preflight,
+            overwrite=True,
+        )
+    failed = load_performance_report(output / "semantic_performance.json")
+
+    assert failed["extraction"]["status"] == "failed"
+    assert failed["extraction"]["failure_type"] == "RuntimeError"
+    assert failed["extraction"]["completed_slides"] == 0
 
 
 def test_preflight_rejects_missing_mask(tmp_path: Path) -> None:
