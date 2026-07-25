@@ -9,7 +9,7 @@ import os
 import time
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -43,14 +43,18 @@ from histopia.registration._nonrigid import (
     warp_with_displacement,
 )
 from histopia.registration._ordering import (
+    _build_section_order_proposal,
     order_is_approved,
     propose_anchored_order,
     write_order_proposal,
 )
 from histopia.registration._ordering_cache import (
     load_ordering_distance_cache,
+    load_ordering_proposal_cache,
     ordering_cache_fingerprint,
+    ordering_proposal_cache_fingerprint,
     write_ordering_distance_cache,
+    write_ordering_proposal_cache,
 )
 from histopia.registration._orientation import (
     apply_quarter_turn,
@@ -462,9 +466,26 @@ def _register_sections(
         for path in slide_paths
     }
     performance.start_stage("section_ordering")
+    rigid_feature_seconds = 0.0
+    rigid_feature_slides_prepared = 0
+
+    def prepare_crop_features(
+        paths: tuple[Path, ...],
+    ) -> dict[Path, PreparedRigidFeatures] | None:
+        nonlocal rigid_feature_seconds, rigid_feature_slides_prepared
+        started = time.perf_counter()
+        features = _prepare_crop_features(paths, crops, config)
+        rigid_feature_seconds += time.perf_counter() - started
+        if features is not None:
+            rigid_feature_slides_prepared += len(features)
+        return features
+
+    ordering_distance_cache_hit = False
+    ordering_proposal_cache_hit = False
+    ordering_proposal_seconds = 0.0
     prepared_features: dict[Path, PreparedRigidFeatures] | None = None
     if config.section_order_strategy == "similarity":
-        prepared_features = _prepare_crop_features(slide_paths, crops, config)
+        prepared_features = prepare_crop_features(slide_paths)
         slide_paths = _similarity_section_order(
             slide_paths,
             crops,
@@ -495,8 +516,9 @@ def _register_sections(
             expected_fingerprint=distance_fingerprint,
             expected_size=len(slide_paths),
         )
+        ordering_distance_cache_hit = distances is not None
         if distances is None:
-            prepared_features = _prepare_crop_features(slide_paths, crops, config)
+            prepared_features = prepare_crop_features(slide_paths)
             distances = _section_distance_matrix(
                 slide_paths,
                 crops,
@@ -516,33 +538,87 @@ def _register_sections(
                 config.reference_slide,
             )
             fixed_positions = {explicit_reference.name: 1}
-        proposal = propose_anchored_order(
-            tuple(path.name for path in slide_paths),
+        slide_names = tuple(path.name for path in slide_paths)
+        areas_by_name = {path.name: physical_areas[path] for path in slide_paths}
+        cavity_fractions = {
+            path.name: _largest_internal_cavity_fraction(working_masks[path])
+            for path in slide_paths
+        }
+        proposal_cache_fingerprint = ordering_proposal_cache_fingerprint(
+            distance_fingerprint,
             distances,
             fixed_positions,
-            physical_areas_um2={
-                path.name: physical_areas[path] for path in slide_paths
-            },
+            physical_areas_um2=areas_by_name,
             input_fingerprints=input_fingerprints,
             orientation_quarter_turns=orientation_turns,
-            cavity_fractions={
-                path.name: _largest_internal_cavity_fraction(working_masks[path])
-                for path in slide_paths
-            },
+            cavity_fractions=cavity_fractions,
         )
+        proposal_cache_path = (
+            config.output_dir / ".cache" / "section-order-proposal.json"
+        )
+        cached_proposal = load_ordering_proposal_cache(
+            proposal_cache_path,
+            expected_fingerprint=proposal_cache_fingerprint,
+        )
+
+        def compute_and_cache_proposal():
+            current = propose_anchored_order(
+                slide_names,
+                distances,
+                fixed_positions,
+                physical_areas_um2=areas_by_name,
+                input_fingerprints=input_fingerprints,
+                orientation_quarter_turns=orientation_turns,
+                cavity_fractions=cavity_fractions,
+            )
+            try:
+                write_ordering_proposal_cache(
+                    proposal_cache_path,
+                    fingerprint=proposal_cache_fingerprint,
+                    slides=current.slides,
+                    runner_up_objective=current.runner_up_objective,
+                )
+            except OSError:
+                pass
+            return current
+
+        proposal_started = time.perf_counter()
+        if cached_proposal is None:
+            proposal = compute_and_cache_proposal()
+        else:
+            cached_slides, cached_runner_up = cached_proposal
+            try:
+                proposal = _build_section_order_proposal(
+                    cached_slides,
+                    slide_names,
+                    distances,
+                    fixed_positions,
+                    runner_up_objective=cached_runner_up,
+                    physical_areas_um2=areas_by_name,
+                    input_fingerprints=input_fingerprints,
+                    orientation_quarter_turns=orientation_turns,
+                    cavity_fractions=cavity_fractions,
+                )
+                ordering_proposal_cache_hit = True
+            except ValueError:
+                proposal = compute_and_cache_proposal()
+        ordering_proposal_seconds = time.perf_counter() - proposal_started
         order_review_path = (
             config.section_order_review_path
             or config.output_dir / "section_order_review.json"
         )
         write_order_proposal(order_review_path, proposal)
+        performance.update(
+            ordering_distance_cache_hit=ordering_distance_cache_hit,
+            ordering_proposal_cache_hit=ordering_proposal_cache_hit,
+            ordering_proposal_seconds=round(ordering_proposal_seconds, 6),
+        )
         if config.require_approved_order and not order_is_approved(
             order_review_path, proposal.fingerprint
         ):
             raise RegistrationApprovalRequired("order", order_review_path)
         path_by_name = {path.name: path for path in slide_paths}
         slide_paths = tuple(path_by_name[name] for name in proposal.slides)
-    if prepared_features is None:
-        prepared_features = _prepare_crop_features(slide_paths, crops, config)
     rigid_pair_cache = _RigidPairCache.create(
         crops,
         config,
@@ -552,12 +628,27 @@ def _register_sections(
     if config.reference_slide is not None or config.reference_policy == "explicit":
         reference_path = _select_reference(slide_paths, config.reference_slide)
     else:
+        if prepared_features is None:
+            prepared_features = prepare_crop_features(slide_paths)
         reference_path = _select_best_connected_reference(
             slide_paths,
             crops,
             config,
             prepared_features=prepared_features,
         )
+    rigid_pair_cache_preloaded = 0
+    if prepared_features is None and config.rigid_method == "feature":
+        required_pairs = _required_alignment_pairs(
+            slide_paths,
+            reference_path,
+            config.align_strategy,
+        )
+        preloaded_count = rigid_pair_cache.preload_all(required_pairs)
+        if preloaded_count is None:
+            prepared_features = prepare_crop_features(slide_paths)
+        else:
+            prepared_features = {}
+            rigid_pair_cache_preloaded = preloaded_count
     reference_image = working_thumbnails[reference_path]
     reference_crop = crops[reference_path]
     transforms_to_reference, aligned_to = _estimate_transforms_to_reference(
@@ -574,6 +665,9 @@ def _register_sections(
         rigid_pair_cache_hits=rigid_pair_cache.hits,
         rigid_pair_cache_misses=rigid_pair_cache.misses,
         rigid_pairs_computed=rigid_pair_cache.computations,
+        rigid_pair_cache_preloaded=rigid_pair_cache_preloaded,
+        rigid_feature_seconds=round(rigid_feature_seconds, 6),
+        rigid_feature_slides_prepared=rigid_feature_slides_prepared,
     )
     _apply_affine_overrides(
         transforms_to_reference,
@@ -996,6 +1090,34 @@ def _write_non_rigid_qc(
         cache.record(fingerprint, (output_path,))
 
 
+def _required_alignment_pairs(
+    slide_paths: tuple[Path, ...],
+    reference_path: Path,
+    align_strategy: str,
+) -> tuple[tuple[Path, Path], ...]:
+    reference_pairs = tuple(
+        (reference_path, path) for path in slide_paths if path != reference_path
+    )
+    reference_index = slide_paths.index(reference_path)
+    serial_pairs = tuple(
+        [
+            (slide_paths[index - 1], slide_paths[index])
+            for index in range(reference_index + 1, len(slide_paths))
+        ]
+        + [
+            (slide_paths[index + 1], slide_paths[index])
+            for index in range(reference_index - 1, -1, -1)
+        ]
+    )
+    if align_strategy == "reference":
+        return reference_pairs
+    if align_strategy == "serial":
+        return serial_pairs
+    if align_strategy == "hybrid":
+        return reference_pairs + serial_pairs
+    raise ValueError(f"unsupported alignment strategy: {align_strategy!r}")
+
+
 def _estimate_transforms_to_reference(
     slide_paths: tuple[Path, ...],
     reference_path: Path,
@@ -1345,6 +1467,10 @@ class _RigidPairCache:
     hits: int = 0
     misses: int = 0
     computations: int = 0
+    preloaded: dict[
+        tuple[Path, Path],
+        tuple[RigidTransformResult, RigidTransformResult],
+    ] = field(default_factory=dict, repr=False)
 
     @classmethod
     def create(
@@ -1373,6 +1499,29 @@ class _RigidPairCache:
             settings=_rigid_pair_cache_settings(config),
         )
 
+    def preload_all(self, pairs: tuple[tuple[Path, Path], ...]) -> int | None:
+        """Load an exact required pair set without changing cache counters."""
+
+        if self.directory is None:
+            return None
+        loaded: dict[
+            tuple[Path, Path],
+            tuple[RigidTransformResult, RigidTransformResult],
+        ] = {}
+        for fixed_path, moving_path in dict.fromkeys(pairs):
+            fingerprint = rigid_pair_fingerprint(
+                self.crop_fingerprints[fixed_path],
+                self.crop_fingerprints[moving_path],
+                self.settings,
+            )
+            cached = load_rigid_pair_cache(self.directory, fingerprint)
+            if cached is None:
+                self.preloaded.clear()
+                return None
+            loaded[(fixed_path, moving_path)] = cached
+        self.preloaded = loaded
+        return len(loaded)
+
     def estimate(
         self,
         fixed_path: Path,
@@ -1381,6 +1530,10 @@ class _RigidPairCache:
         config: RegistrationConfig,
         prepared_features: dict[Path, PreparedRigidFeatures] | None,
     ) -> tuple[RigidTransformResult, RigidTransformResult]:
+        preloaded = self.preloaded.get((fixed_path, moving_path))
+        if preloaded is not None:
+            self.hits += 1
+            return preloaded
         fingerprint = None
         if self.directory is not None:
             fingerprint = rigid_pair_fingerprint(

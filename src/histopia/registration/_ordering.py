@@ -203,11 +203,56 @@ def propose_anchored_order(
                     )
 
     ordered = tuple(sequence)
-    objective = _path_objective(list(ordered), matrix, index)
     alternative_costs = sorted(
         cost for cost, candidate, _ in beam if candidate != ordered
     )
     runner_up = alternative_costs[0] if alternative_costs else None
+    return _build_section_order_proposal(
+        ordered,
+        slide_names,
+        matrix,
+        fixed_positions,
+        runner_up_objective=runner_up,
+        physical_areas_um2=physical_areas_um2,
+        input_fingerprints=input_fingerprints,
+        orientation_quarter_turns=orientation_quarter_turns,
+        cavity_fractions=cavity_fractions,
+    )
+
+
+def _build_section_order_proposal(
+    ordered: tuple[str, ...],
+    slide_names: tuple[str, ...],
+    distances: np.ndarray,
+    fixed_positions: dict[str, int],
+    *,
+    runner_up_objective: float | None,
+    physical_areas_um2: dict[str, float | None] | None,
+    input_fingerprints: dict[str, str] | None,
+    orientation_quarter_turns: dict[str, int] | None,
+    cavity_fractions: dict[str, float] | None,
+) -> SectionOrderProposal:
+    """Rebuild derived proposal fields from one exact cached slide order."""
+
+    if len(ordered) != len(slide_names) or set(ordered) != set(slide_names):
+        raise ValueError("cached section order must be an exact slide permutation")
+    for slide, position in fixed_positions.items():
+        if (
+            slide not in ordered
+            or position < 1
+            or position > len(ordered)
+            or ordered[position - 1] != slide
+        ):
+            raise ValueError("cached section order violates a fixed position")
+    matrix = np.asarray(distances, dtype=float)
+    if matrix.shape != (len(slide_names), len(slide_names)):
+        raise ValueError("distance matrix shape does not match slide count")
+    index = {name: offset for offset, name in enumerate(slide_names)}
+    objective = _path_objective(list(ordered), matrix, index)
+    if runner_up_objective is not None and (
+        not np.isfinite(runner_up_objective) or runner_up_objective + 1e-12 < objective
+    ):
+        raise ValueError("cached runner-up objective is invalid")
     fingerprint = _fingerprint(
         ordered,
         fixed_positions,
@@ -226,7 +271,7 @@ def propose_anchored_order(
         fixed_positions=dict(fixed_positions),
         fingerprint=fingerprint,
         objective=objective,
-        runner_up_objective=runner_up,
+        runner_up_objective=runner_up_objective,
         adjacent_distances=adjacent_distances,
         physical_areas_um2=(
             dict(physical_areas_um2) if physical_areas_um2 is not None else None

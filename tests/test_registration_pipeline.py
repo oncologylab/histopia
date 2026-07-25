@@ -545,13 +545,21 @@ def test_anchored_order_reuses_exact_distance_cache(
         )
     original = _pipeline._section_distance_matrix
     calls = 0
+    original_propose = _pipeline.propose_anchored_order
+    proposal_calls = 0
 
     def counted(*args, **kwargs):
         nonlocal calls
         calls += 1
         return original(*args, **kwargs)
 
+    def counted_propose(*args, **kwargs):
+        nonlocal proposal_calls
+        proposal_calls += 1
+        return original_propose(*args, **kwargs)
+
     monkeypatch.setattr(_pipeline, "_section_distance_matrix", counted)
+    monkeypatch.setattr(_pipeline, "propose_anchored_order", counted_propose)
     config = RegistrationConfig(
         input_dir=input_dir,
         output_dir=output_dir,
@@ -565,10 +573,26 @@ def test_anchored_order_reuses_exact_distance_cache(
     first = json.loads((output_dir / "section_order_review.json").read_text())
     register_sections(config)
     second = json.loads((output_dir / "section_order_review.json").read_text())
+    second_performance = load_performance_report(output_dir / PERFORMANCE_FILENAME)
 
     assert calls == 1
+    assert proposal_calls == 1
     assert first["fingerprint"] == second["fingerprint"]
     assert (output_dir / ".cache" / "section-order-distances.npz").is_file()
+    proposal_cache = output_dir / ".cache" / "section-order-proposal.json"
+    assert proposal_cache.is_file()
+    assert second_performance["ordering_distance_cache_hit"] is True
+    assert second_performance["ordering_proposal_cache_hit"] is True
+
+    proposal_cache.write_bytes(b"corrupt")
+    register_sections(config)
+    repaired = json.loads((output_dir / "section_order_review.json").read_text())
+    repaired_performance = load_performance_report(output_dir / PERFORMANCE_FILENAME)
+    assert calls == 1
+    assert proposal_calls == 2
+    assert repaired["fingerprint"] == first["fingerprint"]
+    assert repaired_performance["ordering_distance_cache_hit"] is True
+    assert repaired_performance["ordering_proposal_cache_hit"] is False
 
     sequential_output = tmp_path / "sequential"
     register_sections(
@@ -636,6 +660,78 @@ def test_registration_reuses_exact_rigid_pair_cache(
     assert second_performance["rigid_pair_cache_misses"] == 0
     assert second_performance["rigid_pairs_computed"] == 0
     assert len(tuple((output_dir / ".cache" / "rigid_pairs").glob("*.json"))) == 1
+
+
+def test_complete_rigid_pair_cache_skips_feature_detection_with_safe_fallback(
+    tmp_path: Path, monkeypatch
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    rng = np.random.default_rng(73)
+    fixed = np.full((110, 120, 3), 255, dtype=np.uint8)
+    fixed[15:95, 20:105] = rng.integers(
+        35,
+        220,
+        size=(80, 85, 3),
+        dtype=np.uint8,
+    )
+    for index, shift in enumerate(((0, 0), (2, -3), (5, -6))):
+        Image.fromarray(np.roll(fixed, shift=shift, axis=(0, 1))).save(
+            input_dir / f"section-{index}.png"
+        )
+    config = RegistrationConfig(
+        input_dir=input_dir,
+        output_dir=output_dir,
+        reference_slide="section-0.png",
+        reference_policy="explicit",
+        section_order_strategy="natural",
+        rigid_method="feature",
+        align_strategy="hybrid",
+        max_processed_image_dim_px=120,
+        write_processed_images=False,
+    )
+    config.refinement.enabled = False
+
+    register_sections(config)
+    result_bytes = (output_dir / "registration_result.json").read_bytes()
+    first_performance = load_performance_report(output_dir / PERFORMANCE_FILENAME)
+    assert first_performance["rigid_feature_slides_prepared"] == 3
+    assert first_performance["rigid_pair_cache_preloaded"] == 0
+
+    original_prepare = _pipeline.prepare_rigid_features
+
+    def unexpected_prepare(*_args, **_kwargs):
+        raise AssertionError("complete rigid pair cache should skip feature detection")
+
+    monkeypatch.setattr(_pipeline, "prepare_rigid_features", unexpected_prepare)
+    register_sections(config)
+    warm_performance = load_performance_report(output_dir / PERFORMANCE_FILENAME)
+
+    assert (output_dir / "registration_result.json").read_bytes() == result_bytes
+    assert warm_performance["rigid_feature_slides_prepared"] == 0
+    assert warm_performance["rigid_pair_cache_preloaded"] == 3
+    assert warm_performance["rigid_pair_cache_hits"] == 4
+    assert warm_performance["rigid_pair_cache_misses"] == 0
+
+    next((output_dir / ".cache" / "rigid_pairs").glob("*.json")).unlink()
+    detections = 0
+
+    def counted_prepare(image, mask):
+        nonlocal detections
+        detections += 1
+        return original_prepare(image, mask)
+
+    monkeypatch.setattr(_pipeline, "prepare_rigid_features", counted_prepare)
+    register_sections(config)
+    repaired_performance = load_performance_report(output_dir / PERFORMANCE_FILENAME)
+
+    assert (output_dir / "registration_result.json").read_bytes() == result_bytes
+    assert detections == 3
+    assert repaired_performance["rigid_feature_slides_prepared"] == 3
+    assert repaired_performance["rigid_pair_cache_preloaded"] == 0
+    assert repaired_performance["rigid_pair_cache_misses"] == 1
+    assert repaired_performance["rigid_pairs_computed"] == 1
 
 
 def test_registration_reuses_checksum_validated_qc_artifacts(

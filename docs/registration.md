@@ -227,6 +227,15 @@ distance algorithm/version and weights match exactly. A stale, incomplete, or
 checksum-invalid cache is ignored and rebuilt; it never bypasses order
 fingerprint approval.
 
+The deterministic anchored beam-search proposal has a separate atomic cache
+bound to the exact distance-matrix bytes, anchors, physical areas, input-mask
+fingerprints, orientations, cavity metrics, beam width, and algorithm version.
+Its retained slide order and runner-up score carry a content checksum; on
+reuse, Histopia reconstructs objective, adjacent-distance, fixed-position, and
+proposal-fingerprint fields from current inputs. A stale, malformed,
+symlinked, or checksum-invalid proposal is recomputed without affecting the
+distance cache or an exact human approval.
+
 The v3 ordering implementation prepares immutable rigid features once per
 slide and reuses them across every pair. On an 11-slide validation cohort at
 1200 processed pixels, this reduced a cold distance build from 85.16 seconds
@@ -241,6 +250,14 @@ the measured alignment stage fell from 9.43 to 7.23 seconds. All 22
 non-reference matrices, methods, match and inlier counts, warnings, and parent
 links were exactly unchanged. Parallel preparation uses additional transient
 memory, so use a smaller worker count when memory is the limiting resource.
+Before an explicit-reference warm run, Histopia now validates and preloads the
+exact required reference, serial, or hybrid transform set. Feature detection
+is skipped only when every pair is current; one missing or corrupt pair
+restores eager per-slide preparation before any transform is recomputed. On a
+24-slide hybrid validation stack, this preflight and the proposal cache
+reduced exact-warm pipeline time from 8.78 to 6.02 seconds and process wall
+time from 9.43 to 6.52 seconds. The section-order review, registration result,
+rigid transforms, and 93-bundle QC manifest remained byte-identical.
 
 Set `thumbnail_workers` above one to decode independent WSI thumbnails in
 parallel. This usually shortens startup for multi-slide cohorts, but each
@@ -378,7 +395,10 @@ it is excluded from the registration result and approval fingerprints, so
 timing differences cannot invalidate or alter scientific results.
 Mask telemetry additionally separates independent candidate extraction, group
 refinement, review resolution, artifact encoding, and rendered/reused slide
-counts.
+counts. Ordering telemetry distinguishes distance/proposal cache hits and
+proposal-search time; rigid telemetry records feature-preparation time and
+slide count plus the number of exact pair transforms preloaded before
+alignment.
 
 After reviewing the completed mask, order, and registration views, seal the
 exact artifacts without recomputing unchanged transforms:
