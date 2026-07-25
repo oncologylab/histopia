@@ -265,6 +265,7 @@ def test_group_mask_cache_reuses_exact_cohort_result(tmp_path: Path) -> None:
         {path: 1.0 for path in paths},
         cache,
         creator,
+        workers=3,
     )
     second = load_or_create_group_masks(
         base_masks,
@@ -272,6 +273,7 @@ def test_group_mask_cache_reuses_exact_cohort_result(tmp_path: Path) -> None:
         {path: 1.0 for path in paths},
         cache,
         creator,
+        workers=4,
     )
 
     assert calls == 1
@@ -279,6 +281,14 @@ def test_group_mask_cache_reuses_exact_cohort_result(tmp_path: Path) -> None:
         result.method for result in first.values()
     ]
     assert all(np.all(result.mask) for result in second.values())
+
+
+def test_group_mask_cache_workers_must_be_positive(tmp_path: Path) -> None:
+    with np.testing.assert_raises_regex(
+        ValueError,
+        "group mask cache workers must be positive",
+    ):
+        load_or_create_group_masks({}, {}, {}, tmp_path, dict, workers=0)
 
 
 def test_group_mask_cache_invalidates_physical_calibration(tmp_path: Path) -> None:

@@ -7,6 +7,7 @@ import json
 import os
 import zipfile
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -69,9 +70,13 @@ def load_or_create_group_masks(
     physical_pixel_areas: dict[Path, float | None],
     cache_dir: Path | None,
     creator: Callable[[], dict[Path, TissueMaskResult]],
+    *,
+    workers: int = 1,
 ) -> dict[Path, TissueMaskResult]:
     """Load an exact cohort-refinement cache entry or compute and persist it."""
 
+    if workers <= 0:
+        raise ValueError("group mask cache workers must be positive")
     if cache_dir is None:
         return creator()
     fingerprint = _group_mask_fingerprint(
@@ -85,11 +90,12 @@ def load_or_create_group_masks(
         fingerprint,
         tuple(results),
         {path: image.shape[:2] for path, image in images.items()},
+        workers=workers,
     )
     if cached is not None:
         return cached
     refined = creator()
-    _write_group_mask_entry(entry, fingerprint, refined)
+    _write_group_mask_entry(entry, fingerprint, refined, workers=workers)
     return refined
 
 
@@ -283,6 +289,8 @@ def _load_group_mask_entry(
     fingerprint: str,
     expected_paths: tuple[Path, ...],
     expected_shapes: dict[Path, tuple[int, int]],
+    *,
+    workers: int,
 ) -> dict[Path, TissueMaskResult] | None:
     try:
         metadata = json.loads((entry / "metadata.json").read_text())
@@ -291,13 +299,26 @@ def _load_group_mask_entry(
         names = metadata["slides"]
         if names != [str(path.resolve()) for path in expected_paths]:
             return None
-        loaded: dict[Path, TissueMaskResult] = {}
-        for index, path in enumerate(expected_paths):
-            result = _load_mask_entry(
+
+        def load(index_path: tuple[int, Path]):
+            index, path = index_path
+            return path, _load_mask_entry(
                 entry / f"{index:04d}",
                 f"{fingerprint}:{index}",
                 expected_shapes[path],
             )
+
+        indexed_paths = tuple(enumerate(expected_paths))
+        if workers == 1:
+            rows = map(load, indexed_paths)
+        else:
+            with ThreadPoolExecutor(
+                max_workers=workers,
+                thread_name_prefix="histopia-group-mask-cache",
+            ) as executor:
+                rows = tuple(executor.map(load, indexed_paths))
+        loaded: dict[Path, TissueMaskResult] = {}
+        for path, result in rows:
             if result is None:
                 return None
             loaded[path] = result
@@ -310,15 +331,29 @@ def _write_group_mask_entry(
     entry: Path,
     fingerprint: str,
     results: dict[Path, TissueMaskResult],
+    *,
+    workers: int,
 ) -> None:
     entry.mkdir(parents=True, exist_ok=True)
     paths = tuple(results)
-    for index, path in enumerate(paths):
+
+    def write(index_path: tuple[int, Path]) -> None:
+        index, path = index_path
         _write_mask_entry(
             entry / f"{index:04d}",
             f"{fingerprint}:{index}",
             results[path],
         )
+
+    indexed_paths = tuple(enumerate(paths))
+    if workers == 1:
+        tuple(map(write, indexed_paths))
+    else:
+        with ThreadPoolExecutor(
+            max_workers=workers,
+            thread_name_prefix="histopia-group-mask-cache",
+        ) as executor:
+            tuple(executor.map(write, indexed_paths))
     _write_json_atomic(
         entry / "metadata.json",
         {

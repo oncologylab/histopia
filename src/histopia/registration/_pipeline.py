@@ -324,6 +324,7 @@ def _register_sections(
                 images=thumbnails,
                 workers=config.mask_workers,
             ),
+            workers=config.mask_workers,
         )
         group_mask_seconds = time.perf_counter() - group_started
 
