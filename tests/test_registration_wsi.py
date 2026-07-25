@@ -192,6 +192,31 @@ def test_wsi_warp_validates_writer_settings_before_io(
         )
 
 
+def test_wsi_warp_configures_vips_before_source_io(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configured: list[int | None] = []
+    monkeypatch.setattr(
+        wsi_module,
+        "configure_vips_threads",
+        configured.append,
+    )
+
+    with pytest.raises(FileNotFoundError):
+        warp_slide_to_reference(
+            tmp_path / "moving.tiff",
+            tmp_path / "reference.tiff",
+            tmp_path / "warped.tiff",
+            np.eye(3),
+            moving_thumbnail_shape=(10, 10),
+            reference_thumbnail_shape=(10, 10),
+            vips_threads=5,
+        )
+
+    assert configured == [5]
+
+
 def test_wsi_warp_rejects_source_output_collision(tmp_path: Path) -> None:
     moving = tmp_path / "moving.tiff"
 
@@ -364,6 +389,7 @@ def test_wsi_warp_applies_reference_thumbnail_crop(tmp_path: Path) -> None:
 @pytest.mark.integration
 def test_saved_wsi_warp_uses_geometry_and_resumes_exact_output(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     run, output, moving_geometry, reference_geometry = _saved_wsi_run(tmp_path)
 
@@ -373,7 +399,8 @@ def test_saved_wsi_warp_uses_geometry_and_resumes_exact_output(
     }
     summary_path = output / "full_resolution_warps.json"
     summary_stat = summary_path.stat()
-    second = warp_saved_registration(run, output)
+    monkeypatch.setattr(wsi_module, "configure_vips_threads", lambda _value: None)
+    second = warp_saved_registration(run, output, vips_threads=7)
 
     expected = geometry_thumbnail_to_native_matrix(
         np.eye(3),
@@ -391,6 +418,10 @@ def test_saved_wsi_warp_uses_geometry_and_resumes_exact_output(
     assert len(summary) == 2
     assert all(row["provenance"]["schema_version"] == 1 for row in summary)
     assert all(row["provenance"]["export_fingerprint"] for row in summary)
+    assert all(
+        row["provenance"]["execution"]["requested_vips_threads"] is None
+        for row in summary
+    )
 
 
 @pytest.mark.integration

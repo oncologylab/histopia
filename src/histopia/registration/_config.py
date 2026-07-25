@@ -230,6 +230,7 @@ class RegistrationConfig:
     wsi_compression: WsiCompression = "jpeg"
     wsi_jpeg_quality: int = 95
     wsi_tile_size: int = 512
+    vips_threads: int | None = None
 
     def __post_init__(self) -> None:
         self.input_dir = Path(self.input_dir)
@@ -317,6 +318,8 @@ class RegistrationConfig:
         )
         self.mask_workers = positive_int("mask_workers", self.mask_workers)
         self.qc_workers = positive_int("qc_workers", self.qc_workers)
+        if self.vips_threads is not None:
+            self.vips_threads = positive_int("vips_threads", self.vips_threads)
         for name in (
             "preprocessing_cache",
             "alignment_cache",

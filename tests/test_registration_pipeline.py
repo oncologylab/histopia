@@ -36,10 +36,19 @@ from histopia.registration._pipeline import (
 from histopia.registration._slides import SlideGeometry
 
 
-def test_register_sections_writes_thumbnail_result(tmp_path: Path) -> None:
+def test_register_sections_writes_thumbnail_result(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     input_dir = tmp_path / "input"
     output_dir = tmp_path / "output"
     input_dir.mkdir()
+    configured_vips_threads: list[int | None] = []
+    monkeypatch.setattr(
+        _pipeline,
+        "configure_vips_threads",
+        configured_vips_threads.append,
+    )
 
     fixed = np.full((80, 80, 3), 255, dtype=np.uint8)
     fixed[20:55, 22:58] = np.array([238, 223, 204], dtype=np.uint8)
@@ -53,6 +62,7 @@ def test_register_sections_writes_thumbnail_result(tmp_path: Path) -> None:
             output_dir=output_dir,
             rigid_method="phase_correlation",
             max_processed_image_dim_px=80,
+            vips_threads=3,
         )
     )
 
@@ -70,7 +80,9 @@ def test_register_sections_writes_thumbnail_result(tmp_path: Path) -> None:
     assert performance["slide_count"] == 2
     assert performance["registered_slide_count"] == 2
     assert performance["controls"]["thumbnail_workers"] == 1
+    assert performance["controls"]["vips_threads"] == 3
     assert performance["stages"]["result_write"]["status"] == "completed"
+    assert configured_vips_threads == [3]
 
 
 def test_strict_registration_advances_through_exact_review_stages(

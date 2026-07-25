@@ -144,6 +144,8 @@ def test_saved_warp_passes_repeated_slide_selectors(
             "section-001.ndpi",
             "--warp-slide",
             "section-003",
+            "--vips-threads",
+            "6",
         ]
     )
 
@@ -157,7 +159,13 @@ def test_saved_warp_passes_repeated_slide_selectors(
                 "crop_mode": "reference",
                 "accepted_non_rigid_only": False,
                 "slide_names": ["section-001.ndpi", "section-003"],
+                "vips_threads": 6,
             },
         )
     ]
     assert json.loads(capsys.readouterr().out) == []
+
+
+def test_saved_warp_rejects_nonpositive_vips_threads() -> None:
+    with pytest.raises(SystemExit):
+        _cli.main(["--warp-run", "registration", "--vips-threads", "0"])

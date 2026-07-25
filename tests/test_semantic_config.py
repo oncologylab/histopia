@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 import json
-import os
-import sys
 
 import pytest
 
 from histopia.semantic._config import SemanticAtlasConfig, load_semantic_config
-from histopia.semantic._vips import configure_vips_threads
 
 
 def test_semantic_config_defaults_to_automatic_k_range(tmp_path) -> None:
@@ -98,23 +95,6 @@ def test_semantic_config_rejects_nonpositive_fit_threads(tmp_path) -> None:
             output_dir=tmp_path / "semantic",
             fit_threads=0,
         )
-
-
-def test_vips_thread_cap_is_set_before_import(monkeypatch) -> None:
-    monkeypatch.delitem(sys.modules, "pyvips", raising=False)
-    monkeypatch.delenv("VIPS_CONCURRENCY", raising=False)
-
-    configure_vips_threads(6)
-
-    assert os.environ["VIPS_CONCURRENCY"] == "6"
-
-
-def test_vips_thread_cap_cannot_change_after_import(monkeypatch) -> None:
-    monkeypatch.setitem(sys.modules, "pyvips", object())
-    monkeypatch.setenv("VIPS_CONCURRENCY", "4")
-
-    with pytest.raises(RuntimeError, match="cannot change after pyvips is imported"):
-        configure_vips_threads(8)
 
 
 @pytest.mark.parametrize(

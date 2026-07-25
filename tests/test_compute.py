@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import os
+import sys
 from types import SimpleNamespace
 
 import pytest
 
-from histopia.compute import inspect_compute, resolve_compute_device
+from histopia.compute import (
+    configure_vips_threads,
+    inspect_compute,
+    resolve_compute_device,
+)
 
 
 class _Cuda:
@@ -76,3 +82,26 @@ def test_inspection_reports_explicit_cpu_selection_on_gpu_machine() -> None:
 
     assert report["automatic_device"]["resolved"] == "cuda:0"
     assert report["selected_device"]["resolved"] == "cpu"
+
+
+def test_vips_thread_cap_is_set_before_import(monkeypatch) -> None:
+    monkeypatch.delitem(sys.modules, "pyvips", raising=False)
+    monkeypatch.delenv("VIPS_CONCURRENCY", raising=False)
+
+    configure_vips_threads(6)
+
+    assert os.environ["VIPS_CONCURRENCY"] == "6"
+
+
+def test_vips_thread_cap_cannot_change_after_import(monkeypatch) -> None:
+    monkeypatch.setitem(sys.modules, "pyvips", object())
+    monkeypatch.setenv("VIPS_CONCURRENCY", "4")
+
+    with pytest.raises(RuntimeError, match="cannot change after pyvips is imported"):
+        configure_vips_threads(8)
+
+
+@pytest.mark.parametrize(("value", "error"), ((0, ValueError), (True, TypeError)))
+def test_vips_thread_cap_requires_a_positive_integer(value, error) -> None:
+    with pytest.raises(error, match="vips_threads"):
+        configure_vips_threads(value)

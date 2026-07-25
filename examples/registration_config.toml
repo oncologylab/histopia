@@ -32,6 +32,7 @@ registered_output_dir = "/tmp/histopia-registration-runs/4577/registered"
 wsi_compression = "jpeg"
 wsi_jpeg_quality = 95
 wsi_tile_size = 512
+# vips_threads = 8
 
 [mask]
 mode = "auto_tissue"

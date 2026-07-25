@@ -87,6 +87,7 @@ registered_output_dir = "/tmp/histopia-registration-runs/4577/registered"
 wsi_compression = "jpeg"
 wsi_jpeg_quality = 95
 wsi_tile_size = 512
+# vips_threads = 8
 mask_override_dir = "/path/to/reviews/mask_overrides"
 automatic_mask_snapshot_path = "/path/to/reviews/automatic_masks/snapshot.json"
 require_approved_masks = true
@@ -457,6 +458,7 @@ already validated run without repeating registration:
 histopia-register \
     --warp-run /tmp/histopia-registration-runs/4630/qc-1200-hybrid \
     --registered-output-dir /tmp/histopia-full-resolution-runs/4630 \
+    --vips-threads 8 \
     --warp-crop-mode reference
 ```
 
@@ -480,6 +482,20 @@ An existing TIFF is reused only when that complete request still matches and
 the file remains readable with the expected canvas. Outputs created by an
 older summary schema, changed inputs, or changed settings require
 `--overwrite`.
+
+`vips_threads` and `--vips-threads` bound libvips' process-wide native worker
+pool. The setting controls throughput only and is excluded from scientific
+fingerprints. It must be applied before pyvips initializes, so use a fresh
+process when changing it. Leave it unset for libvips' adaptive default, or
+benchmark explicit values against the intended scanner format, storage, and
+host memory.
+
+On the validated 17,280 x 17,664 4630 SCN export, explicit caps of 1, 2, 4, 8,
+and 16 completed in 21.15, 14.40, 8.46, 5.17, and 5.25 seconds, respectively.
+Peak RSS was 472, 492, 518, 598, and 839 MiB. All five pyramidal TIFFs were
+byte-identical to the previously reviewed correction. Eight threads was the
+measured throughput point on that host; sixteen added memory without reducing
+wall time. This benchmark is guidance rather than a portable default.
 
 `reference` is the safe crop default and preserves the entire reference
 canvas. `overlap` reproduces a legacy-style common valid rectangle, but can

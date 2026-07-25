@@ -17,6 +17,7 @@ from typing import Any
 import numpy as np
 
 from histopia._atomic import write_json_atomic, write_text_atomic
+from histopia.compute import configure_vips_threads
 from histopia.registration._config import RegistrationConfig
 from histopia.registration._errors import RegistrationApprovalRequired
 from histopia.registration._io import (
@@ -192,6 +193,7 @@ class RegistrationResult:
 def register_sections(config: RegistrationConfig) -> RegistrationResult:
     """Run registration and record observational stage performance."""
 
+    configure_vips_threads(config.vips_threads)
     config.output_dir.mkdir(parents=True, exist_ok=True)
     performance = RegistrationPerformance(
         config.output_dir,
@@ -200,6 +202,7 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
             "mask_workers": config.mask_workers,
             "ordering_workers": config.ordering_workers,
             "qc_workers": config.qc_workers,
+            "vips_threads": config.vips_threads,
             "preprocessing_cache": config.preprocessing_cache,
             "alignment_cache": config.alignment_cache,
             "max_processed_image_dim_px": config.max_processed_image_dim_px,
@@ -1032,6 +1035,7 @@ def _write_full_resolution_warps(
             compression=config.wsi_compression,
             jpeg_quality=config.wsi_jpeg_quality,
             tile_size=config.wsi_tile_size,
+            vips_threads=config.vips_threads,
             reference_to_rigid_moving_displacement=(
                 slide.non_rigid_transform.displacement
                 if slide.non_rigid_transform is not None

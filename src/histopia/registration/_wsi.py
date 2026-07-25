@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,6 +15,7 @@ import numpy as np
 from histopia._atomic import write_json_atomic_if_changed
 from histopia._validation import positive_int, require_bool
 from histopia._vips_image import normalize_vips_rgb_uchar
+from histopia.compute import configure_vips_threads
 from histopia.registration._errors import OptionalDependencyError
 from histopia.registration._slides import SlideGeometry
 
@@ -129,6 +131,7 @@ def warp_slide_to_reference(
     jpeg_quality: int = 95,
     tile_size: int = 512,
     pyramid: bool = True,
+    vips_threads: int | None = None,
     reference_to_rigid_moving_displacement: np.ndarray | None = None,
     reference_thumbnail_bbox: tuple[int, int, int, int] | None = None,
 ) -> WsiWarpResult:
@@ -140,6 +143,7 @@ def warp_slide_to_reference(
         tile_size,
         pyramid,
     )
+    configure_vips_threads(vips_threads)
     moving_path = Path(moving_path)
     reference_path = Path(reference_path)
     output_path = Path(output_path)
@@ -313,6 +317,7 @@ def warp_saved_registration(
     crop_mode: str = "reference",
     accepted_non_rigid_only: bool = False,
     slide_names: Iterable[str | Path] | None = None,
+    vips_threads: int | None = None,
 ) -> tuple[WsiWarpResult, ...]:
     """Apply selected transforms from an existing registration run."""
 
@@ -326,6 +331,7 @@ def warp_saved_registration(
     )
     require_bool("overwrite", overwrite)
     require_bool("accepted_non_rigid_only", accepted_non_rigid_only)
+    configure_vips_threads(vips_threads)
     normalized_slide_names = _normalize_slide_names(slide_names)
     run_dir = Path(run_dir)
     result_path = run_dir / "registration_result.json"
@@ -456,8 +462,9 @@ def warp_saved_registration(
     results: list[WsiWarpResult] = []
     summary_by_output = dict(prior_by_output)
     for plan in plans:
+        resumed = plan.output_path.exists() and not overwrite
         offset_x, offset_y, expected_width, expected_height = plan.reference_bbox
-        if plan.output_path.exists() and not overwrite:
+        if resumed:
             crop_translation = np.eye(3, dtype=float)
             crop_translation[:2, 2] = [-offset_x, -offset_y]
             result = WsiWarpResult(
@@ -497,6 +504,7 @@ def warp_saved_registration(
                     compression=compression,
                     jpeg_quality=jpeg_quality,
                     tile_size=tile_size,
+                    vips_threads=vips_threads,
                     reference_to_rigid_moving_displacement=displacement,
                     reference_thumbnail_bbox=reference_thumbnail_bbox,
                 )
@@ -516,13 +524,21 @@ def warp_saved_registration(
             result_path,
             registration_result_sha256,
         )
-        result.provenance = {
-            "schema_version": 1,
-            "export_fingerprint": plan.fingerprint,
-            "registration_result_sha256": registration_result_sha256,
-            "request": plan.request,
-            "output": _file_identity(plan.output_path),
-        }
+        prior = prior_by_output.get(_path_key(plan.output_path))
+        if resumed and prior is not None and isinstance(prior.get("provenance"), dict):
+            result.provenance = dict(prior["provenance"])
+        else:
+            result.provenance = {
+                "schema_version": 1,
+                "export_fingerprint": plan.fingerprint,
+                "registration_result_sha256": registration_result_sha256,
+                "request": plan.request,
+                "output": _file_identity(plan.output_path),
+                "execution": {
+                    "requested_vips_threads": vips_threads,
+                    "vips_concurrency_env": os.environ.get("VIPS_CONCURRENCY"),
+                },
+            }
         results.append(result)
         summary_by_output[_path_key(plan.output_path)] = result.to_json_dict()
         write_json_atomic_if_changed(

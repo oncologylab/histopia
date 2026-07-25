@@ -27,6 +27,7 @@ def test_registration_config_normalizes_paths_and_defaults(tmp_path: Path) -> No
     assert config.mask_workers == 1
     assert config.ordering_workers == 1
     assert config.qc_workers == 1
+    assert config.vips_threads is None
     assert config.preprocessing_cache is True
     assert config.alignment_cache is True
 
@@ -149,6 +150,7 @@ def test_refinement_configs_reject_invalid_acceptance_gates(
         ("mask_workers", 1.5, TypeError),
         ("ordering_workers", 0, ValueError),
         ("qc_workers", 0, ValueError),
+        ("vips_threads", 0, ValueError),
         ("wsi_jpeg_quality", 101, ValueError),
         ("wsi_tile_size", -1, ValueError),
         ("write_warped_images", 1, TypeError),
@@ -193,8 +195,10 @@ def test_registration_mapping_parses_alignment_controls(tmp_path: Path) -> None:
             "output_dir": str(tmp_path / "output"),
             "alignment_cache": False,
             "qc_workers": 3,
+            "vips_threads": 6,
         }
     )
 
     assert config.alignment_cache is False
     assert config.qc_workers == 3
+    assert config.vips_threads == 6

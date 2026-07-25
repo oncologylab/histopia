@@ -17,6 +17,13 @@ from histopia.registration._config import (
 from histopia.registration._manifest import build_kpf_manifest
 
 
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("value must be positive")
+    return parsed
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Run Histopia registration, validation, and WSI export."
@@ -101,6 +108,11 @@ def main(argv: list[str] | None = None) -> int:
             "Export one exact source filename or stem used with --warp-run; "
             "repeat to select multiple slides."
         ),
+    )
+    parser.add_argument(
+        "--vips-threads",
+        type=_positive_int,
+        help="Bound native libvips workers used with --warp-run.",
     )
     parser.add_argument(
         "--viewer-run",
@@ -270,6 +282,7 @@ def main(argv: list[str] | None = None) -> int:
             crop_mode=args.warp_crop_mode,
             accepted_non_rigid_only=args.accepted_non_rigid_only,
             slide_names=args.warp_slide,
+            vips_threads=args.vips_threads,
         )
         print(json.dumps([result.to_json_dict() for result in results], indent=2))
         return 0
@@ -378,6 +391,7 @@ def _config_from_mapping(data: dict[str, Any]) -> RegistrationConfig:
         mask_workers=data.pop("mask_workers", 1),
         ordering_workers=data.pop("ordering_workers", 1),
         qc_workers=data.pop("qc_workers", 1),
+        vips_threads=data.pop("vips_threads", None),
         preprocessing_cache=data.pop("preprocessing_cache", True),
         alignment_cache=data.pop("alignment_cache", True),
         require_approved_order=data.pop("require_approved_order", False),

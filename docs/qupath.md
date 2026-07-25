@@ -8,7 +8,13 @@ regions. Python remains a child process so WSI, GPU, and model dependencies do
 not enter QuPath's JVM.
 
 ```bash
-pip install "histopia[qupath]"
+# Full registration, UNI2-h semantic, WSI, and interchange workflows:
+python -m pip install \
+  "histopia[registration,wsi,uni2h,qupath] @ git+https://github.com/oncologylab/histopia.git@main"
+
+# Lightweight interchange export only:
+python -m pip install \
+  "histopia[qupath] @ git+https://github.com/oncologylab/histopia.git@main"
 
 histopia-qupath \
   --registration-run /path/to/registration-run \
