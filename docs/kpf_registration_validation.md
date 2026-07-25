@@ -80,9 +80,14 @@ against the glass canvas instead of their tissue-content bounds.
 
 The remaining 96 legacy TIFFs have full-slide thumbnail geometry and are not
 affected by this coordinate error. Histopia now reconstructs native transforms
-from the saved `SlideGeometry` content bounds. A real 4257 Yap correction using
-the same historical affine transform improved whole-canvas MAE from 43.10 to
-8.71 and approved-tissue MAE from 88.56 to 22.51 on the 0-255 RGB scale.
+from the saved `SlideGeometry` content bounds. All nine affected slides were
+re-exported from their original WSI data with the same approved affine
+transforms. Corrected whole-canvas MAE was 5.25-8.87 versus 30.52-43.10 for the
+legacy exports; corrected approved-tissue MAE was 14.56-25.37 versus
+44.80-90.42 legacy on the 0-255 RGB scale. The per-slide tissue threshold is
+30 because the native pyramid/downsample and thumbnail-warp pipelines have
+different interpolation behavior; the independent whole-canvas limit remains
+15 and preserves a wide separation from every legacy coordinate failure.
 
 The resumable exporter now fingerprints the registration result, source and
 reference file identities, transform, optional displacement, crop, writer
@@ -99,6 +104,20 @@ python scripts/validate_kpf_full_resolution.py \
     --registration-root /path/to/registration-runs \
     --full-resolution-root /path/to/registered-slides \
     --output /path/to/audit.json
+```
+
+Use repeatable `--slide MOUSE=SLIDE` selectors to audit an intentionally
+partial export. Explicit subsets retain every per-slide threshold but do not
+apply cohort-median limits because a selected subset is not a representative
+cohort sample:
+
+```bash
+python scripts/validate_kpf_full_resolution.py \
+    --registration-root /path/to/registration-runs \
+    --full-resolution-root /path/to/registered-slides \
+    --mice mouse-1 \
+    --slide mouse-1=section-001.ndpi \
+    --slide mouse-1=section-004
 ```
 
 ## Non-Rigid Validation

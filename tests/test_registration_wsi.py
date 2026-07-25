@@ -215,6 +215,25 @@ def test_saved_wsi_warp_rejects_integer_boolean_controls(
         warp_saved_registration(tmp_path, **{name: 1})
 
 
+@pytest.mark.parametrize(
+    ("slide_names", "error", "message"),
+    [
+        ("moving", TypeError, "iterable of slide names"),
+        ((1,), TypeError, "strings or paths"),
+        ((), ValueError, "must not be empty"),
+        (("moving", "moving"), ValueError, "must not contain duplicates"),
+    ],
+)
+def test_saved_wsi_warp_validates_slide_selectors_before_reading_run(
+    tmp_path: Path,
+    slide_names: object,
+    error: type[Exception],
+    message: str,
+) -> None:
+    with pytest.raises(error, match=message):
+        warp_saved_registration(tmp_path, slide_names=slide_names)
+
+
 @pytest.mark.integration
 def test_wsi_warp_composes_reference_to_moving_displacement(
     tmp_path: Path,
@@ -352,6 +371,8 @@ def test_saved_wsi_warp_uses_geometry_and_resumes_exact_output(
     mtimes = {
         result.output_path: result.output_path.stat().st_mtime_ns for result in first
     }
+    summary_path = output / "full_resolution_warps.json"
+    summary_stat = summary_path.stat()
     second = warp_saved_registration(run, output)
 
     expected = geometry_thumbnail_to_native_matrix(
@@ -364,10 +385,75 @@ def test_saved_wsi_warp_uses_geometry_and_resumes_exact_output(
     assert {
         result.output_path: result.output_path.stat().st_mtime_ns for result in second
     } == mtimes
-    summary = json.loads((output / "full_resolution_warps.json").read_text())
+    assert summary_path.stat().st_mtime_ns == summary_stat.st_mtime_ns
+    assert summary_path.stat().st_ino == summary_stat.st_ino
+    summary = json.loads(summary_path.read_text())
     assert len(summary) == 2
     assert all(row["provenance"]["schema_version"] == 1 for row in summary)
     assert all(row["provenance"]["export_fingerprint"] for row in summary)
+
+
+@pytest.mark.integration
+def test_saved_wsi_warp_selects_named_slides_incrementally(
+    tmp_path: Path,
+) -> None:
+    run, output, _, _ = _saved_wsi_run(tmp_path)
+
+    moving = warp_saved_registration(
+        run,
+        output,
+        slide_names=("moving.tiff",),
+    )
+    assert [result.output_path.name for result in moving] == ["moving.registered.tiff"]
+    assert not (output / "reference.registered.tiff").exists()
+    first_summary = json.loads((output / "full_resolution_warps.json").read_text())
+    assert [Path(row["output_path"]).name for row in first_summary] == [
+        "moving.registered.tiff"
+    ]
+
+    reference = warp_saved_registration(
+        run,
+        output,
+        slide_names=(Path("reference"),),
+    )
+    assert [result.output_path.name for result in reference] == [
+        "reference.registered.tiff"
+    ]
+    final_summary = json.loads((output / "full_resolution_warps.json").read_text())
+    assert [Path(row["output_path"]).name for row in final_summary] == [
+        "moving.registered.tiff",
+        "reference.registered.tiff",
+    ]
+    reference_output = output / "reference.registered.tiff"
+    reference_mtime = reference_output.stat().st_mtime_ns
+    reference_record = final_summary[1]
+
+    warp_saved_registration(
+        run,
+        output,
+        slide_names=("moving",),
+        overwrite=True,
+    )
+
+    rewritten_summary = json.loads((output / "full_resolution_warps.json").read_text())
+    assert reference_output.stat().st_mtime_ns == reference_mtime
+    assert rewritten_summary[1] == reference_record
+
+
+@pytest.mark.integration
+def test_saved_wsi_warp_rejects_unknown_or_overlapping_slide_selectors(
+    tmp_path: Path,
+) -> None:
+    run, output, _, _ = _saved_wsi_run(tmp_path)
+
+    with pytest.raises(ValueError, match="not present"):
+        warp_saved_registration(run, output, slide_names=("unknown",))
+    with pytest.raises(ValueError, match="same slide more than once"):
+        warp_saved_registration(
+            run,
+            output,
+            slide_names=("moving", "moving.tiff"),
+        )
 
 
 @pytest.mark.integration

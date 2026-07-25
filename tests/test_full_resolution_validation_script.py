@@ -97,6 +97,32 @@ def test_full_resolution_audit_rejects_one_bad_slide_without_median_masking(
     assert report["rejected_slides"] == ["moving"]
     assert report["median_thumbnail_mae"] < report["maximum_thumbnail_mae"]
 
+    selected = audit_mouse(
+        mouse,
+        registration_root,
+        full_resolution_root,
+        32,
+        15.0,
+        30.0,
+        slide_names=("reference.tiff",),
+    )
+
+    assert selected["expected_files"] == 1
+    assert selected["output_files"] == 1
+    assert selected["warp_records"] == 1
+    assert selected["aggregate_thresholds_applied"] is False
+    assert selected["rejected_slides"] == []
+    with pytest.raises(ValueError, match="not present"):
+        audit_mouse(
+            mouse,
+            registration_root,
+            full_resolution_root,
+            32,
+            15.0,
+            30.0,
+            slide_names=("missing",),
+        )
+
 
 def _write_tiff(pyvips: object, path: Path, array: np.ndarray) -> None:
     pyvips.Image.new_from_memory(

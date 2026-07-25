@@ -82,7 +82,23 @@ Confirm availability with:
 
 ```bash
 vips --version
+python -c "import pyvips; print(pyvips.version(0), pyvips.version(1), pyvips.version(2))"
 ```
+
+Install `pyvips` and `libvips` from one coherent environment. In particular,
+do not reuse a locally built `pyvips` wheel across Conda and system Python
+environments: such a wheel can retain an absolute runtime library path and load
+an incompatible native dependency. Conda users should install both packages
+from `conda-forge`. For a system-Python environment with an already installed
+system `libvips`, rebuild the binding in that environment when necessary:
+
+```bash
+python -m pip install --no-cache-dir --force-reinstall \
+    --no-binary=pyvips "pyvips>=2.2,<4"
+```
+
+Run the import check above before starting a WSI workflow. A native loader
+failure can terminate Python before Histopia can report a normal exception.
 
 ## Reproducibility Policy
 

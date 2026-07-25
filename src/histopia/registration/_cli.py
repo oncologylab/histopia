@@ -95,6 +95,14 @@ def main(argv: list[str] | None = None) -> int:
         help="Export only accepted non-rigid slides used with --warp-run.",
     )
     parser.add_argument(
+        "--warp-slide",
+        action="append",
+        help=(
+            "Export one exact source filename or stem used with --warp-run; "
+            "repeat to select multiple slides."
+        ),
+    )
+    parser.add_argument(
         "--viewer-run",
         action="append",
         default=[],
@@ -261,6 +269,7 @@ def main(argv: list[str] | None = None) -> int:
             overwrite=args.overwrite,
             crop_mode=args.warp_crop_mode,
             accepted_non_rigid_only=args.accepted_non_rigid_only,
+            slide_names=args.warp_slide,
         )
         print(json.dumps([result.to_json_dict() for result in results], indent=2))
         return 0

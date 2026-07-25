@@ -116,3 +116,48 @@ def test_registration_viewer_passes_worker_count(
         )
     ]
     assert capsys.readouterr().out.strip() == str(output / "index.html")
+
+
+def test_saved_warp_passes_repeated_slide_selectors(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    calls = []
+
+    def capture(run, output, **kwargs):
+        calls.append((run, output, kwargs))
+        return ()
+
+    monkeypatch.setattr(
+        "histopia.registration._wsi.warp_saved_registration",
+        capture,
+    )
+    run = tmp_path / "registration"
+    output = tmp_path / "registered"
+
+    result = _cli.main(
+        [
+            "--warp-run",
+            str(run),
+            "--registered-output-dir",
+            str(output),
+            "--warp-slide",
+            "section-001.ndpi",
+            "--warp-slide",
+            "section-003",
+        ]
+    )
+
+    assert result == 0
+    assert calls == [
+        (
+            run,
+            output,
+            {
+                "overwrite": False,
+                "crop_mode": "reference",
+                "accepted_non_rigid_only": False,
+                "slide_names": ["section-001.ndpi", "section-003"],
+            },
+        )
+    ]
+    assert json.loads(capsys.readouterr().out) == []

@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-from histopia._atomic import write_json_atomic
+from histopia._atomic import write_json_atomic_if_changed
 from histopia._validation import positive_int, require_bool
 from histopia._vips_image import normalize_vips_rgb_uchar
 from histopia.registration._errors import OptionalDependencyError
@@ -311,8 +312,9 @@ def warp_saved_registration(
     overwrite: bool = False,
     crop_mode: str = "reference",
     accepted_non_rigid_only: bool = False,
+    slide_names: Iterable[str | Path] | None = None,
 ) -> tuple[WsiWarpResult, ...]:
-    """Apply all transforms from an existing registration run to source slides."""
+    """Apply selected transforms from an existing registration run."""
 
     from histopia.registration._io import load_thumbnail
 
@@ -324,6 +326,7 @@ def warp_saved_registration(
     )
     require_bool("overwrite", overwrite)
     require_bool("accepted_non_rigid_only", accepted_non_rigid_only)
+    normalized_slide_names = _normalize_slide_names(slide_names)
     run_dir = Path(run_dir)
     result_path = run_dir / "registration_result.json"
     result_bytes = result_path.read_bytes()
@@ -385,7 +388,13 @@ def warp_saved_registration(
         msg = "warp-run crop_mode must be 'reference' or 'overlap'"
         raise ValueError(msg)
 
-    selected_slides = slides
+    output_paths = [
+        output_dir / f"{Path(slide['path']).stem}.registered.tiff" for slide in slides
+    ]
+    preferred_output_keys = [_path_key(path) for path in output_paths]
+    if len(set(preferred_output_keys)) != len(preferred_output_keys):
+        raise ValueError("registration slide stems produce duplicate output paths")
+    selected_slides = _select_slides(slides, normalized_slide_names)
     if accepted_non_rigid_only:
         selected_slides = [
             slide
@@ -436,9 +445,6 @@ def warp_saved_registration(
         )
         for slide in selected_slides
     ]
-    plan_keys = [_path_key(plan.output_path) for plan in plans]
-    if len(set(plan_keys)) != len(plan_keys):
-        raise ValueError("registration slide stems produce duplicate output paths")
     if not overwrite:
         for plan in plans:
             if plan.output_path.exists():
@@ -519,9 +525,9 @@ def warp_saved_registration(
         }
         results.append(result)
         summary_by_output[_path_key(plan.output_path)] = result.to_json_dict()
-        write_json_atomic(
+        write_json_atomic_if_changed(
             summary_path,
-            _ordered_summary_rows(summary_by_output, plans),
+            _ordered_summary_rows(summary_by_output, preferred_output_keys),
         )
     return tuple(results)
 
@@ -742,11 +748,63 @@ def _validate_resumable_output(
 
 def _ordered_summary_rows(
     records: dict[str, dict[str, Any]],
-    plans: list[_WsiExportPlan],
+    preferred: list[str],
 ) -> list[dict[str, Any]]:
-    preferred = [_path_key(plan.output_path) for plan in plans]
     remaining = sorted(set(records) - set(preferred))
     return [records[key] for key in [*preferred, *remaining] if key in records]
+
+
+def _normalize_slide_names(
+    slide_names: Iterable[str | Path] | None,
+) -> tuple[str, ...] | None:
+    if slide_names is None:
+        return None
+    if isinstance(slide_names, (str, Path)):
+        raise TypeError("slide_names must be an iterable of slide names")
+    normalized: list[str] = []
+    for value in slide_names:
+        if not isinstance(value, (str, Path)):
+            raise TypeError("slide_names entries must be strings or paths")
+        selector = str(value)
+        if not selector:
+            raise ValueError("slide_names entries must not be empty")
+        normalized.append(selector)
+    if not normalized:
+        raise ValueError("slide_names must not be empty")
+    if len(set(normalized)) != len(normalized):
+        raise ValueError("slide_names must not contain duplicates")
+    return tuple(normalized)
+
+
+def _select_slides(
+    slides: list[dict[str, Any]],
+    slide_names: tuple[str, ...] | None,
+) -> list[dict[str, Any]]:
+    if slide_names is None:
+        return slides
+    selected_paths: set[str] = set()
+    for selector in slide_names:
+        candidates = [
+            slide
+            for slide in slides
+            if selector
+            in {
+                str(Path(slide["path"])),
+                Path(slide["path"]).name,
+                Path(slide["path"]).stem,
+            }
+        ]
+        if not candidates:
+            raise ValueError(
+                f"selected slide is not present in registration: {selector}"
+            )
+        if len(candidates) > 1:
+            raise ValueError(f"selected slide name is ambiguous: {selector}")
+        selected_path = str(Path(candidates[0]["path"]))
+        if selected_path in selected_paths:
+            raise ValueError("slide_names select the same slide more than once")
+        selected_paths.add(selected_path)
+    return [slide for slide in slides if str(Path(slide["path"])) in selected_paths]
 
 
 def _validate_writer_settings(

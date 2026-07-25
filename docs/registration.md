@@ -460,6 +460,17 @@ histopia-register \
     --warp-crop-mode reference
 ```
 
+Repeat `--warp-slide` with an exact source filename or stem to export a reviewed
+subset without rewriting unaffected TIFFs:
+
+```bash
+histopia-register \
+    --warp-run /tmp/histopia-registration-runs/mouse-1 \
+    --registered-output-dir /tmp/histopia-full-resolution-runs/mouse-1 \
+    --warp-slide section-001.ndpi \
+    --warp-slide section-004
+```
+
 The command is resumable by default. Histopia reconstructs native coordinates
 from the scanner content bounds saved during registration. Each completed file
 is written atomically and recorded in `full_resolution_warps.json` with a

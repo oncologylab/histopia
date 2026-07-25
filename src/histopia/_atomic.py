@@ -53,6 +53,34 @@ def write_json_atomic(
     return write_text_atomic(path, text + "\n")
 
 
+def write_json_atomic_if_changed(
+    path: Path | str,
+    payload: object,
+    *,
+    indent: int | None = 2,
+    sort_keys: bool = False,
+    separators: tuple[str, str] | None = None,
+) -> Path:
+    """Atomically replace JSON only when its serialized contents differ."""
+
+    target = Path(path)
+    text = (
+        json.dumps(
+            payload,
+            indent=indent,
+            sort_keys=sort_keys,
+            separators=separators,
+        )
+        + "\n"
+    )
+    try:
+        if target.read_text(encoding="utf-8") == text:
+            return target
+    except FileNotFoundError:
+        pass
+    return write_text_atomic(target, text)
+
+
 def write_binary_atomic(
     path: Path | str,
     writer: Callable[[BinaryIO], None],

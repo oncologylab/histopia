@@ -21,6 +21,30 @@ def test_atomic_json_replace_preserves_previous_mode(tmp_path: Path) -> None:
     assert not tuple(tmp_path.glob(".result.json.*.tmp"))
 
 
+def test_atomic_json_if_changed_preserves_identical_file(tmp_path: Path) -> None:
+    target = tmp_path / "result.json"
+    target.write_text('{\n  "value": true\n}\n')
+    original_stat = target.stat()
+
+    returned = _atomic.write_json_atomic_if_changed(target, {"value": True})
+
+    assert returned == target
+    assert target.stat().st_mtime_ns == original_stat.st_mtime_ns
+    assert target.stat().st_ino == original_stat.st_ino
+    assert not tuple(tmp_path.glob(".result.json.*.tmp"))
+
+
+def test_atomic_json_if_changed_replaces_different_file(tmp_path: Path) -> None:
+    target = tmp_path / "result.json"
+    target.write_text('{"value": false}\n')
+
+    returned = _atomic.write_json_atomic_if_changed(target, {"value": True})
+
+    assert returned == target
+    assert json.loads(target.read_text()) == {"value": True}
+    assert not tuple(tmp_path.glob(".result.json.*.tmp"))
+
+
 def test_atomic_binary_writer_keeps_old_file_after_interruption(
     tmp_path: Path,
 ) -> None:
