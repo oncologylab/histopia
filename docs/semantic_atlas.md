@@ -62,6 +62,7 @@ the machine-level controls without editing the saved scientific configuration:
 histopia-semantic doctor --device cuda:0
 histopia-semantic extract --config semantic-atlas.toml --device cuda:0 \
   --batch-size 128 --patch-workers 4 --vips-threads 8
+histopia-semantic fit --config semantic-atlas.toml --fit-threads 4
 ```
 
 Device and batch-size overrides are included in feature provenance and cache
@@ -111,6 +112,25 @@ Set `vips_threads` to cap libvips' native process-wide worker pool separately
 from `patch_workers`. The setting is applied before pyvips is imported and
 therefore cannot be changed later in the same process. Leave it unset to use
 libvips' adaptive default.
+
+`fit_threads` independently caps native BLAS and OpenMP pools during PCA,
+batch correction, global clustering, K selection, and topology
+regularization. It defaults to four and is recorded in sealed result runtime
+provenance. Keeping this value explicit avoids machine-dependent
+oversubscription and makes fitting performance reproducible without changing
+feature artifacts.
+
+On a validated 23-section atlas with 76,499 patches, one, four, eight, 16, and
+32 fit threads took 95.7, 71.7, 73.3, 73.6, and 106.2 seconds, respectively.
+The four- and 32-thread fits selected the same K, produced exactly identical
+labels for every K from 5 through 15, and retained every adjacent-section
+topology pair exactly. Four threads reduced runtime by 33% relative to the
+machine's unbounded 32-thread native pools.
+
+A separate cold-process end-to-end refit, including artifact writing, fell
+from 109.0 to 78.4 seconds after loading native estimator runtimes before
+applying the cap. Average CPU use fell from 11.1 to 2.1 cores, while all
+841,489 K-specific labels and all 59,919 topology links remained exact.
 
 On the validated server, a representative 57,600 by 50,944 NDPI with 9,213
 accepted patches took 9.98, 7.48, and 6.91 seconds with one, two, and four

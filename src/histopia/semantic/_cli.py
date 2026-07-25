@@ -48,6 +48,14 @@ def _add_compute_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_fit_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--fit-threads",
+        type=_positive_int,
+        help="Override native BLAS/OpenMP threads used for global atlas fitting.",
+    )
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Extract UNI2-h features and fit a global serial-section atlas."
@@ -76,6 +84,8 @@ def _build_parser() -> argparse.ArgumentParser:
                     "cache-only mode."
                 ),
             )
+        if command in {"fit", "run"}:
+            _add_fit_arguments(child)
     cache = subparsers.add_parser("cache-model")
     cache.add_argument("--cache-dir", type=Path, required=True)
     approve = subparsers.add_parser(
@@ -123,13 +133,14 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     config = load_semantic_config(args.config)
-    if args.command in {"extract", "run"}:
+    if args.command in {"extract", "fit", "run"}:
         config = override_compute_config(
             config,
-            device=args.device,
-            batch_size=args.batch_size,
-            patch_workers=args.patch_workers,
-            vips_threads=args.vips_threads,
+            device=getattr(args, "device", None),
+            batch_size=getattr(args, "batch_size", None),
+            patch_workers=getattr(args, "patch_workers", None),
+            vips_threads=getattr(args, "vips_threads", None),
+            fit_threads=getattr(args, "fit_threads", None),
         )
     if args.command == "preflight":
         from histopia.semantic._preflight import (

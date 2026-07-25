@@ -41,5 +41,11 @@ def test_reproducible_extras_match_constraint_versions() -> None:
     assert _pins(extras["uni2h-repro"]) == semantic
     assert _pins(extras["semantic-repro"]) == {
         package: semantic[package]
-        for package in ("numpy", "pillow", "scikit-learn", "scipy")
+        for package in (
+            "numpy",
+            "pillow",
+            "scikit-learn",
+            "scipy",
+            "threadpoolctl",
+        )
     }

@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 
 from histopia._atomic import write_binary_atomic, write_json_atomic
+from histopia._validation import positive_int
 from histopia.semantic import _result_validation
 from histopia.semantic._atlas import JointAtlas
 from histopia.semantic._correspondence import CorrespondenceConfig
@@ -43,10 +44,12 @@ def write_atlas_result(
     output_dir: Path | str,
     *,
     primary_clusters: int,
+    fit_threads: int = 4,
 ) -> Path:
     """Write sealed atlas artifacts and fingerprint-bound review state."""
 
     output_dir = Path(output_dir)
+    fit_threads = positive_int("fit_threads", fit_threads)
     common_provenance = _common_feature_provenance(sections, output_dir)
     patch_widths = {
         float(section.patch_size_px * section.analysis_mpp) for section in sections
@@ -163,8 +166,11 @@ def write_atlas_result(
         "feature_normalization": "patch_l2_v2",
         "feature_provenance": common_provenance,
         "fit_runtime": {
-            package: _package_version(package)
-            for package in ("numpy", "scikit-learn", "scipy")
+            **{
+                package: _package_version(package)
+                for package in ("numpy", "scikit-learn", "scipy", "threadpoolctl")
+            },
+            "native_threads": fit_threads,
         },
         "correspondence": correspondence,
         "selected_k": selected_k,

@@ -180,7 +180,14 @@ def test_result_records_and_checks_expected_preflight_slide_order(
     assert payload["feature_provenance"]["batch_size"] == 128
     assert payload["feature_provenance"]["encoder_runtime"]["device"] == "cuda"
     assert payload["feature_provenance"]["feature_integrity"] == "legacy-unsealed"
-    assert set(payload["fit_runtime"]) == {"numpy", "scikit-learn", "scipy"}
+    assert payload["fit_runtime"]["native_threads"] == 4
+    assert set(payload["fit_runtime"]) == {
+        "numpy",
+        "scikit-learn",
+        "scipy",
+        "threadpoolctl",
+        "native_threads",
+    }
 
     sealed_root = tmp_path / "sealed"
     sealed_root.mkdir()

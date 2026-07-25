@@ -59,6 +59,7 @@ semantic = [
     "pillow>=10,<13",
     "scikit-learn>=1.5,<2",
     "scipy>=1.11,<2",
+    "threadpoolctl>=3.1,<4",
 ]
 qupath = [
     "numpy>=1.26,<3",
@@ -72,6 +73,7 @@ uni2h = [
     "scipy>=1.11,<2",
     "timm>=1.0.19,<2",
     "tifffile>=2024.8",
+    "threadpoolctl>=3.1,<4",
     "torch>=2.8,<3",
     "torchvision>=0.23,<1",
 ]
@@ -86,12 +88,14 @@ uni2h-repro = [
     "tifffile==2025.5.10",
     "torch==2.13.0",
     "torchvision==0.28.0",
+    "threadpoolctl==3.6.0",
 ]
 semantic-repro = [
     "numpy==2.2.6",
     "pillow==12.3.0",
     "scikit-learn==1.7.2",
     "scipy==1.15.3",
+    "threadpoolctl==3.6.0",
 ]
 browser-test = [
     "playwright>=1.50,<2",

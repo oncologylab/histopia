@@ -48,6 +48,7 @@ def test_compute_overrides_are_validated_without_mutating_source(
         batch_size=8,
         patch_workers=2,
         vips_threads=3,
+        fit_threads=5,
     )
 
     assert source.device == "auto"
@@ -56,10 +57,41 @@ def test_compute_overrides_are_validated_without_mutating_source(
     assert overridden.batch_size == 8
     assert overridden.patch_workers == 2
     assert overridden.vips_threads == 3
+    assert overridden.fit_threads == 5
+
+
+def test_fit_cli_accepts_fit_thread_override_only() -> None:
+    args = _build_parser().parse_args(
+        ["fit", "--config", "atlas.toml", "--fit-threads", "4"]
+    )
+
+    assert args.fit_threads == 4
+    assert not hasattr(args, "device")
+
+
+def test_run_cli_accepts_extraction_and_fit_overrides() -> None:
+    args = _build_parser().parse_args(
+        [
+            "run",
+            "--config",
+            "atlas.toml",
+            "--batch-size",
+            "128",
+            "--fit-threads",
+            "6",
+        ]
+    )
+
+    assert args.batch_size == 128
+    assert args.fit_threads == 6
 
 
 def test_cli_rejects_nonpositive_compute_override() -> None:
     with pytest.raises(SystemExit):
         _build_parser().parse_args(
             ["run", "--config", "atlas.toml", "--batch-size", "0"]
+        )
+    with pytest.raises(SystemExit):
+        _build_parser().parse_args(
+            ["fit", "--config", "atlas.toml", "--fit-threads", "0"]
         )

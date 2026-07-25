@@ -9,6 +9,8 @@ batch_size = 64
 patch_workers = 1
 # Optional process-wide cap for native libvips decoding threads.
 # vips_threads = 8
+# Native BLAS/OpenMP threads used for PCA and global clustering.
+fit_threads = 4
 cluster_min = 5
 cluster_max = 15
 # selected_clusters = 9  # Optional display override after reviewing K metrics.

@@ -66,7 +66,8 @@ The primary **Project workflow** tab supports:
 - automatic or explicit registration reference selection
 - registration resolution and worker controls
 - semantic device including explicit `cuda:N`, K range, batch-size,
-  patch-reader, optional native libvips thread cap, and model-cache controls
+  patch-reader, optional native libvips thread cap, bounded global-fit threads,
+  and model-cache controls
 - an in-panel compute check that reports the resolved Python/Torch backend and
   accelerator before extraction
 - a conservative automatic registration worker count capped at four, with an

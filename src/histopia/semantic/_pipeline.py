@@ -7,7 +7,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from histopia.semantic._atlas import JointAtlas, fit_joint_atlas
+from histopia.semantic._atlas import JointAtlas, _sklearn_estimators, fit_joint_atlas
 from histopia.semantic._config import SemanticAtlasConfig
 from histopia.semantic._extract import (
     extract_registration_features,
@@ -24,21 +24,31 @@ from histopia.semantic._result import (
 def fit_saved_features(config: SemanticAtlasConfig) -> tuple[JointAtlas, Path]:
     """Fit and save an atlas from compact feature artifacts in section order."""
 
+    try:
+        from threadpoolctl import threadpool_limits
+    except ImportError as exc:
+        raise RuntimeError(
+            "joint semantic atlas fitting requires the 'semantic' extra"
+        ) from exc
     sections = _load_saved_feature_sections(config)
-    atlas = fit_joint_atlas(
-        sections,
-        cluster_counts=config.cluster_counts,
-        pca_components=config.pca_components,
-        balanced_patch_cap=config.balanced_patch_cap,
-        seed=config.seed,
-        regularize=True,
-        max_cross_section_distance_um=config.max_cross_section_distance_um,
-    )
+    # Load BLAS/OpenMP-backed estimators before threadpoolctl snapshots runtimes.
+    _sklearn_estimators()
+    with threadpool_limits(limits=config.fit_threads):
+        atlas = fit_joint_atlas(
+            sections,
+            cluster_counts=config.cluster_counts,
+            pca_components=config.pca_components,
+            balanced_patch_cap=config.balanced_patch_cap,
+            seed=config.seed,
+            regularize=True,
+            max_cross_section_distance_um=config.max_cross_section_distance_um,
+        )
     result = write_atlas_result(
         atlas,
         sections,
         config.output_dir,
         primary_clusters=config.selected_clusters or atlas.selected_k,
+        fit_threads=config.fit_threads,
     )
     return atlas, result
 

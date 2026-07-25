@@ -113,26 +113,52 @@ def test_fit_uses_preflight_order_and_ignores_stale_extra_features(
     }
     _feature(stale).save(config.output_dir / "features" / "000-stale.npz")
     captured: list[tuple[str, ...]] = []
+    thread_limits: list[int] = []
+    runtime_events: list[str] = []
     atlas = SimpleNamespace(selected_k=2)
     result = config.output_dir / "semantic_result.json"
 
+    class CapturedLimit:
+        def __init__(self, limit: int) -> None:
+            thread_limits.append(limit)
+
+        def __enter__(self) -> None:
+            runtime_events.append("limit-enter")
+            return None
+
+        def __exit__(self, *args: object) -> None:
+            return None
+
     def capture_fit(sections: tuple[PatchFeatures, ...], **_: object) -> object:
+        runtime_events.append("fit")
         captured.append(tuple(section.slide_id for section in sections))
         return atlas
 
     def capture_write(*args: object, **kwargs: object) -> Path:
         assert args[0] is atlas
         assert kwargs["primary_clusters"] == 2
+        assert kwargs["fit_threads"] == 4
         return result
 
     monkeypatch.setattr(pipeline, "fit_joint_atlas", capture_fit)
     monkeypatch.setattr(pipeline, "write_atlas_result", capture_write)
+    monkeypatch.setattr(
+        pipeline,
+        "_sklearn_estimators",
+        lambda: runtime_events.append("runtime-loaded"),
+    )
+    monkeypatch.setattr(
+        "threadpoolctl.threadpool_limits",
+        lambda *, limits: CapturedLimit(limits),
+    )
 
     fitted, output = pipeline.fit_saved_features(config)
 
     assert fitted is atlas
     assert output == result
     assert captured == [("z-section.ndpi", "a-section.ndpi")]
+    assert thread_limits == [4]
+    assert runtime_events == ["runtime-loaded", "limit-enter", "fit"]
 
 
 def test_fit_rejects_wrong_feature_slide_before_global_computation(

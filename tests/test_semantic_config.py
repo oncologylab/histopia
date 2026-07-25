@@ -21,6 +21,7 @@ def test_semantic_config_defaults_to_automatic_k_range(tmp_path) -> None:
     assert config.device == "auto"
     assert config.patch_workers == 1
     assert config.vips_threads is None
+    assert config.fit_threads == 4
 
 
 def test_semantic_config_loads_legacy_explicit_cluster_counts(tmp_path) -> None:
@@ -87,6 +88,15 @@ def test_semantic_config_rejects_nonpositive_vips_threads(tmp_path) -> None:
             registration_run=tmp_path / "registration",
             output_dir=tmp_path / "semantic",
             vips_threads=0,
+        )
+
+
+def test_semantic_config_rejects_nonpositive_fit_threads(tmp_path) -> None:
+    with pytest.raises(ValueError, match="fit_threads must be positive"):
+        SemanticAtlasConfig(
+            registration_run=tmp_path / "registration",
+            output_dir=tmp_path / "semantic",
+            fit_threads=0,
         )
 
 

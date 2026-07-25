@@ -30,6 +30,7 @@ class SemanticAtlasConfig:
     batch_size: int = 64
     patch_workers: int = 1
     vips_threads: int | None = None
+    fit_threads: int = 4
     cluster_min: int = 5
     cluster_max: int = 15
     selected_clusters: int | None = None
@@ -52,6 +53,7 @@ class SemanticAtlasConfig:
         self.patch_workers = positive_int("patch_workers", self.patch_workers)
         if self.vips_threads is not None:
             self.vips_threads = positive_int("vips_threads", self.vips_threads)
+        self.fit_threads = positive_int("fit_threads", self.fit_threads)
         self.min_tissue_fraction = finite_float(
             "min_tissue_fraction",
             self.min_tissue_fraction,
@@ -158,6 +160,7 @@ def override_compute_config(
     batch_size: int | None = None,
     patch_workers: int | None = None,
     vips_threads: int | None = None,
+    fit_threads: int | None = None,
 ) -> SemanticAtlasConfig:
     """Return a validated config with explicit command-line compute overrides."""
 
@@ -168,6 +171,7 @@ def override_compute_config(
             "batch_size": batch_size,
             "patch_workers": patch_workers,
             "vips_threads": vips_threads,
+            "fit_threads": fit_threads,
         }.items()
         if value is not None
     }

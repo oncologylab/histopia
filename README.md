@@ -68,6 +68,7 @@ scientific configuration:
 ```bash
 histopia-semantic extract --config atlas.toml --device cuda:0 \
   --batch-size 128 --patch-workers 4 --vips-threads 8
+histopia-semantic fit --config atlas.toml --fit-threads 4
 ```
 
 Registration ordering and viewer assets use exact, checksummed caches. Any
