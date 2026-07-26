@@ -87,7 +87,7 @@ class PatchFeatures:
                 raise ValueError("feature content fingerprint does not match")
 
     def save(self, path: Path | str) -> Path:
-        """Write a compressed, portable artifact without repeated tile vectors."""
+        """Write a portable artifact without repeated tile vectors."""
 
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -98,7 +98,7 @@ class PatchFeatures:
         ) as stream:
             temporary = Path(stream.name)
         try:
-            np.savez_compressed(
+            np.savez(
                 temporary,
                 schema_version=np.int16(3),
                 slide_id=np.asarray(self.slide_id),

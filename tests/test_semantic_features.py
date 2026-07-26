@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
+import zipfile
 from pathlib import Path
 
 import numpy as np
@@ -44,6 +45,10 @@ def test_patch_features_round_trip_compact_npz(tmp_path: Path) -> None:
     assert loaded.content_fingerprint is not None
     assert len(loaded.content_fingerprint) == 64
     assert not tuple(tmp_path.glob("*.tmp*"))
+    with zipfile.ZipFile(path) as archive:
+        assert {member.compress_type for member in archive.infolist()} == {
+            zipfile.ZIP_STORED
+        }
 
     second_path = artifact.save(tmp_path / "features-copy.npz")
     assert second_path.read_bytes() == path.read_bytes()

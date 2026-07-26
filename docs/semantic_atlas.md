@@ -24,7 +24,7 @@ meaningful.
 - Only patches with sufficient coverage in the accepted registration tissue
   mask are encoded.
 - Each patch stores one float16 UNI2-h vector plus source-grid, native-pixel,
-  and registered-reference micrometre coordinates in a compressed NPZ file.
+  and registered-reference micrometre coordinates in a portable NPZ file.
 - Schema-3 feature artifacts carry a canonical SHA-256 seal over slide
   identity, extraction provenance, metadata, and every stored array.
 - Model weights, source slides, compact features, and generated results remain
@@ -116,6 +116,13 @@ are intentionally treated as cache misses during extraction because they
 cannot prove that stored feature or coordinate arrays are unchanged.
 On a validated 18-section corpus with 17,482 patches, checking the seals added
 about 40 milliseconds to a cached local load (0.318 versus 0.358 seconds).
+
+New schema-3 feature files use deterministic ZIP-stored NPZ members. Existing
+deflate-compressed NPZ artifacts remain fully readable and cache-valid. On a
+representative 20,994-patch artifact, ZIP storage reduced serialization from
+2.44 to 0.06-0.08 seconds and validation loading from 0.37 to 0.09 seconds.
+The file grew from 59.99 to 65.43 MB (9.1 percent); deflate level 1 retained
+nearly the same size but still required about 2.16 seconds to write.
 
 The model fingerprint binds to the exact cached Hugging Face commit. Histopia
 passes that commit explicitly to timm for both model configuration and weights,
