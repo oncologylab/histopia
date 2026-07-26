@@ -77,7 +77,7 @@ The primary **Project workflow** tab supports:
   selected reference fixed at position 1
 - automatic or explicit registration reference selection
 - registration resolution and bounded thumbnail, mask, ordering, rigid-pair,
-  and QC worker controls
+  OpenCV-native, and QC worker controls
 - registration QC detail with a production `review` tier, a minimal `none`
   tier, and a forensic `full` tier
 - semantic device including explicit `cuda:N`, K range, batch-size,
@@ -121,6 +121,11 @@ from loading. Controls are locked while a child process is active. Semantic
 launch verifies the existing selection manifest and registration seal before
 atomically updating only the semantic runtime config, leaving reviewed
 registration provenance untouched.
+The optional **OpenCV threads** field limits OpenCV's process-wide native pool
+for one registration child process and restores the prior value afterward.
+Leave it blank for the host default; benchmark it together with
+**Registration workers** because the controls govern inner and outer
+parallelism, respectively.
 Reusing a workspace with a changed project selection prunes the current mask
 manifest to the selected cohort. Downstream order and alignment artifacts from
 an earlier run are not offered for review, approval, or semantic analysis

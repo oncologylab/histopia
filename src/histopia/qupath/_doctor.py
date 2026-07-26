@@ -201,5 +201,5 @@ def _probe_native_pyvips(
         "environment may be resolving incompatible pyvips and libvips libraries. "
         "For Conda, install both from conda-forge. For system Python, install "
         "system libvips and rebuild the binding with python -m pip install "
-        "--no-cache-dir --force-reinstall --no-binary=pyvips 'pyvips>=2.2,<4'."
+        "--no-cache-dir --force-reinstall --no-binary=pyvips 'pyvips>=2.2,<3'."
     )

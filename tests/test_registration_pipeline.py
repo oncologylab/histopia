@@ -1,6 +1,7 @@
 import hashlib
 import json
 import threading
+import time
 from pathlib import Path
 
 import numpy as np
@@ -9,6 +10,7 @@ from PIL import Image
 
 from histopia.registration import (
     RegistrationConfig,
+    RigidTransformResult,
     _pipeline,
     approve_mask_review,
     approve_registration_run,
@@ -62,6 +64,7 @@ def test_register_sections_writes_thumbnail_result(
             output_dir=output_dir,
             rigid_method="phase_correlation",
             max_processed_image_dim_px=80,
+            opencv_threads=3,
             vips_threads=3,
         )
     )
@@ -82,6 +85,8 @@ def test_register_sections_writes_thumbnail_result(
     assert performance["controls"]["compute_backend"] == "cpu"
     assert performance["controls"]["thumbnail_workers"] == 1
     assert performance["controls"]["rigid_workers"] == 1
+    assert performance["controls"]["opencv_threads"] == 3
+    assert performance["controls"]["opencv_threads_effective"] == 3
     assert performance["controls"]["vips_threads"] == 3
     assert performance["stages"]["result_write"]["status"] == "completed"
     assert configured_vips_threads == [3]
@@ -919,6 +924,9 @@ def test_rigid_pair_workers_preserve_exact_registration_result(tmp_path: Path) -
 
     assert parallel_result == serial_result
     assert performance["controls"]["rigid_workers"] == 4
+    assert performance["rigid_pair_cache_hits"] == 1
+    assert performance["rigid_pair_memory_hits"] == 1
+    assert performance["rigid_pairs_computed"] == 5
 
     config.output_dir = tmp_path / "cached-output"
     config.alignment_cache = True
@@ -928,11 +936,57 @@ def test_rigid_pair_workers_preserve_exact_registration_result(tmp_path: Path) -
     )
 
     assert cached_performance["rigid_pair_cache_hits"] == 1
+    assert cached_performance["rigid_pair_memory_hits"] == 1
     assert cached_performance["rigid_pair_cache_misses"] == 5
     assert cached_performance["rigid_pairs_computed"] == 5
     assert (
         len(tuple((config.output_dir / ".cache" / "rigid_pairs").glob("*.json"))) == 5
     )
+
+
+def test_rigid_pair_cache_single_flights_concurrent_duplicates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = (tmp_path / "fixed.png", tmp_path / "moving.png")
+    crop = _pipeline._Crop(
+        image=np.zeros((20, 24, 3), dtype=np.uint8),
+        mask=np.ones((20, 24), dtype=bool),
+        offset_xy=np.zeros(2, dtype=float),
+        scale=1.0,
+    )
+    crops = {path: crop for path in paths}
+    config = RegistrationConfig(
+        tmp_path,
+        tmp_path / "output",
+        rigid_workers=4,
+        write_processed_images=False,
+    )
+    pair_cache = _pipeline._RigidPairCache.create(crops, config, None)
+    calls = 0
+
+    def estimate(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        time.sleep(0.05)
+        full = RigidTransformResult(np.eye(3), "test", 2, 2, [])
+        crop_result = RigidTransformResult(np.eye(3), "test", 2, 2, [])
+        return full, crop_result
+
+    monkeypatch.setattr(_pipeline, "_estimate_pair_transform", estimate)
+    results = _pipeline._estimate_pair_transforms(
+        ((paths[0], paths[1]),) * 4,
+        crops,
+        config,
+        None,
+        pair_cache,
+    )
+
+    assert len(results) == 4
+    assert calls == 1
+    assert pair_cache.computations == 1
+    assert pair_cache.hits == 3
+    assert pair_cache.memory_hits == 3
 
 
 def test_complete_rigid_pair_cache_skips_feature_detection_with_safe_fallback(

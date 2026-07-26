@@ -112,7 +112,7 @@ def test_native_pyvips_probe_turns_process_crash_into_repair_error():
     def runner(*args, **kwargs):
         return SimpleNamespace(returncode=-11, stdout="", stderr="")
 
-    with pytest.raises(RuntimeError, match=r"SIGSEGV.*--no-binary=pyvips"):
+    with pytest.raises(RuntimeError, match=r"SIGSEGV.*pyvips>=2\.2,<3"):
         _probe_native_pyvips(runner=runner)
 
 

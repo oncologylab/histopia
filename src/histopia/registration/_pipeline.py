@@ -8,7 +8,7 @@ import json
 import os
 import time
 from collections.abc import Callable, Iterable
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from functools import partial
 from pathlib import Path
@@ -18,7 +18,7 @@ from typing import Any
 import numpy as np
 
 from histopia._atomic import write_json_atomic, write_text_atomic
-from histopia.compute import configure_vips_threads
+from histopia.compute import configure_vips_threads, opencv_thread_limit
 from histopia.registration._config import RegistrationConfig
 from histopia.registration._errors import RegistrationApprovalRequired
 from histopia.registration._io import (
@@ -198,6 +198,20 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
     """Run registration and record observational stage performance."""
 
     configure_vips_threads(config.vips_threads)
+    with opencv_thread_limit(config.opencv_threads) as opencv_threads_effective:
+        return _register_sections_with_performance(
+            config,
+            opencv_threads_effective=opencv_threads_effective,
+        )
+
+
+def _register_sections_with_performance(
+    config: RegistrationConfig,
+    *,
+    opencv_threads_effective: int,
+) -> RegistrationResult:
+    """Run registration while checkpointing execution-only telemetry."""
+
     config.output_dir.mkdir(parents=True, exist_ok=True)
     performance = RegistrationPerformance(
         config.output_dir,
@@ -209,6 +223,8 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
             "rigid_workers": config.rigid_workers,
             "qc_workers": config.qc_workers,
             "alignment_qc_mode": config.alignment_qc_mode,
+            "opencv_threads": config.opencv_threads,
+            "opencv_threads_effective": opencv_threads_effective,
             "vips_threads": config.vips_threads,
             "preprocessing_cache": config.preprocessing_cache,
             "alignment_cache": config.alignment_cache,
@@ -721,6 +737,7 @@ def _register_sections(
     )
     performance.update(
         rigid_pair_cache_hits=rigid_pair_cache.hits,
+        rigid_pair_memory_hits=rigid_pair_cache.memory_hits,
         rigid_pair_cache_misses=rigid_pair_cache.misses,
         rigid_pairs_computed=rigid_pair_cache.computations,
         rigid_pair_cache_preloaded=rigid_pair_cache_preloaded,
@@ -1595,18 +1612,31 @@ class _Crop:
     scale: float
 
 
+_RigidPairKey = tuple[Path, Path]
+_RigidPairResult = tuple[RigidTransformResult, RigidTransformResult]
+
+
 @dataclass(slots=True)
 class _RigidPairCache:
     directory: Path | None
     crop_fingerprints: dict[Path, str]
     settings: dict[str, object]
     hits: int = 0
+    memory_hits: int = 0
     misses: int = 0
     computations: int = 0
-    preloaded: dict[
-        tuple[Path, Path],
-        tuple[RigidTransformResult, RigidTransformResult],
-    ] = field(default_factory=dict, repr=False)
+    preloaded: dict[_RigidPairKey, _RigidPairResult] = field(
+        default_factory=dict,
+        repr=False,
+    )
+    memory: dict[_RigidPairKey, _RigidPairResult] = field(
+        default_factory=dict,
+        repr=False,
+    )
+    inflight: dict[_RigidPairKey, Future[_RigidPairResult]] = field(
+        default_factory=dict,
+        repr=False,
+    )
     lock: Lock = field(default_factory=Lock, repr=False)
 
     @classmethod
@@ -1641,10 +1671,7 @@ class _RigidPairCache:
 
         if self.directory is None:
             return None
-        loaded: dict[
-            tuple[Path, Path],
-            tuple[RigidTransformResult, RigidTransformResult],
-        ] = {}
+        loaded: dict[_RigidPairKey, _RigidPairResult] = {}
         for fixed_path, moving_path in dict.fromkeys(pairs):
             fingerprint = rigid_pair_fingerprint(
                 self.crop_fingerprints[fixed_path],
@@ -1667,10 +1694,59 @@ class _RigidPairCache:
         config: RegistrationConfig,
         prepared_features: dict[Path, PreparedRigidFeatures] | None,
     ) -> tuple[RigidTransformResult, RigidTransformResult]:
-        preloaded = self.preloaded.get((fixed_path, moving_path))
+        key = (fixed_path, moving_path)
+        preloaded = self.preloaded.get(key)
         if preloaded is not None:
             self._increment("hits")
             return preloaded
+
+        with self.lock:
+            resolved = self.memory.get(key)
+            if resolved is not None:
+                self.hits += 1
+                self.memory_hits += 1
+                return resolved
+            pending = self.inflight.get(key)
+            if pending is None:
+                pending = Future()
+                self.inflight[key] = pending
+                owner = True
+            else:
+                owner = False
+        if not owner:
+            resolved = pending.result()
+            with self.lock:
+                self.hits += 1
+                self.memory_hits += 1
+            return resolved
+
+        try:
+            resolved = self._load_or_estimate(
+                fixed_path,
+                moving_path,
+                crops,
+                config,
+                prepared_features,
+            )
+        except BaseException as exc:
+            with self.lock:
+                self.inflight.pop(key, None)
+            pending.set_exception(exc)
+            raise
+        with self.lock:
+            self.memory[key] = resolved
+            self.inflight.pop(key, None)
+        pending.set_result(resolved)
+        return resolved
+
+    def _load_or_estimate(
+        self,
+        fixed_path: Path,
+        moving_path: Path,
+        crops: dict[Path, _Crop],
+        config: RegistrationConfig,
+        prepared_features: dict[Path, PreparedRigidFeatures] | None,
+    ) -> _RigidPairResult:
         fingerprint = None
         if self.directory is not None:
             fingerprint = rigid_pair_fingerprint(

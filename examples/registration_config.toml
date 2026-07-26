@@ -12,6 +12,9 @@ mask_workers = 1
 ordering_workers = 1
 # Bound independent reference and adjacent rigid-pair estimates.
 rigid_workers = 1
+# Optional process-wide native OpenCV cap; restored after the run.
+# Leave unset for OpenCV's host-specific default and benchmark shared hosts.
+# opencv_threads = 16
 # Bound concurrent registration QC encoders; increase only with enough RAM.
 qc_workers = 1
 # Primary per-slide panels are the production default. Use "full" only when

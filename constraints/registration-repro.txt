@@ -9,7 +9,7 @@
 numpy==2.2.6
 opencv-contrib-python-headless==5.0.0.93
 pillow==12.3.0
-pyvips==3.1.1
+pyvips==2.2.3
 scipy==1.15.3
 tifffile==2025.5.10
 tomli==2.4.1; python_version < "3.11"

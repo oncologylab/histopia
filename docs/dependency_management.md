@@ -37,10 +37,10 @@ python -m pip install -e ".[registration]"
 ```
 
 Registration uses NumPy, SciPy, and OpenCV on CPU. Its bounded mask, ordering,
-thumbnail, and QC worker controls plus the optional libvips thread cap govern
-throughput; there is no registration GPU selector. Accelerator selection is
-reserved for workflows, such as UNI2-h extraction, that have a validated
-PyTorch backend.
+rigid-pair, and QC worker controls plus optional process-restored OpenCV and
+libvips thread caps govern throughput; there is no registration GPU selector.
+Accelerator selection is reserved for workflows, such as UNI2-h extraction,
+that have a validated PyTorch backend.
 
 Whole-slide registration development:
 
@@ -131,13 +131,18 @@ python -c "import pyvips; print(pyvips.version(0), pyvips.version(1), pyvips.ver
 Install `pyvips` and `libvips` from one coherent environment. In particular,
 do not reuse a locally built `pyvips` wheel across Conda and system Python
 environments: such a wheel can retain an absolute runtime library path and load
-an incompatible native dependency. Conda users should install both packages
-from `conda-forge`. For a system-Python environment with an already installed
-system `libvips`, rebuild the binding in that environment when necessary:
+an incompatible native dependency. Histopia currently constrains the normal
+WSI profiles to pyvips 2.x and pins 2.2.3 in reproducible profiles: a clean
+Python 3.12 API-mode build of pyvips 3.1.1 crashed while initializing the
+supported libvips 8.15.1 runtime, whereas 2.2.3 passed the native image and
+QuPath doctor probes. Conda users should install both packages from
+`conda-forge`. For a system-Python environment with an already installed
+system `libvips`, rebuild the supported binding in that environment when
+necessary:
 
 ```bash
 python -m pip install --no-cache-dir --force-reinstall \
-    --no-binary=pyvips "pyvips>=2.2,<4"
+    --no-binary=pyvips "pyvips>=2.2,<3"
 ```
 
 Run the import check above before starting a WSI workflow. A native loader

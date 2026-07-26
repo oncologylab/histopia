@@ -86,6 +86,8 @@ thumbnail_workers = 4
 mask_workers = 4
 ordering_workers = 4
 rigid_workers = 4
+# Optional native OpenCV threads used inside each worker.
+# opencv_threads = 16
 qc_workers = 2
 write_processed_images = true
 alignment_qc_mode = "review"
@@ -311,6 +313,21 @@ one-worker rigid alignment from 9.32 to 5.84 seconds and total runtime from
 per slide. One- and four-worker results were byte-identical and matched the
 pre-optimization result after normalizing only the output directory.
 
+`opencv_threads` optionally caps OpenCV's process-wide native pool while a
+registration is active. Histopia records the requested and effective values,
+then restores the caller's prior OpenCV setting even if registration raises.
+Leave it unset to preserve OpenCV's host-specific default. This inner pool and
+`rigid_workers` are independent, so benchmark them together instead of
+multiplying both to the processor count.
+
+On the same 24-slide workload with four rigid workers, three runs at 16 OpenCV
+threads had median total/rigid times of 5.11/2.96 seconds and used 737% average
+CPU. Three runs at this host's 32-thread default took 4.90/2.76 seconds and
+used 1,018% average CPU. Six complete results were byte-identical. Sixteen is
+therefore a useful shared-server setting on this 32-vCPU host: it trades about
+4% wall time for about 28% less CPU pressure, while leaving the default unset
+retains maximum measured throughput.
+
 Set `mask_workers` above one to create per-slide mask candidate sets in
 parallel on CPU. Cohort-aware ranking, pale-tissue recovery, component
 consensus, frame cleanup, and artifact encoding also use bounded ordered maps,
@@ -407,6 +424,12 @@ carry a content checksum and are loaded only when every bound input matches;
 stale, malformed, or corrupted entries are recomputed atomically. Cache
 hit/miss and actual-computation counts appear in
 `registration_performance.json`.
+Within every run, identical directed pairs also use a thread-safe single-flight
+memory cache even when persistent alignment caching is disabled. This prevents
+the reference/serial overlap in hybrid alignment from running the same OpenCV
+fit twice. Telemetry reports these as `rigid_pair_memory_hits`; on the
+24-slide benchmark, computations fell from 46 to the 45 unique pairs with an
+exactly unchanged registration result.
 
 The same setting enables checksum-validated registration QC reuse. Alignment,
 crop, non-rigid, and labeled review bundles bind their exact render inputs and
@@ -520,9 +543,9 @@ alignment.
 
 Registration currently uses CPU implementations in NumPy, SciPy, and OpenCV;
 it does not expose a GPU selector or silently move registration work to CUDA.
-The performance record reports `compute_backend = "cpu"` alongside the worker
-and libvips controls. GPU, CPU, and Apple MPS selection is available for the
-separate UNI2-h feature-extraction stage.
+The performance record reports `compute_backend = "cpu"` alongside the worker,
+effective OpenCV, and libvips controls. GPU, CPU, and Apple MPS selection is
+available for the separate UNI2-h feature-extraction stage.
 
 After reviewing the completed mask, order, and registration views, seal the
 exact artifacts without recomputing unchanged transforms:

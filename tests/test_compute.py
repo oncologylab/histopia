@@ -9,6 +9,7 @@ import pytest
 from histopia.compute import (
     configure_vips_threads,
     inspect_compute,
+    opencv_thread_limit,
     resolve_compute_device,
 )
 
@@ -105,3 +106,68 @@ def test_vips_thread_cap_cannot_change_after_import(monkeypatch) -> None:
 def test_vips_thread_cap_requires_a_positive_integer(value, error) -> None:
     with pytest.raises(error, match="vips_threads"):
         configure_vips_threads(value)
+
+
+class _OpenCv:
+    def __init__(self, threads: int = 32) -> None:
+        self.threads = threads
+        self.set_calls: list[int] = []
+
+    def getNumThreads(self) -> int:
+        return self.threads
+
+    def setNumThreads(self, threads: int) -> None:
+        self.threads = threads
+        self.set_calls.append(threads)
+
+
+def test_opencv_thread_limit_restores_process_state(monkeypatch) -> None:
+    cv2 = _OpenCv()
+    monkeypatch.setitem(sys.modules, "cv2", cv2)
+
+    with opencv_thread_limit(6) as effective:
+        assert effective == 6
+        assert cv2.threads == 6
+
+    assert cv2.threads == 32
+    assert cv2.set_calls == [6, 32]
+
+
+def test_opencv_thread_limit_restores_process_state_after_failure(
+    monkeypatch,
+) -> None:
+    cv2 = _OpenCv()
+    monkeypatch.setitem(sys.modules, "cv2", cv2)
+
+    with pytest.raises(RuntimeError, match="workflow failed"):
+        with opencv_thread_limit(4):
+            raise RuntimeError("workflow failed")
+
+    assert cv2.threads == 32
+    assert cv2.set_calls == [4, 32]
+
+
+def test_opencv_thread_limit_reports_adaptive_state_without_changing_it(
+    monkeypatch,
+) -> None:
+    cv2 = _OpenCv(12)
+    monkeypatch.setitem(sys.modules, "cv2", cv2)
+
+    with opencv_thread_limit(None) as effective:
+        assert effective == 12
+
+    assert cv2.threads == 12
+    assert cv2.set_calls == []
+
+
+@pytest.mark.parametrize(("value", "error"), ((0, ValueError), (True, TypeError)))
+def test_opencv_thread_limit_requires_a_positive_integer(
+    monkeypatch,
+    value,
+    error,
+) -> None:
+    monkeypatch.setitem(sys.modules, "cv2", _OpenCv())
+
+    with pytest.raises(error, match="opencv_threads"):
+        with opencv_thread_limit(value):
+            pass

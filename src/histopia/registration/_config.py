@@ -236,6 +236,7 @@ class RegistrationConfig:
     wsi_compression: WsiCompression = "jpeg"
     wsi_jpeg_quality: int = 95
     wsi_tile_size: int = 512
+    opencv_threads: int | None = None
     vips_threads: int | None = None
 
     def __post_init__(self) -> None:
@@ -330,6 +331,11 @@ class RegistrationConfig:
         )
         self.mask_workers = positive_int("mask_workers", self.mask_workers)
         self.qc_workers = positive_int("qc_workers", self.qc_workers)
+        if self.opencv_threads is not None:
+            self.opencv_threads = positive_int(
+                "opencv_threads",
+                self.opencv_threads,
+            )
         if self.vips_threads is not None:
             self.vips_threads = positive_int("vips_threads", self.vips_threads)
         for name in (
@@ -428,6 +434,7 @@ def registration_config_from_mapping(
         rigid_workers=values.pop("rigid_workers", 1),
         qc_workers=values.pop("qc_workers", 1),
         alignment_qc_mode=values.pop("alignment_qc_mode", "review"),
+        opencv_threads=values.pop("opencv_threads", None),
         vips_threads=values.pop("vips_threads", None),
         preprocessing_cache=values.pop("preprocessing_cache", True),
         alignment_cache=values.pop("alignment_cache", True),
