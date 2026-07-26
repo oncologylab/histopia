@@ -365,11 +365,21 @@ asset. Viewer rasterization and WEBP encoding are CPU-backed. `--workers`
 bounds a persistent encoder pool and defaults to one, while a deterministic
 producer queue retains at most twice that many pending images. Worker counts
 do not change rendered bytes or cache ordering. `build-report.json` records
-`compute_backend = "cpu"` and `peak_pending_assets` so execution and memory
-controls are explicit.
+`compute_backend = "cpu"`, `peak_pending_assets`, the mouse-cache schema, and
+the lossless and lossy WEBP effort levels so execution, memory, and encoder
+controls are explicit. Registered and blended review textures use effort 5 at
+their existing quality settings. Semantic label textures remain lossless at
+effort 6. The mouse-cache schema is bumped whenever this encoding contract
+changes, preventing stale mouse-level reuse.
 
-On a clean 134-section, five-sample build containing 1,742 assets, this bounded
-pipeline plus vectorized semantic patch rasterization reduced four-worker wall
-time from 227.48 to 177.79 seconds (21.8%). All 1,756 generated non-report
-files remained byte-identical; an unchanged warm build continued to reuse
-every asset in 0.67 seconds.
+On a paired clean 134-section, five-sample build containing 1,742 WEBPs, the
+four-worker effort-5 build took 65.84 seconds internally and 66.13 seconds wall
+time, compared with 180.23 and 180.47 seconds for the published effort-6
+implementation. Peak resident memory fell from 352.5 to 284.5 MiB. All 1,474
+lossless semantic textures, topology payloads, manifests, and runtime files
+remained byte-identical, and every lossy texture retained its alpha mask
+exactly. Registered and blended textures grew by 1.66% and 1.67%; their
+old-versus-new decoded PSNR values were 44.91 and 46.33 dB. A browser audit
+loaded all five samples, all three modes, every K control, and mobile, 1080p,
+and 4K layouts without blank canvases, failed requests, or console errors. An
+unchanged warm build reused all five mice and 1,742 WEBPs in 2.58 seconds.

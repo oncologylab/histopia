@@ -588,21 +588,24 @@ reused/rendered mice and reused/encoded assets so incremental performance is
 auditable. `--viewer-workers` bounds concurrent WebP encoders. The default of
 one is memory-conservative; four is a balanced server setting. Encoded bytes,
 manifest data, and cache order are deterministic across worker counts.
+Registered and blended review textures use libwebp effort 5; lossless semantic
+textures retain effort 6. `build-report.json` records both settings and the
+mouse-cache schema that invalidates outputs when this contract changes.
 
-On an 18-section semantic-atlas benchmark producing 234 WebPs, four workers
-reduced a cold build from 46.5 to 24.5 seconds while peak resident memory rose
-from 241 to 378 MiB. The exact warm cache rebuilt the same viewer in 0.06
-seconds without encoding an asset.
+On a paired 15-section semantic-atlas benchmark producing 195 WebPs, reducing
+only the lossy encoder effort cut one-worker wall time from 35.05 to 12.46
+seconds and four-worker wall time from 16.16 to 5.40 seconds. All 165 lossless
+semantic WebPs remained byte-identical, every alpha mask remained exact, and
+registered and blended payload sizes increased by about 1.0%.
 
-On a larger five-cohort benchmark with 134 sections and 1,742 WebPs, increasing
-from four to eight workers reduced the cold internal build time only from
-227.479 to 218.551 seconds (1.04x); the eight-worker process used 502 MiB peak
-resident memory. An exact warm build reused all five mouse payloads and every
-asset in 0.666 seconds of internal build time (1.07 seconds wall time, 72 MiB
-peak resident memory). All scientific images, runtime files, manifests, and
-cache records were byte-identical between the cold worker counts and the warm
-build. This confirms that four remains the balanced cold-build setting and
-that exact cache reuse is the important optimization for repeated review.
+On a larger five-cohort benchmark with 134 sections and 1,742 WebPs, the
+four-worker build fell from 180.23 to 65.84 seconds internally and from 180.47
+to 66.13 seconds wall time. Peak resident memory fell from 352.5 to 284.5 MiB.
+A complete browser audit passed sample switching, Histology, Blend, and
+Semantic modes, K switching, and mobile, 1080p, and 4K layouts. An exact warm
+build reused all five mouse payloads and all 1,742 WebPs in 2.58 seconds
+internally. Four remains the balanced cold-build setting; exact cache reuse
+remains the preferred path for repeated review.
 
 ## Non-Rigid Refinement
 

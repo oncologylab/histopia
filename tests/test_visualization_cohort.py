@@ -176,6 +176,33 @@ def test_viewer_reuses_checksum_verified_mouse(
     assert "showLinks.disabled = !linksAvailable" in viewer_js
 
 
+def test_viewer_rerenders_mouse_from_stale_encoder_cache_schema(
+    tmp_path: Path,
+) -> None:
+    run, semantic_run, _ = _write_mouse(tmp_path, "4000", with_topology=False)
+    output = tmp_path / "viewer"
+    build_section_viewer(
+        {"4000": run},
+        output,
+        semantic_runs={"4000": semantic_run},
+    )
+    cache_path = output / ".histopia-mouse-cache.json"
+    cache = json.loads(cache_path.read_text())
+    cache["schema_version"] = 2
+    cache_path.write_text(json.dumps(cache))
+
+    build_section_viewer(
+        {"4000": run},
+        output,
+        semantic_runs={"4000": semantic_run},
+    )
+
+    report = json.loads((output / "build-report.json").read_text())
+    assert report["mouse_cache_version"] == 3
+    assert report["mice_reused"] == 0
+    assert report["mice_rendered"] == 1
+
+
 def test_viewer_updates_qc_without_rerendering_mouse(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -279,6 +306,9 @@ def test_parallel_viewer_encoding_matches_serial_output(tmp_path: Path) -> None:
     report = json.loads((parallel / "build-report.json").read_text())
     assert report["workers"] == 4
     assert report["compute_backend"] == "cpu"
+    assert report["mouse_cache_version"] == 3
+    assert report["lossy_webp_method"] == 5
+    assert report["lossless_webp_method"] == 6
     assert report["peak_pending_assets"] == 8
     assert report["assets_encoded"] == 26
 

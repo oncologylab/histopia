@@ -43,7 +43,9 @@ THREE_VENDOR_SHA256 = {
     "three.module.min.js": "08fd7545d13d2c7fb65ab691530a802dafefd638596501854f267d0fb13c39e7",
 }
 MAX_DISPLAY_LINKS = 500
-VIEWER_MOUSE_CACHE_VERSION = 2
+VIEWER_MOUSE_CACHE_VERSION = 3
+_LOSSY_WEBP_METHOD = 5
+_LOSSLESS_WEBP_METHOD = 6
 _VIEWER_QC_FIELDS = (
     "fingerprint",
     "selected_k",
@@ -405,7 +407,11 @@ def build_section_viewer(
             webp_batch.queue(
                 rgba,
                 mouse_assets / filename,
-                options={"lossless": False, "quality": 88, "method": 6},
+                options={
+                    "lossless": False,
+                    "quality": 88,
+                    "method": _LOSSY_WEBP_METHOD,
+                },
             )
             slide_payload = {
                 "id": source_path.name,
@@ -435,7 +441,10 @@ def build_section_viewer(
                     webp_batch.queue(
                         semantic_rgba,
                         mouse_assets / semantic_name,
-                        options={"lossless": True, "method": 6},
+                        options={
+                            "lossless": True,
+                            "method": _LOSSLESS_WEBP_METHOD,
+                        },
                     )
                     semantic_textures[str(count)] = (
                         f"assets/{_safe_name(mouse_id)}/{semantic_name}"
@@ -449,7 +458,11 @@ def build_section_viewer(
                 webp_batch.queue(
                     blended,
                     mouse_assets / blend_name,
-                    options={"lossless": False, "quality": 90, "method": 6},
+                    options={
+                        "lossless": False,
+                        "quality": 90,
+                        "method": _LOSSY_WEBP_METHOD,
+                    },
                 )
                 slide_payload["semantic_textures"] = semantic_textures
                 slide_payload["semantic_texture"] = semantic_textures[
@@ -545,6 +558,9 @@ def build_section_viewer(
             "three_version": THREE_VERSION,
             "workers": workers,
             "compute_backend": "cpu",
+            "mouse_cache_version": VIEWER_MOUSE_CACHE_VERSION,
+            "lossy_webp_method": _LOSSY_WEBP_METHOD,
+            "lossless_webp_method": _LOSSLESS_WEBP_METHOD,
             "peak_pending_assets": webp_batch.peak_pending_encoded,
             "elapsed_seconds": round(time.perf_counter() - build_started, 3),
         },
@@ -618,7 +634,11 @@ def build_mask_review(
         filename = f"{order:03d}-{_safe_name(source.stem)}.webp"
         asset_path = assets_dir / filename
         relative = asset_path.relative_to(output_dir).as_posix()
-        options = {"lossless": False, "quality": 88, "method": 6}
+        options = {
+            "lossless": False,
+            "quality": 88,
+            "method": _LOSSY_WEBP_METHOD,
+        }
         input_hash = _review_asset_fingerprint(
             "histopia-mask-review-overlay-v2",
             source.name,
@@ -796,7 +816,11 @@ def build_alignment_review(
         filename = f"{order:03d}-{_safe_name(source_path.stem)}.webp"
         asset_path = assets_dir / filename
         relative = asset_path.relative_to(output_dir).as_posix()
-        options = {"lossless": False, "quality": 88, "method": 6}
+        options = {
+            "lossless": False,
+            "quality": 88,
+            "method": _LOSSY_WEBP_METHOD,
+        }
         input_hash = _review_asset_fingerprint(
             "histopia-alignment-review-checkerboard-v2",
             source_path.name,
@@ -1544,7 +1568,11 @@ def build_section_order_review(
             rgba,
             asset_path,
             output_dir=output_dir,
-            options={"lossless": False, "quality": 86, "method": 6},
+            options={
+                "lossless": False,
+                "quality": 86,
+                "method": _LOSSY_WEBP_METHOD,
+            },
             old_cache=old_cache,
             new_cache=slide_cache,
             stats=slide_stats,
