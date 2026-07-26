@@ -34,13 +34,21 @@ class RigidTransformResult:
 
 
 @dataclass(frozen=True, slots=True)
+class _MaskMomentProperties:
+    center: np.ndarray
+    angle: float
+    scale: float
+
+
+@dataclass(frozen=True, slots=True)
 class PreparedRigidFeatures:
-    """Immutable feature detection output reusable across slide pairs."""
+    """Immutable feature and fallback inputs reusable across slide pairs."""
 
     keypoints: tuple[Any, ...]
     descriptors: np.ndarray | None
     matcher_norm: int
     detector_name: str
+    mask_moments: _MaskMomentProperties | None = None
 
 
 def prepare_rigid_features(
@@ -67,6 +75,7 @@ def prepare_rigid_features(
         descriptors=descriptors,
         matcher_norm=matcher_norm,
         detector_name=detector_name,
+        mask_moments=(_mask_moment_properties(mask) if mask is not None else None),
     )
 
 
@@ -360,6 +369,8 @@ def _estimate_prepared_feature_transform(
             "not enough descriptors",
             fixed_mask,
             moving_mask,
+            fixed_moments=fixed.mask_moments,
+            moving_moments=moving.mask_moments,
         )
 
     matcher = cv2.BFMatcher(fixed.matcher_norm)
@@ -375,6 +386,8 @@ def _estimate_prepared_feature_transform(
             fixed_mask,
             moving_mask,
             len(good_matches),
+            fixed_moments=fixed.mask_moments,
+            moving_moments=moving.mask_moments,
         )
 
     moving_points = np.float32(
@@ -397,6 +410,8 @@ def _estimate_prepared_feature_transform(
             fixed_mask,
             moving_mask,
             len(good_matches),
+            fixed_moments=fixed.mask_moments,
+            moving_moments=moving.mask_moments,
         )
 
     matrix = np.eye(3, dtype=float)
@@ -413,6 +428,8 @@ def _estimate_prepared_feature_transform(
             fixed_mask,
             moving_mask,
             len(good_matches),
+            fixed_moments=fixed.mask_moments,
+            moving_moments=moving.mask_moments,
         )
     return RigidTransformResult(
         matrix=matrix,
@@ -441,8 +458,16 @@ def _feature_or_mask_fallback(
     fixed_mask: np.ndarray | None,
     moving_mask: np.ndarray | None,
     match_count: int = 0,
+    *,
+    fixed_moments: _MaskMomentProperties | None = None,
+    moving_moments: _MaskMomentProperties | None = None,
 ) -> RigidTransformResult:
-    fallback = _estimate_mask_moments_transform(fixed_mask, moving_mask)
+    fallback = _estimate_mask_moments_transform(
+        fixed_mask,
+        moving_mask,
+        fixed_moments=fixed_moments,
+        moving_moments=moving_moments,
+    )
     if fallback.inlier_count <= 0:
         return _failed_feature_result(warning, match_count)
     fallback_dice = fallback.inlier_count / 1000.0
@@ -473,23 +498,32 @@ def _feature_transform_is_plausible(matrix: np.ndarray) -> bool:
 def _estimate_mask_moments_transform(
     fixed_mask: np.ndarray | None,
     moving_mask: np.ndarray | None,
+    *,
+    fixed_moments: _MaskMomentProperties | None = None,
+    moving_moments: _MaskMomentProperties | None = None,
 ) -> RigidTransformResult:
     if fixed_mask is None or moving_mask is None:
         return _failed_mask_result("mask moments require fixed and moving masks")
 
-    fixed_props = _mask_moment_properties(fixed_mask)
-    moving_props = _mask_moment_properties(moving_mask)
+    fixed_props = (
+        _mask_moment_properties(fixed_mask) if fixed_moments is None else fixed_moments
+    )
+    moving_props = (
+        _mask_moment_properties(moving_mask)
+        if moving_moments is None
+        else moving_moments
+    )
     if fixed_props is None or moving_props is None:
         return _failed_mask_result("mask moments require non-empty masks")
 
     best_matrix: np.ndarray | None = None
     best_dice = -1.0
     for angle_offset in (0.0, np.pi):
-        angle = fixed_props["angle"] - moving_props["angle"] + angle_offset
-        scale = fixed_props["scale"] / max(moving_props["scale"], 1e-6)
+        angle = fixed_props.angle - moving_props.angle + angle_offset
+        scale = fixed_props.scale / max(moving_props.scale, 1e-6)
         matrix = _similarity_from_moments(
-            moving_props["center"],
-            fixed_props["center"],
+            moving_props.center,
+            fixed_props.center,
             angle,
             scale,
         )
@@ -522,7 +556,7 @@ def _failed_mask_result(warning: str) -> RigidTransformResult:
     )
 
 
-def _mask_moment_properties(mask: np.ndarray) -> dict[str, np.ndarray | float] | None:
+def _mask_moment_properties(mask: np.ndarray) -> _MaskMomentProperties | None:
     points_rc = np.column_stack(np.nonzero(np.asarray(mask, dtype=bool)))
     if points_rc.shape[0] < 10:
         return None
@@ -534,7 +568,7 @@ def _mask_moment_properties(mask: np.ndarray) -> dict[str, np.ndarray | float] |
     major = eigvecs[:, int(np.argmax(eigvals))]
     angle = float(np.arctan2(major[1], major[0]))
     scale = float(np.sqrt(max(eigvals.max(), 1e-6)))
-    return {"center": center, "angle": angle, "scale": scale}
+    return _MaskMomentProperties(center=center, angle=angle, scale=scale)
 
 
 def _similarity_from_moments(

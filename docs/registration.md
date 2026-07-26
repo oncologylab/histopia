@@ -300,6 +300,17 @@ byte-identical. A separate cold cache-enabled run produced exactly 45 cache
 entries, 45 misses, and one duplicate-pair hit with the same scientific
 digest.
 
+Prepared slide features also retain the exact center, principal-axis angle,
+and scale already needed by the tissue-mask fallback. A slide is therefore
+scanned once during bounded feature preparation instead of again for every
+fallback pair. On the same forced-recomputation workload, this reduced
+one-worker rigid alignment from 9.32 to 5.84 seconds and total runtime from
+14.26 to 8.13 seconds. With four workers, rigid alignment fell from 3.25 to
+2.94 seconds and total runtime from 5.43 to 5.14 seconds. A profile exercised
+32 fallback estimates while evaluating mask properties exactly 24 times, once
+per slide. One- and four-worker results were byte-identical and matched the
+pre-optimization result after normalizing only the output directory.
+
 Set `mask_workers` above one to create per-slide mask candidate sets in
 parallel on CPU. Cohort-aware ranking, pale-tissue recovery, component
 consensus, frame cleanup, and artifact encoding also use bounded ordered maps,

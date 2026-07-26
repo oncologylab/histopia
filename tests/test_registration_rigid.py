@@ -3,6 +3,7 @@ import pytest
 
 from histopia.registration import (
     RigidTransformResult,
+    _rigid,
     estimate_rigid_transform,
     refine_rigid_transform,
 )
@@ -153,3 +154,47 @@ def test_prepared_features_preserve_exact_pair_result() -> None:
     assert prepared.inlier_count == direct.inlier_count
     assert prepared.warnings == direct.warnings
     assert np.array_equal(prepared.matrix, direct.matrix)
+
+
+def test_prepared_features_reuse_exact_mask_moments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixed = np.full((120, 140, 3), 255, dtype=np.uint8)
+    moving = fixed.copy()
+    fixed_mask = np.zeros(fixed.shape[:2], dtype=bool)
+    moving_mask = np.zeros(moving.shape[:2], dtype=bool)
+    fixed_mask[22:102, 30:115] = True
+    moving_mask[27:107, 24:109] = True
+    direct = estimate_rigid_transform(
+        fixed,
+        moving,
+        fixed_mask=fixed_mask,
+        moving_mask=moving_mask,
+        method="feature",
+    )
+    original = _rigid._mask_moment_properties
+    calls = 0
+
+    def counted(mask: np.ndarray):
+        nonlocal calls
+        calls += 1
+        return original(mask)
+
+    monkeypatch.setattr(_rigid, "_mask_moment_properties", counted)
+    fixed_features = prepare_rigid_features(fixed, fixed_mask)
+    moving_features = prepare_rigid_features(moving, moving_mask)
+
+    assert calls == 2
+
+    prepared = estimate_rigid_transform(
+        fixed,
+        moving,
+        fixed_mask=fixed_mask,
+        moving_mask=moving_mask,
+        method="feature",
+        fixed_features=fixed_features,
+        moving_features=moving_features,
+    )
+
+    assert calls == 2
+    assert prepared.to_json_dict() == direct.to_json_dict()
