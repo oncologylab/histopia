@@ -307,7 +307,6 @@ def build_section_viewer(
             run_dir,
             payload,
             semantic_payload=semantic_payload,
-            semantic_qc=semantic_qc,
             semantic_binding=semantic_binding,
         )
         previous_mouse = old_mice.get(mouse_id)
@@ -1013,7 +1012,6 @@ def _viewer_mouse_fingerprint(
     registration: dict[str, object],
     *,
     semantic_payload: dict[str, object] | None,
-    semantic_qc: dict[str, object] | None,
     semantic_binding: SemanticRegistrationBinding | None,
 ) -> str:
     slides = []
@@ -1052,7 +1050,8 @@ def _viewer_mouse_fingerprint(
         "semantic_registration_binding": (
             semantic_binding.to_json_dict() if semantic_binding is not None else None
         ),
-        "semantic_qc": semantic_qc,
+        # Preserve the v2 null sentinel while keeping mutable QC out of asset identity.
+        "semantic_qc": None,
     }
     return hashlib.sha256(
         json.dumps(core, sort_keys=True, separators=(",", ":")).encode()

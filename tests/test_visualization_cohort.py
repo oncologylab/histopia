@@ -176,6 +176,52 @@ def test_viewer_reuses_checksum_verified_mouse(
     assert "showLinks.disabled = !linksAvailable" in viewer_js
 
 
+def test_viewer_updates_qc_without_rerendering_mouse(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run, semantic_run, fingerprint = _write_mouse(
+        tmp_path,
+        "4000",
+        with_topology=False,
+    )
+    output = tmp_path / "viewer"
+    cohort_path = tmp_path / "cohort_qc.json"
+    row = {
+        "mouse_id": "4000",
+        "fingerprint": fingerprint,
+        "review_approved": False,
+        "flags": [],
+    }
+    cohort_path.write_text(json.dumps({"schema_version": 1, "mice": [row]}))
+    build_section_viewer(
+        {"4000": run},
+        output,
+        semantic_runs={"4000": semantic_run},
+        cohort_qc=cohort_path,
+    )
+
+    row["flags"] = ["cohort_high_patch_count"]
+    cohort_path.write_text(json.dumps({"schema_version": 1, "mice": [row]}))
+    monkeypatch.setattr(
+        "histopia.visualization._viewer._read_rgb",
+        lambda *args, **kwargs: pytest.fail("QC-only update decoded the mouse"),
+    )
+    build_section_viewer(
+        {"4000": run},
+        output,
+        semantic_runs={"4000": semantic_run},
+        cohort_qc=cohort_path,
+    )
+
+    report = json.loads((output / "build-report.json").read_text())
+    manifest = json.loads((output / "manifest.json").read_text())
+    assert report["mice_reused"] == 1
+    assert report["mice_rendered"] == 0
+    assert report["assets_encoded"] == 0
+    assert manifest["mice"][0]["semantic"]["qc"]["flags"] == ["cohort_high_patch_count"]
+
+
 def test_viewer_rerenders_mouse_when_topology_output_is_changed(
     tmp_path: Path,
 ) -> None:
