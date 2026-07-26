@@ -1927,6 +1927,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 
 const manifest = await (await fetch('manifest.json')).json();
 const viewport = document.querySelector('#viewport');
+const sidebar = document.querySelector('aside');
 const renderer = new THREE.WebGLRenderer({
   antialias: true,
   alpha: true,
@@ -2261,6 +2262,7 @@ async function loadMouse(mouse) {
     textures.forEach(disposeTexture);
     return;
   }
+  sidebar.scrollTop = 0;
   group.children.forEach(mesh => {
     disposeTexture(mesh.material.map); mesh.material.dispose(); mesh.geometry.dispose();
   });

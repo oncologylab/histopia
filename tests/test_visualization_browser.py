@@ -152,6 +152,14 @@ def test_viewer_fits_desktop_and_ignores_stale_mouse_loads(tmp_path: Path) -> No
                 assert not overflow["y"]
                 assert overflow["canvas"]["width"] > 0
                 assert overflow["canvas"]["height"] > 0
+            page.set_viewport_size({"width": 390, "height": 844})
+            page.evaluate(
+                """() => {
+                  const sidebar = document.querySelector('aside');
+                  sidebar.scrollTop = sidebar.scrollHeight;
+                }"""
+            )
+            assert page.locator("aside").evaluate("element => element.scrollTop") > 0
             page.evaluate(
                 """() => {
                   const select = document.querySelector('#mouse');
@@ -168,6 +176,8 @@ def test_viewer_fits_desktop_and_ignores_stale_mouse_loads(tmp_path: Path) -> No
                     === 'false'"""
             )
             assert page.url.endswith("/histopia/?mouse=second")
+            assert page.locator("aside").evaluate("element => element.scrollTop") == 0
+            page.set_viewport_size({"width": 1920, "height": 1080})
             page.locator("#next-slide").click()
             assert page.locator("#slide-focus").inner_text() == "1 / 3"
             assert page.locator("#sections input:checked").count() == 1
