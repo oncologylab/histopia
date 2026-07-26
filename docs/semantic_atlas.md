@@ -61,11 +61,14 @@ requested backend is unavailable. Use `histopia-semantic doctor` to inspect
 the resolved device and accelerator memory before extraction. CUDA extraction
 uses native bfloat16 autocast when the selected GPU supports it and float16
 autocast otherwise, then recursively reduces a batch after an out-of-memory
-error. CPU and Apple MPS extraction use float32. The resolved precision is
-recorded in feature provenance. The device applies to UNI2-h inference, not
-global atlas fitting. PCA, correspondence, guarded batch correction, K
-optimization, and topology regularization use the CPU implementation so their
-validated algorithms and numerical identity do not depend on an accelerator.
+error. Standard CUDA inputs are transferred as compact uint8 tensors before
+float32 conversion and normalization on the selected GPU. CPU and Apple MPS
+extraction retain host float32 preprocessing. The resolved precision and input
+pipeline are recorded in feature provenance. The device applies to UNI2-h
+inference, not global atlas fitting. PCA, correspondence, guarded batch
+correction, K optimization, and topology regularization use the CPU
+implementation so their validated algorithms and numerical identity do not
+depend on an accelerator.
 
 Validate the exact backend intended for a run, then optionally override only
 the machine-level controls without editing the saved scientific configuration:
@@ -190,12 +193,23 @@ validated A100 runtime, this reduced 64-patch preprocessing from 62.4 to
 identical to the per-image transform path, which remains the fallback for
 nonstandard input dimensions.
 
-The tested 40 GiB A100 runtime used 3.51 GiB at batch 64 and 6.34 GiB at batch
-256. Batch 256 reached about 35 patches per second and is a useful starting
-point on that class of GPU; keep 64 for portable configurations and benchmark
-the target hardware. The real CPU path is supported but substantially slower:
-the same model required about 5.8 GiB peak process memory and 2.7 seconds for a
-single-patch validation inference.
+For standard CUDA batches, transferring the uint8 tensor before conversion and
+normalization reduces host-to-device input traffic by four times. On a
+15-section, 333,739-patch A100 campaign at batch 256, this reduced extraction
+from 1,007.63 to 887.72 seconds (11.9 percent). Sustained sections increased
+from roughly 331-342 to 381-383 patches per second. All stored feature,
+coordinate, and tissue-fraction arrays were exact across all 15 sections, and a
+downstream refit produced the same selected K, diagnostics, and 180
+byte-identical model, label, and topology artifacts. GPU sampling reached
+91-100 percent SM utilization through most inference intervals and used about
+8.5 GiB of device memory.
+
+The tested 40 GiB A100 runtime also used 3.51 GiB at batch 64 in an isolated
+inference benchmark. Batch 256 is a useful starting point on that class of GPU;
+keep 64 for portable configurations and benchmark the target hardware. The
+real CPU path is supported but substantially slower: a current single-patch
+validation used about 5.8 GiB peak process memory and 0.94 seconds for warm
+inference, excluding model loading.
 
 A four-cohort validation campaign processed 80 approved serial sections and
 729,452 accepted UNI2-h patches. Every adjacent section pair retained accepted

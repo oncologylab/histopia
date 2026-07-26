@@ -270,6 +270,187 @@ def test_uni2h_encoder_batches_standard_224_pixel_transform(monkeypatch) -> None
     assert calls["transfer"] == (("cpu",), {"non_blocking": False})
 
 
+def test_uni2h_encoder_transfers_compact_cuda_batch_before_transform(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, object]] = []
+    float32 = object()
+
+    class Batch:
+        def __init__(self, values: np.ndarray, location: str = "cpu") -> None:
+            self.values = values
+            self.location = location
+
+        def __len__(self) -> int:
+            return len(self.values)
+
+        def permute(self, *axes: int):
+            self.values = self.values.transpose(axes)
+            return self
+
+        def to(self, *args, **kwargs):
+            if args:
+                assert args == ("cuda:0",)
+                assert kwargs == {"non_blocking": True}
+                calls.append(("transfer", (self.values.dtype, self.values.shape)))
+                self.location = "cuda:0"
+            else:
+                assert kwargs == {"dtype": float32}
+                calls.append(("convert", self.location))
+                self.values = self.values.astype(np.float32)
+            return self
+
+        def div_(self, value: int):
+            self.values /= value
+            return self
+
+    class Output:
+        def float(self):
+            return self
+
+        def cpu(self):
+            return self
+
+        def numpy(self) -> np.ndarray:
+            return np.ones((2, 3), dtype=np.float32)
+
+    def transform(batch: Batch) -> Batch:
+        calls.append(("transform", batch.location))
+        assert batch.values.dtype == np.float32
+        return batch
+
+    def model(batch: Batch) -> Output:
+        calls.append(("model", batch.location))
+        return Output()
+
+    torch = SimpleNamespace(
+        OutOfMemoryError=RuntimeError,
+        autocast=lambda **kwargs: nullcontext(),
+        bfloat16=object(),
+        cuda=SimpleNamespace(),
+        float16=object(),
+        float32=float32,
+        from_numpy=lambda values: Batch(values),
+        inference_mode=nullcontext,
+    )
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    encoder = Uni2hEncoder(
+        model,
+        transform,
+        device="cuda:0",
+        model_fingerprint="model",
+        runtime_provenance={
+            "device": "cuda:0",
+            "precision": "bfloat16-autocast",
+        },
+    )
+
+    result = encoder.encode(np.zeros((2, 224, 224, 3), dtype=np.uint8))
+
+    np.testing.assert_array_equal(result, np.ones((2, 3), dtype=np.float32))
+    assert calls == [
+        ("transfer", (np.dtype("uint8"), (2, 3, 224, 224))),
+        ("convert", "cuda:0"),
+        ("transform", "cuda:0"),
+        ("model", "cuda:0"),
+    ]
+
+
+def test_uni2h_cuda_compact_batch_retries_after_oom(monkeypatch) -> None:
+    transfers: list[list[int]] = []
+    attempts: list[list[int]] = []
+    cache_clears = 0
+    float32 = object()
+
+    class OutOfMemoryError(RuntimeError):
+        pass
+
+    class Batch:
+        def __init__(self, values: np.ndarray) -> None:
+            self.values = values
+
+        def __len__(self) -> int:
+            return len(self.values)
+
+        def __getitem__(self, index):
+            return Batch(self.values[index])
+
+        def permute(self, *axes: int):
+            self.values = self.values.transpose(axes)
+            return self
+
+        def to(self, *args, **kwargs):
+            if args:
+                assert args == ("cuda:0",)
+                assert kwargs == {"non_blocking": True}
+                transfers.append(self.values[:, 0, 0, 0].tolist())
+                return Batch(self.values.copy())
+            else:
+                assert kwargs == {"dtype": float32}
+                return Batch(self.values.astype(np.float32))
+
+        def div_(self, value: int):
+            self.values /= value
+            return self
+
+    class Output:
+        def __init__(self, values: list[int]) -> None:
+            self.values = values
+
+        def float(self):
+            return self
+
+        def cpu(self):
+            return self
+
+        def numpy(self) -> np.ndarray:
+            return np.asarray(self.values, dtype=np.float32)[:, None]
+
+    def model(batch: Batch) -> Output:
+        values = np.rint(batch.values[:, 0, 0, 0] * 255).astype(int).tolist()
+        attempts.append(values)
+        if len(values) > 2:
+            raise OutOfMemoryError
+        return Output(values)
+
+    def empty_cache() -> None:
+        nonlocal cache_clears
+        cache_clears += 1
+
+    torch = SimpleNamespace(
+        OutOfMemoryError=OutOfMemoryError,
+        autocast=lambda **kwargs: nullcontext(),
+        bfloat16=object(),
+        cuda=SimpleNamespace(empty_cache=empty_cache),
+        float16=object(),
+        float32=float32,
+        from_numpy=lambda values: Batch(values),
+        inference_mode=nullcontext,
+    )
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    encoder = Uni2hEncoder(
+        model,
+        lambda batch: batch,
+        device="cuda:0",
+        model_fingerprint="model",
+        runtime_provenance={
+            "device": "cuda:0",
+            "precision": "bfloat16-autocast",
+        },
+    )
+    images = np.stack(
+        [np.full((224, 224, 3), value, dtype=np.uint8) for value in range(5)]
+    )
+
+    result = encoder.encode(images)
+
+    np.testing.assert_array_equal(result[:, 0], np.arange(5, dtype=np.float32))
+    expected_attempts = [[0, 1, 2, 3, 4], [0, 1], [2, 3, 4], [2], [3, 4]]
+    assert transfers == expected_attempts
+    assert attempts == expected_attempts
+    assert cache_clears == 2
+
+
 def test_uni2h_oom_retry_reuses_transforms_and_preserves_order(monkeypatch) -> None:
     transformed: list[int] = []
     attempts: list[list[int]] = []

@@ -16,6 +16,9 @@ import numpy as np
 from histopia.compute import resolve_compute_device
 from histopia.semantic._vips import configure_vips_threads
 
+_CUDA_INPUT_PIPELINE = "cuda-uint8-transform-v1"
+_HOST_INPUT_PIPELINE = "host-float32-transform-v1"
+
 
 def _preload_wsi_backend(
     importer: Callable[[str], object] = import_module,
@@ -158,37 +161,46 @@ class Uni2hEncoder:
             source = np.ascontiguousarray(images)
             if not source.flags.writeable:
                 source = source.copy()
-            batch = (
-                torch.from_numpy(source)
-                .permute(0, 3, 1, 2)
-                .to(dtype=torch.float32)
-                .div_(255)
-            )
-            batch = self.transform(batch)
+            batch = torch.from_numpy(source).permute(0, 3, 1, 2)
+            if self.device.startswith("cuda"):
+                return self._encode_cuda_uint8_batch(torch, batch)
+            batch = self.transform(batch.to(dtype=torch.float32).div_(255))
         else:
             batch = torch.stack(
                 [self.transform(Image.fromarray(image, mode="RGB")) for image in images]
             )
         return self._encode_tensor_batch(torch, batch)
 
+    def _encode_cuda_uint8_batch(self, torch: Any, batch: Any) -> np.ndarray:
+        """Transfer compact RGB input before conversion and normalization."""
+
+        device_batch = None
+        try:
+            device_batch = batch.to(self.device, non_blocking=True)
+            device_batch = device_batch.to(dtype=torch.float32).div_(255)
+            device_batch = self.transform(device_batch)
+            return self._run_model(torch, device_batch)
+        except torch.OutOfMemoryError:
+            if len(batch) == 1:
+                raise
+        del device_batch
+        _empty_accelerator_cache(torch, self.device)
+        midpoint = len(batch) // 2
+        return np.concatenate(
+            [
+                self._encode_cuda_uint8_batch(torch, batch[:midpoint]),
+                self._encode_cuda_uint8_batch(torch, batch[midpoint:]),
+            ]
+        )
+
     def _encode_tensor_batch(self, torch: Any, batch: Any) -> np.ndarray:
         """Encode one transformed CPU batch, splitting only after device OOM."""
 
         uses_cuda = self.device.startswith("cuda")
-        autocast_dtype = _autocast_dtype(torch, self.precision)
         device_batch = None
         try:
             device_batch = batch.to(self.device, non_blocking=uses_cuda)
-            with (
-                torch.inference_mode(),
-                torch.autocast(
-                    device_type="cuda",
-                    dtype=autocast_dtype,
-                    enabled=uses_cuda and autocast_dtype is not None,
-                ),
-            ):
-                output = self.model(device_batch)
-            return output.float().cpu().numpy()
+            return self._run_model(torch, device_batch)
         except torch.OutOfMemoryError:
             if len(batch) == 1:
                 raise
@@ -201,6 +213,20 @@ class Uni2hEncoder:
                 self._encode_tensor_batch(torch, batch[midpoint:]),
             ]
         )
+
+    def _run_model(self, torch: Any, device_batch: Any) -> np.ndarray:
+        uses_cuda = self.device.startswith("cuda")
+        autocast_dtype = _autocast_dtype(torch, self.precision)
+        with (
+            torch.inference_mode(),
+            torch.autocast(
+                device_type="cuda",
+                dtype=autocast_dtype,
+                enabled=uses_cuda and autocast_dtype is not None,
+            ),
+        ):
+            output = self.model(device_batch)
+        return output.float().cpu().numpy()
 
 
 @dataclass(frozen=True, slots=True)
@@ -275,6 +301,11 @@ def _prepare_uni2h_runtime(
     provenance: dict[str, object] = {
         "device": resolved_device,
         "precision": precision,
+        "input_pipeline": (
+            _CUDA_INPUT_PIPELINE
+            if resolved_device.startswith("cuda")
+            else _HOST_INPUT_PIPELINE
+        ),
         "packages": {
             package: _package_version(package)
             for package in (

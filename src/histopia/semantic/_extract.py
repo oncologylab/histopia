@@ -239,6 +239,9 @@ def _safe_encoder_runtime(
     precision = values.get("precision")
     if isinstance(precision, str):
         summary["precision"] = precision
+    input_pipeline = values.get("input_pipeline")
+    if isinstance(input_pipeline, str):
+        summary["input_pipeline"] = input_pipeline
     accelerator = values.get("accelerator")
     if isinstance(accelerator, dict):
         safe_accelerator = {

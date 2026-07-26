@@ -159,6 +159,7 @@ def test_extraction_records_cache_and_compute_performance(
         runtime_provenance = {
             "device": "cuda:0",
             "precision": "bfloat16-autocast",
+            "input_pipeline": "cuda-uint8-transform-v1",
             "accelerator": {
                 "name": "Test GPU",
                 "compute_capability": [8, 0],
@@ -214,6 +215,7 @@ def test_extraction_records_cache_and_compute_performance(
         "vips_threads": 3,
         "device": "cuda:0",
         "precision": "bfloat16-autocast",
+        "input_pipeline": "cuda-uint8-transform-v1",
         "accelerator": {
             "name": "Test GPU",
             "compute_capability": [8, 0],
