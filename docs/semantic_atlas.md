@@ -449,6 +449,19 @@ their existing quality settings. Semantic label textures remain lossless at
 effort 6. The mouse-cache schema is bumped whenever this encoding or
 source-identity contract changes, preventing stale mouse-level reuse.
 
+For one section, every K layer in a sealed semantic result shares the same
+patch grid. The builder therefore resolves patch-to-display-pixel ownership
+once and reuses that raster for the remaining K layers.
+`semantic_rasters_built` and `semantic_rasters_reused` make this work visible
+in the build report.
+
+On a complete 16-cohort build with 401 sections, 11 K layers per section, and
+5,213 WEBPs, four workers reduced cold build time from 196.28 to 178.86
+seconds. The builder created 401 patch rasters and reused them 4,010 times.
+All 5,213 image assets, the manifest, and browser runtime remained
+byte-identical to the corresponding current outputs. An unchanged warm build
+reused all 16 mice and 5,213 assets in 5.97 seconds.
+
 On a paired clean 134-section, five-sample build containing 1,742 WEBPs, the
 four-worker effort-5 build took 65.84 seconds internally and 66.13 seconds wall
 time, compared with 180.23 and 180.47 seconds for the published effort-6

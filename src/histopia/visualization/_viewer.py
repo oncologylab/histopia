@@ -82,6 +82,12 @@ class _WebpWriteJob:
     future: Future[dict[str, object]] | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class _SemanticPatchRaster:
+    patch_count: int
+    last_patch: np.ndarray
+
+
 class _WebpWriteBatch:
     """Encode one mouse's WebPs through a bounded deterministic CPU pipeline."""
 
@@ -247,6 +253,7 @@ def build_section_viewer(
     new_mouse_cache: dict[str, dict[str, object]] = {}
     cache_stats = {"reused": 0, "encoded": 0}
     mouse_stats = {"reused": 0, "rendered": 0}
+    semantic_raster_stats = {"built": 0, "reused": 0}
     webp_batch = _WebpWriteBatch(
         Image,
         output_dir,
@@ -426,14 +433,19 @@ def build_section_viewer(
                     raise ValueError(f"semantic result is missing {source_path.name}")
                 semantic_textures: dict[str, str] = {}
                 selected_rgba = None
+                semantic_raster = None
                 for count in cluster_counts:
                     labels_path = semantic_dir / semantic_row["labels"][str(count)]
-                    semantic_rgba = _semantic_rgba(
+                    # Every K in a sealed result uses this slide's same patch grid.
+                    reused_raster = semantic_raster is not None
+                    semantic_rgba, semantic_raster = _semantic_rgba(
                         labels_path,
                         palette,
                         reference_row["geometry"],
                         registered_mask,
+                        semantic_raster=semantic_raster,
                     )
+                    semantic_raster_stats["reused" if reused_raster else "built"] += 1
                     semantic_name = (
                         f"{order:03d}-{_safe_name(source_path.stem)}"
                         f"-k{count}-semantic.webp"
@@ -562,6 +574,8 @@ def build_section_viewer(
             "lossy_webp_method": _LOSSY_WEBP_METHOD,
             "lossless_webp_method": _LOSSLESS_WEBP_METHOD,
             "peak_pending_assets": webp_batch.peak_pending_encoded,
+            "semantic_rasters_built": semantic_raster_stats["built"],
+            "semantic_rasters_reused": semantic_raster_stats["reused"],
             "elapsed_seconds": round(time.perf_counter() - build_started, 3),
         },
     )
@@ -1350,20 +1364,58 @@ def _semantic_rgba(
     palette: list[str],
     reference_geometry: dict[str, object],
     registered_mask: np.ndarray,
-) -> np.ndarray:
+    *,
+    semantic_raster: _SemanticPatchRaster | None = None,
+) -> tuple[np.ndarray, _SemanticPatchRaster]:
     from PIL import ImageColor
 
     with np.load(labels_path, allow_pickle=False) as data:
         labels = np.asarray(data["labels"])
-        points_um = np.asarray(data["reference_um_xy"])
-        patch_um = float(data["patch_size_px"]) * float(data["analysis_mpp"])
-    if labels.ndim != 1 or points_um.shape != (len(labels), 2):
-        raise ValueError("semantic labels and coordinates have incompatible shapes")
+        if semantic_raster is None:
+            points_um = np.asarray(data["reference_um_xy"])
+            patch_um = float(data["patch_size_px"]) * float(data["analysis_mpp"])
+        else:
+            points_um = None
+            patch_um = None
+    if labels.ndim != 1:
+        raise ValueError("semantic labels must be a vector")
+    thumb_height, thumb_width = registered_mask.shape
+    if semantic_raster is None:
+        assert points_um is not None and patch_um is not None
+        if points_um.shape != (len(labels), 2):
+            raise ValueError("semantic labels and coordinates have incompatible shapes")
+        bounds = _semantic_patch_bounds(
+            points_um,
+            patch_um,
+            reference_geometry,
+            (thumb_height, thumb_width),
+        )
+        semantic_raster = _build_semantic_patch_raster(
+            bounds,
+            (thumb_height, thumb_width),
+        )
+    elif semantic_raster.patch_count != len(labels):
+        raise ValueError("semantic K layers have incompatible patch grids")
+    colors = np.asarray(
+        [(*ImageColor.getrgb(color), 220) for color in palette],
+        dtype=np.uint8,
+    )
+    rgba = _paint_semantic_patch_raster(labels, colors, semantic_raster)
+    rgba[..., 3] = np.where(registered_mask, rgba[..., 3], 0)
+    return rgba, semantic_raster
+
+
+def _semantic_patch_bounds(
+    points_um: np.ndarray,
+    patch_um: float,
+    reference_geometry: dict[str, object],
+    shape: tuple[int, int],
+) -> np.ndarray:
     mpp_x, mpp_y = (float(value) for value in reference_geometry["mpp_xy"])
     x, y, native_width, native_height = (
         float(value) for value in reference_geometry["content_bbox_xywh"]
     )
-    thumb_height, thumb_width = registered_mask.shape
+    thumb_height, thumb_width = shape
     points_px = np.column_stack(
         [
             (points_um[:, 0] / mpp_x - x) * thumb_width / native_width,
@@ -1372,7 +1424,7 @@ def _semantic_rgba(
     )
     half_width = patch_um / mpp_x * thumb_width / native_width / 2
     half_height = patch_um / mpp_y * thumb_height / native_height / 2
-    bounds = np.column_stack(
+    return np.column_stack(
         [
             np.trunc(points_px[:, 0] - half_width),
             np.trunc(points_px[:, 1] - half_height),
@@ -1380,18 +1432,6 @@ def _semantic_rgba(
             np.trunc(points_px[:, 1] + half_height),
         ]
     ).astype(np.intp)
-    colors = np.asarray(
-        [(*ImageColor.getrgb(color), 220) for color in palette],
-        dtype=np.uint8,
-    )
-    rgba = _rasterize_semantic_rectangles(
-        labels,
-        bounds,
-        colors,
-        (thumb_height, thumb_width),
-    )
-    rgba[..., 3] = np.where(registered_mask, rgba[..., 3], 0)
-    return rgba
 
 
 def _rasterize_semantic_rectangles(
@@ -1402,35 +1442,43 @@ def _rasterize_semantic_rectangles(
 ) -> np.ndarray:
     """Paint constant-size patch boxes while preserving last-write ordering."""
 
+    raster = _build_semantic_patch_raster(bounds_xyxy, shape)
+    if raster.patch_count != len(labels):
+        raise ValueError("semantic labels and patch bounds must have equal length")
+    return _paint_semantic_patch_raster(labels, colors, raster)
+
+
+def _build_semantic_patch_raster(
+    bounds_xyxy: np.ndarray,
+    shape: tuple[int, int],
+) -> _SemanticPatchRaster:
+    """Resolve the last patch covering each display pixel once per section."""
+
     height, width = shape
-    rgba = np.zeros((height, width, 4), dtype=np.uint8)
-    if len(labels) == 0:
-        return rgba
+    patch_count = len(bounds_xyxy)
+    last_patch = np.full((height, width), -1, dtype=np.int32)
+    if patch_count == 0:
+        return _SemanticPatchRaster(0, last_patch)
     left, top, right, bottom = bounds_xyxy.T
     maximum_width = int(np.max(right - left + 1, initial=0))
     maximum_height = int(np.max(bottom - top + 1, initial=0))
-    expanded_cells = len(labels) * maximum_width * maximum_height
+    expanded_cells = patch_count * maximum_width * maximum_height
     if maximum_width <= 0 or maximum_height <= 0:
-        return rgba
+        return _SemanticPatchRaster(patch_count, last_patch)
     if expanded_cells > 4_000_000:
-        for label, x0, y0, x1, y1 in zip(
-            labels,
-            left,
-            top,
-            right,
-            bottom,
-            strict=True,
+        for patch_index, (x0, y0, x1, y1) in enumerate(
+            zip(left, top, right, bottom, strict=True)
         ):
             clipped_x0 = max(0, int(x0))
             clipped_y0 = max(0, int(y0))
             clipped_x1 = min(width - 1, int(x1))
             clipped_y1 = min(height - 1, int(y1))
             if clipped_x0 <= clipped_x1 and clipped_y0 <= clipped_y1:
-                rgba[
+                last_patch[
                     clipped_y0 : clipped_y1 + 1,
                     clipped_x0 : clipped_x1 + 1,
-                ] = colors[int(label) % len(colors)]
-        return rgba
+                ] = patch_index
+        return _SemanticPatchRaster(patch_count, last_patch)
 
     rows = (
         top[:, None, None]
@@ -1456,14 +1504,24 @@ def _rasterize_semantic_rectangles(
     )
     linear = np.broadcast_to(rows * width + columns, valid.shape)[valid]
     patch_indices = np.broadcast_to(
-        np.arange(len(labels), dtype=np.int32)[:, None, None],
+        np.arange(patch_count, dtype=np.int32)[:, None, None],
         valid.shape,
     )[valid]
-    last_patch = np.full(height * width, -1, dtype=np.int32)
-    np.maximum.at(last_patch, linear, patch_indices)
-    painted = last_patch >= 0
-    flat = rgba.reshape(-1, 4)
-    flat[painted] = colors[labels[last_patch[painted]].astype(np.intp) % len(colors)]
+    np.maximum.at(last_patch.reshape(-1), linear, patch_indices)
+    return _SemanticPatchRaster(patch_count, last_patch)
+
+
+def _paint_semantic_patch_raster(
+    labels: np.ndarray,
+    colors: np.ndarray,
+    raster: _SemanticPatchRaster,
+) -> np.ndarray:
+    height, width = raster.last_patch.shape
+    rgba = np.zeros((height, width, 4), dtype=np.uint8)
+    painted = raster.last_patch >= 0
+    rgba[painted] = colors[
+        labels[raster.last_patch[painted]].astype(np.intp) % len(colors)
+    ]
     return rgba
 
 

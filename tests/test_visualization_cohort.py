@@ -10,7 +10,10 @@ from PIL import Image, ImageDraw
 
 from histopia.semantic._result import _seal_semantic_result
 from histopia.visualization import build_section_viewer
-from histopia.visualization._viewer import _rasterize_semantic_rectangles
+from histopia.visualization._viewer import (
+    _rasterize_semantic_rectangles,
+    _semantic_rgba,
+)
 
 
 def test_viewer_embeds_seven_mouse_qc_and_exact_review_state(tmp_path: Path) -> None:
@@ -378,6 +381,8 @@ def test_parallel_viewer_encoding_matches_serial_output(tmp_path: Path) -> None:
     assert report["lossless_webp_method"] == 6
     assert report["peak_pending_assets"] == 8
     assert report["assets_encoded"] == 26
+    assert report["semantic_rasters_built"] == 2
+    assert report["semantic_rasters_reused"] == 20
 
 
 def test_viewer_rejects_nonpositive_workers(tmp_path: Path) -> None:
@@ -423,6 +428,88 @@ def test_semantic_rectangle_rasterizer_matches_ordered_pillow_paint(
     actual = _rasterize_semantic_rectangles(labels, bounds, colors, shape)
 
     assert np.array_equal(actual, np.asarray(expected))
+
+
+def test_semantic_rgba_reuses_exact_patch_raster_across_k_layers(
+    tmp_path: Path,
+) -> None:
+    points = np.array([[4.0, 4.0], [12.0, 4.0], [4.0, 12.0]])
+    first = tmp_path / "first.npz"
+    second = tmp_path / "second.npz"
+    np.savez_compressed(
+        first,
+        labels=np.array([0, 1, 2], dtype=np.int16),
+        reference_um_xy=points,
+        patch_size_px=np.array(8),
+        analysis_mpp=np.array(1.0),
+    )
+    np.savez_compressed(
+        second,
+        labels=np.array([2, 0, 1], dtype=np.int16),
+        reference_um_xy=points,
+        patch_size_px=np.array(8),
+        analysis_mpp=np.array(1.0),
+    )
+    geometry = {
+        "mpp_xy": [1.0, 1.0],
+        "content_bbox_xywh": [0.0, 0.0, 16.0, 16.0],
+    }
+    mask = np.ones((16, 16), dtype=bool)
+    palette = ["#d21e2d", "#199150", "#2d5fd2"]
+
+    _, raster = _semantic_rgba(first, palette, geometry, mask)
+    reused, observed_raster = _semantic_rgba(
+        second,
+        palette,
+        geometry,
+        mask,
+        semantic_raster=raster,
+    )
+    independent, _ = _semantic_rgba(second, palette, geometry, mask)
+
+    assert observed_raster is raster
+    assert np.array_equal(reused, independent)
+
+
+def test_semantic_rgba_rejects_reused_raster_with_different_patch_count(
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "first.npz"
+    second = tmp_path / "second.npz"
+    np.savez_compressed(
+        first,
+        labels=np.array([0, 1], dtype=np.int16),
+        reference_um_xy=np.array([[4.0, 4.0], [12.0, 4.0]]),
+        patch_size_px=np.array(8),
+        analysis_mpp=np.array(1.0),
+    )
+    np.savez_compressed(
+        second,
+        labels=np.array([0], dtype=np.int16),
+        reference_um_xy=np.array([[4.0, 4.0]]),
+        patch_size_px=np.array(8),
+        analysis_mpp=np.array(1.0),
+    )
+    geometry = {
+        "mpp_xy": [1.0, 1.0],
+        "content_bbox_xywh": [0.0, 0.0, 16.0, 16.0],
+    }
+    mask = np.ones((16, 16), dtype=bool)
+    palette = ["#d21e2d", "#199150"]
+
+    _, raster = _semantic_rgba(first, palette, geometry, mask)
+
+    with pytest.raises(
+        ValueError,
+        match="semantic K layers have incompatible patch grids",
+    ):
+        _semantic_rgba(
+            second,
+            palette,
+            geometry,
+            mask,
+            semantic_raster=raster,
+        )
 
 
 def _write_mouse(
