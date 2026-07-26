@@ -2246,37 +2246,46 @@ def _section_distance_matrix(
     )
     if prepared_features is None:
         prepared_features = _prepare_crop_features(slide_paths, crops, config)
+    mask_descriptors = _prepare_ordering_mask_descriptors(
+        slide_paths,
+        crops,
+        workers=config.ordering_workers,
+    )
 
     def calculate(pair: tuple[int, int]) -> tuple[int, int, float]:
         first, second = pair
+        first_path = slide_paths[first]
+        second_path = slide_paths[second]
         try:
             transform, _ = _estimate_pair_transform(
-                slide_paths[first],
-                slide_paths[second],
+                first_path,
+                second_path,
                 crops,
                 config,
                 prepared_features,
             )
             dice = _final_mask_dice(
-                crops[slide_paths[first]],
-                crops[slide_paths[second]],
+                crops[first_path],
+                crops[second_path],
                 transform.matrix,
             )
             support = min(1.0, transform.inlier_count / 40.0)
             registration_distance = 1.0 - min(
                 max(1e-3, 0.75 * dice + 0.25 * support), 1.0
             )
-            shape_distance = _mask_shape_distance(
-                crops[slide_paths[first]].mask,
-                crops[slide_paths[second]].mask,
+            first_shape, first_cavity = mask_descriptors[first_path]
+            second_shape, second_cavity = mask_descriptors[second_path]
+            shape_distance = _mask_shape_descriptor_distance(
+                first_shape,
+                second_shape,
             )
-            hole_distance = _mask_hole_topology_distance(
-                crops[slide_paths[first]].mask,
-                crops[slide_paths[second]].mask,
+            hole_distance = _mask_hole_topology_distance_from_fractions(
+                first_cavity,
+                second_cavity,
             )
             area_distance = _physical_area_distance(
-                slide_paths[first],
-                slide_paths[second],
+                first_path,
+                second_path,
                 physical_areas,
             )
             distance = (
@@ -2303,6 +2312,34 @@ def _section_distance_matrix(
         if executor is not None:
             executor.shutdown()
     return distances
+
+
+def _prepare_ordering_mask_descriptors(
+    slide_paths: tuple[Path, ...],
+    crops: dict[Path, _Crop],
+    *,
+    workers: int,
+) -> dict[Path, tuple[tuple[float, float], float]]:
+    """Calculate slide-specific morphology once before all-pairs ordering."""
+
+    def describe(path: Path) -> tuple[tuple[float, float], float]:
+        mask = crops[path].mask
+        return _mask_shape_descriptor(mask), _largest_internal_cavity_fraction(mask)
+
+    if workers == 1:
+        rows = map(describe, slide_paths)
+        return dict(zip(slide_paths, rows, strict=True))
+    with ThreadPoolExecutor(
+        max_workers=workers,
+        thread_name_prefix="ordering-mask-descriptors",
+    ) as executor:
+        return dict(
+            zip(
+                slide_paths,
+                executor.map(describe, slide_paths),
+                strict=True,
+            )
+        )
 
 
 def _physical_mask_area(mask: np.ndarray, geometry: SlideGeometry) -> float | None:
@@ -2448,21 +2485,36 @@ def _physical_area_distance(
 def _mask_shape_distance(first: np.ndarray, second: np.ndarray) -> float:
     """Compare scale-independent extent and connected-component topology."""
 
+    return _mask_shape_descriptor_distance(
+        _mask_shape_descriptor(first),
+        _mask_shape_descriptor(second),
+    )
+
+
+def _mask_shape_descriptor(mask: np.ndarray) -> tuple[float, float]:
+    """Return the scale-independent shape terms used for section ordering."""
+
     from scipy import ndimage as ndi
 
-    def descriptor(mask: np.ndarray) -> tuple[float, float]:
-        binary = np.asarray(mask, dtype=bool)
-        rows, cols = np.nonzero(binary)
-        if not rows.size:
-            return 0.0, 0.0
-        height = rows.max() - rows.min() + 1
-        width = cols.max() - cols.min() + 1
-        aspect = float(np.log(max(width, 1) / max(height, 1)))
-        _, components = ndi.label(binary)
-        return aspect, float(np.log1p(components))
+    binary = np.asarray(mask, dtype=bool)
+    rows, cols = np.nonzero(binary)
+    if not rows.size:
+        return 0.0, 0.0
+    height = rows.max() - rows.min() + 1
+    width = cols.max() - cols.min() + 1
+    aspect = float(np.log(max(width, 1) / max(height, 1)))
+    _, components = ndi.label(binary)
+    return aspect, float(np.log1p(components))
 
-    first_aspect, first_components = descriptor(first)
-    second_aspect, second_components = descriptor(second)
+
+def _mask_shape_descriptor_distance(
+    first: tuple[float, float],
+    second: tuple[float, float],
+) -> float:
+    """Compare two precomputed shape descriptors."""
+
+    first_aspect, first_components = first
+    second_aspect, second_components = second
     aspect_distance = min(1.0, abs(first_aspect - second_aspect))
     topology_distance = min(1.0, abs(first_components - second_components) / 2.0)
     return 0.7 * aspect_distance + 0.3 * topology_distance
@@ -2471,8 +2523,18 @@ def _mask_shape_distance(first: np.ndarray, second: np.ndarray) -> float:
 def _mask_hole_topology_distance(first: np.ndarray, second: np.ndarray) -> float:
     """Compare substantial internal cavities independently of outer shape."""
 
-    first_fraction = _largest_internal_cavity_fraction(first)
-    second_fraction = _largest_internal_cavity_fraction(second)
+    return _mask_hole_topology_distance_from_fractions(
+        _largest_internal_cavity_fraction(first),
+        _largest_internal_cavity_fraction(second),
+    )
+
+
+def _mask_hole_topology_distance_from_fractions(
+    first_fraction: float,
+    second_fraction: float,
+) -> float:
+    """Compare two precomputed internal-cavity fractions."""
+
     noise_floor = 0.005
     first_effective = max(0.0, first_fraction - noise_floor)
     second_effective = max(0.0, second_fraction - noise_floor)

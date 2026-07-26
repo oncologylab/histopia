@@ -217,27 +217,31 @@ def propose_anchored_order(
     index = {name: offset for offset, name in enumerate(slide_names)}
     fixed_by_position = {position: name for name, position in fixed_positions.items()}
     free = tuple(sorted(set(slide_names) - set(fixed_positions)))
-    beam: list[tuple[float, tuple[str, ...], tuple[str, ...]]] = [(0.0, (), free)]
+    beam: list[tuple[float, tuple[str, ...], int]] = [(0.0, (), (1 << len(free)) - 1)]
     for position in range(1, count + 1):
-        expanded: list[tuple[float, tuple[str, ...], tuple[str, ...]]] = []
+        expanded: list[tuple[float, tuple[str, ...], int]] = []
+        anchored = fixed_by_position.get(position)
         for cost, sequence, remaining in beam:
-            candidates = (
-                (fixed_by_position[position],)
-                if position in fixed_by_position
-                else remaining
-            )
-            for candidate in candidates:
+            if anchored is not None:
+                edge = matrix[index[sequence[-1]], index[anchored]] if sequence else 0.0
+                expanded.append((cost + float(edge), (*sequence, anchored), remaining))
+                continue
+
+            available = remaining
+            while available:
+                candidate_bit = available & -available
+                candidate = free[candidate_bit.bit_length() - 1]
                 edge = (
                     matrix[index[sequence[-1]], index[candidate]] if sequence else 0.0
                 )
-                next_remaining = (
-                    remaining
-                    if position in fixed_by_position
-                    else tuple(item for item in remaining if item != candidate)
-                )
                 expanded.append(
-                    (cost + float(edge), (*sequence, candidate), next_remaining)
+                    (
+                        cost + float(edge),
+                        (*sequence, candidate),
+                        remaining ^ candidate_bit,
+                    )
                 )
+                available ^= candidate_bit
         expanded.sort(key=lambda item: (item[0], item[1]))
         beam = expanded[:beam_width]
 

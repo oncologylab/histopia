@@ -17,6 +17,77 @@ from histopia.registration._pipeline import (
 )
 
 
+def _legacy_anchored_search(
+    slide_names: tuple[str, ...],
+    matrix: np.ndarray,
+    fixed_positions: dict[str, int],
+    beam_width: int,
+) -> tuple[tuple[str, ...], float | None]:
+    """Reproduce the former tuple-based beam state for equivalence tests."""
+
+    count = len(slide_names)
+    index = {name: offset for offset, name in enumerate(slide_names)}
+    fixed_by_position = {position: name for name, position in fixed_positions.items()}
+    positions = list(fixed_positions.values())
+    free = tuple(sorted(set(slide_names) - set(fixed_positions)))
+    beam: list[tuple[float, tuple[str, ...], tuple[str, ...]]] = [(0.0, (), free)]
+    for position in range(1, count + 1):
+        expanded: list[tuple[float, tuple[str, ...], tuple[str, ...]]] = []
+        for cost, sequence, remaining in beam:
+            candidates = (
+                (fixed_by_position[position],)
+                if position in fixed_by_position
+                else remaining
+            )
+            for candidate in candidates:
+                edge = (
+                    matrix[index[sequence[-1]], index[candidate]] if sequence else 0.0
+                )
+                next_remaining = (
+                    remaining
+                    if position in fixed_by_position
+                    else tuple(item for item in remaining if item != candidate)
+                )
+                expanded.append(
+                    (cost + float(edge), (*sequence, candidate), next_remaining)
+                )
+        expanded.sort(key=lambda item: (item[0], item[1]))
+        beam = expanded[:beam_width]
+
+    def objective(sequence: list[str]) -> float:
+        return float(
+            sum(
+                matrix[index[first], index[second]]
+                for first, second in zip(sequence, sequence[1:], strict=False)
+            )
+        )
+
+    sequence = list(beam[0][1])
+    movable = [offset for offset in range(count) if offset + 1 not in positions]
+    improved = True
+    while improved:
+        improved = False
+        baseline = objective(sequence)
+        for first_index, first in enumerate(movable):
+            for second in movable[first_index + 1 :]:
+                sequence[first], sequence[second] = sequence[second], sequence[first]
+                candidate_cost = objective(sequence)
+                if candidate_cost + 1e-12 < baseline:
+                    baseline = candidate_cost
+                    improved = True
+                else:
+                    sequence[first], sequence[second] = (
+                        sequence[second],
+                        sequence[first],
+                    )
+
+    ordered = tuple(sequence)
+    alternative_costs = sorted(
+        cost for cost, candidate, _ in beam if candidate != ordered
+    )
+    return ordered, alternative_costs[0] if alternative_costs else None
+
+
 def test_anchored_order_preserves_fixed_slots() -> None:
     names = ("HE.ndpi", "A.ndpi", "B.ndpi", "C.ndpi")
     distances = np.array(
@@ -33,6 +104,43 @@ def test_anchored_order_preserves_fixed_slots() -> None:
     assert proposal.slides == names
     assert proposal.fixed_positions == {"HE.ndpi": 1, "C.ndpi": 4}
     assert proposal.adjacent_distances == (0.1, 0.2, 0.1)
+
+
+def test_bitset_beam_search_matches_legacy_tuple_states() -> None:
+    rng = np.random.default_rng(20260725)
+    scenarios: list[tuple[tuple[str, ...], np.ndarray, dict[str, int], int]] = []
+    for count in range(3, 9):
+        names = tuple(f"S{index:02d}" for index in range(count))
+        for _ in range(4):
+            upper = rng.integers(1, 10, size=(count, count)).astype(float) / 10
+            matrix = np.triu(upper, k=1)
+            matrix += matrix.T
+            fixed = {names[0]: 1}
+            if count >= 5:
+                fixed[names[-1]] = count
+            scenarios.append((names, matrix, fixed, 64))
+
+    tied_names = ("D", "A", "C", "B", "E")
+    tied_matrix = np.ones((len(tied_names), len(tied_names)), dtype=float)
+    np.fill_diagonal(tied_matrix, 0.0)
+    scenarios.append((tied_names, tied_matrix, {"D": 3}, 32))
+
+    for names, matrix, fixed, beam_width in scenarios:
+        expected_order, expected_runner_up = _legacy_anchored_search(
+            names,
+            matrix,
+            fixed,
+            beam_width,
+        )
+        observed = propose_anchored_order(
+            names,
+            matrix,
+            fixed,
+            beam_width=beam_width,
+        )
+
+        assert observed.slides == expected_order
+        assert observed.runner_up_objective == expected_runner_up
 
 
 def test_order_approval_is_bound_to_fingerprint(tmp_path: Path) -> None:

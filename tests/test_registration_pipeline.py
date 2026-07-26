@@ -631,6 +631,56 @@ def test_anchored_order_reuses_exact_distance_cache(
     assert np.array_equal(parallel, sequential)
 
 
+def test_section_distance_prepares_each_mask_descriptor_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    paths = tuple(tmp_path / f"section-{index}.png" for index in range(4))
+    crops = {}
+    for index, path in enumerate(paths):
+        image = np.full((80, 80, 3), 255, dtype=np.uint8)
+        mask = np.zeros((80, 80), dtype=bool)
+        mask[15 + index : 65, 18:62] = True
+        image[mask] = np.array([185, 100, 120], dtype=np.uint8)
+        crops[path] = _crop_to_mask(image, mask, 80)
+
+    shape_calls: list[int] = []
+    cavity_calls: list[int] = []
+    original_shape = _pipeline._mask_shape_descriptor
+    original_cavity = _pipeline._largest_internal_cavity_fraction
+
+    def counted_shape(mask: np.ndarray) -> tuple[float, float]:
+        shape_calls.append(id(mask))
+        return original_shape(mask)
+
+    def counted_cavity(mask: np.ndarray) -> float:
+        cavity_calls.append(id(mask))
+        return original_cavity(mask)
+
+    monkeypatch.setattr(_pipeline, "_mask_shape_descriptor", counted_shape)
+    monkeypatch.setattr(
+        _pipeline,
+        "_largest_internal_cavity_fraction",
+        counted_cavity,
+    )
+    config = RegistrationConfig(
+        input_dir=tmp_path,
+        output_dir=tmp_path / "output",
+        rigid_method="mask_moments",
+        ordering_workers=2,
+        max_processed_image_dim_px=80,
+    )
+
+    distances = _pipeline._section_distance_matrix(paths, crops, config)
+
+    assert len(shape_calls) == len(paths)
+    assert len(cavity_calls) == len(paths)
+    assert len(set(shape_calls)) == len(paths)
+    assert len(set(cavity_calls)) == len(paths)
+    assert np.array_equal(distances, distances.T)
+    assert np.array_equal(np.diag(distances), np.zeros(len(paths)))
+
+
 def test_registration_reuses_exact_rigid_pair_cache(
     tmp_path: Path, monkeypatch
 ) -> None:
