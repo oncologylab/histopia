@@ -105,6 +105,8 @@ The primary **Project workflow** tab supports:
 - direct semantic execution from the approved registration workspace
 - local semantic, blend, K-sensitivity, and topology review followed by
   semantic approval bound to the exact current registration result and seal
+- one integrity audit for the registration seal, any started semantic run,
+  cross-workflow binding, and scientific review state
 
 The extension writes runtime-only configs and an exact slide-selection
 manifest under `<workspace>/.histopia`. **Open registration QC** generates the
@@ -123,6 +125,11 @@ Reusing a workspace with a changed project selection prunes the current mask
 manifest to the selected cohort. Downstream order and alignment artifacts from
 an earlier run are not offered for review, approval, or semantic analysis
 unless their exact slide cohort matches the current staged workflow.
+**Audit integrity** requires the current project selection to match the
+registration cohort, then writes a path-free report to
+`<workspace>/.histopia/workflow-audit.json`. An internally valid but unapproved
+stage is reported as a scientific review gate. Missing artifacts, malformed
+approvals, stale semantic bindings, and checksum defects fail the action.
 
 The generated JSON/TOML contracts can also be validated without loading
 OpenCV, libvips, PyTorch, or other workflow dependencies:
@@ -179,7 +186,9 @@ The project workflow is deliberately staged:
    batch diagnostics, and adjacent-section topology.
 8. Enter review metadata and choose **Approve semantic**. Approval revalidates
    the complete semantic artifact seal and records the exact fingerprint.
-9. Export the approved atlas and import its regions into matching open slides.
+9. Choose **Audit integrity** to verify the registration seal, semantic
+   binding, and review state together.
+10. Export the approved atlas and import its regions into matching open slides.
 
 The same button is used for each computational stage because preprocessing and
 pairwise-distance caches make unchanged work resumable. Review-required stages

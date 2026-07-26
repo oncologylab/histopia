@@ -42,8 +42,9 @@ pip install "histopia[registration-repro,uni2h-repro,qupath] @ git+https://githu
   correction, automatic K evaluation, and cross-section topology.
 - **Visualization:** interactive 3D histology/semantic stacks with quantitative
   QC and adjacent-section correspondence links.
-- **QuPath:** extension-launched registration and semantic jobs, compact
-  checksummed GeoJSON regions, dynamic K selection, and native WSI coordinates.
+- **QuPath:** extension-launched registration and semantic jobs, fail-closed
+  workflow integrity audits, compact checksummed GeoJSON regions, dynamic K
+  selection, and native WSI coordinates.
   Install the [QuPath 0.7 extension release](https://github.com/oncologylab/qupath-extension-histopia/releases/latest).
 
 Start with [registration](docs/registration.md),
