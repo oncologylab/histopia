@@ -304,6 +304,22 @@ Mask scoring also reuses each canonical morphology metric set, and group
 consensus reuses target-specific peer translations across its broad, direct,
 and adjacent support radii.
 
+Group refinement additionally reuses independent candidate metrics,
+target-specific dominant-object centroids, and candidate-independent
+augmentation geometry. On a representative 20-slide stack, these
+exact-output changes reduced the four-worker group phase from 9.57 to 7.70
+seconds (19.6%). Complete group-refined results matched the validated
+pre-change cache for all 182 slides across nine real cohorts.
+
+Mask artifact rendering prepares image-only background and tissue colors once
+per slide and computes the same four-connected boundary with direct array
+operations. For 420 PNG artifacts from a 20-slide stack, sequential rendering
+fell from 69.83 to 51.17 seconds and four-worker rendering fell from 18.84 to
+13.44 seconds. Eight workers reached 7.73 seconds, while isolated peak RSS
+rose from 568 MiB with one worker to 778 MiB with four and 1.01 GiB with
+eight. Every generated PNG remained byte-identical to the baseline, including
+all candidate masks and overlays.
+
 Set `qc_workers` above one to render independent pair-crop, registered-view,
 non-rigid, and primary-review bundles concurrently. Bundle filenames, pixels,
 checksums, cache manifests, registration results, and approval fingerprints are

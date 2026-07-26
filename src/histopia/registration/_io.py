@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-from scipy import ndimage as ndi
 
 from histopia.registration._errors import OptionalDependencyError
 from histopia.registration._slides import load_slide_thumbnail
+
+
+@dataclass(slots=True)
+class _MaskOverlayContext:
+    """Image colors shared by every mask overlay for one slide."""
+
+    background_rgb: np.ndarray
+    tissue_rgb: np.ndarray
 
 
 def load_thumbnail(path: Path | str, max_dim_px: int) -> np.ndarray:
@@ -34,21 +42,54 @@ def save_rgb(path: Path | str, image: np.ndarray) -> None:
     Image.fromarray(arr).save(path)
 
 
-def overlay_mask(image: np.ndarray, mask: np.ndarray) -> np.ndarray:
+def overlay_mask(
+    image: np.ndarray,
+    mask: np.ndarray,
+    *,
+    context: _MaskOverlayContext | None = None,
+) -> np.ndarray:
     """Return a high-contrast tissue overlay with an unambiguous boundary."""
 
-    source = _as_uint8_rgb(image)
+    resolved = context or _prepare_mask_overlay(image)
     mask_bool = np.asarray(mask, dtype=bool)
-    luminance = np.mean(source, axis=2, keepdims=True)
-    rgb = np.repeat(luminance, 3, axis=2)
-    rgb = np.clip(0.65 * rgb + 70, 0, 255).astype(np.uint8)
-    rgb[mask_bool] = source[mask_bool]
-    rgb[mask_bool, 0] = np.maximum(rgb[mask_bool, 0], 220)
-    rgb[mask_bool, 1] = (0.65 * rgb[mask_bool, 1]).astype(np.uint8)
-    rgb[mask_bool, 2] = (0.65 * rgb[mask_bool, 2]).astype(np.uint8)
-    boundary = mask_bool & ~ndi.binary_erosion(mask_bool)
-    rgb[boundary] = np.array([0, 210, 230], dtype=np.uint8)
+    if mask_bool.shape != resolved.background_rgb.shape[:2]:
+        raise ValueError("mask and overlay image shapes must match")
+    rgb = resolved.background_rgb.copy()
+    rgb[mask_bool] = resolved.tissue_rgb[mask_bool]
+    rgb[_mask_boundary(mask_bool)] = np.array([0, 210, 230], dtype=np.uint8)
     return rgb
+
+
+def _prepare_mask_overlay(image: np.ndarray) -> _MaskOverlayContext:
+    """Prepare image-only colors reused across candidate mask overlays."""
+
+    source = _as_uint8_rgb(image)
+    luminance = np.mean(source, axis=2, keepdims=True)
+    background = np.repeat(luminance, 3, axis=2)
+    background = np.clip(0.65 * background + 70, 0, 255).astype(np.uint8)
+    tissue = source.copy()
+    tissue[:, :, 0] = np.maximum(tissue[:, :, 0], 220)
+    tissue[:, :, 1] = (0.65 * tissue[:, :, 1]).astype(np.uint8)
+    tissue[:, :, 2] = (0.65 * tissue[:, :, 2]).astype(np.uint8)
+    return _MaskOverlayContext(background_rgb=background, tissue_rgb=tissue)
+
+
+def _mask_boundary(mask: np.ndarray) -> np.ndarray:
+    """Return the exact four-connected, one-pixel inner mask boundary."""
+
+    mask_bool = np.asarray(mask, dtype=bool)
+    if mask_bool.ndim != 2:
+        raise ValueError("mask must be two-dimensional")
+    interior = np.zeros_like(mask_bool)
+    if mask_bool.shape[0] >= 3 and mask_bool.shape[1] >= 3:
+        interior[1:-1, 1:-1] = (
+            mask_bool[1:-1, 1:-1]
+            & mask_bool[:-2, 1:-1]
+            & mask_bool[2:, 1:-1]
+            & mask_bool[1:-1, :-2]
+            & mask_bool[1:-1, 2:]
+        )
+    return mask_bool & ~interior
 
 
 def warp_rgb_thumbnail(

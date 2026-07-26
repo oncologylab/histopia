@@ -169,6 +169,38 @@ def test_group_augmentation_only_adds_nearby_or_substantial_tissue() -> None:
     assert not augmented[155:175, 220:245].any()
 
 
+def test_precomputed_group_augmentation_context_matches_direct_path() -> None:
+    shape = (200, 300)
+    trusted = np.zeros(shape, dtype=bool)
+    trusted[70:150, 70:170] = True
+    candidate = trusted.copy()
+    candidate[65:155, 65:180] = True
+    candidate[155:175, 220:245] = True
+    peer_support = np.ones((256, 256), dtype=float)
+    context = masking._group_augmentation_context(
+        trusted,
+        peer_support,
+        candidate.shape,
+        small_fragment_support=0.30,
+    )
+
+    direct = _augment_with_group_components(
+        candidate,
+        trusted,
+        peer_support,
+        (256, 256),
+    )
+    precomputed = _augment_with_group_components(
+        candidate,
+        trusted,
+        peer_support,
+        (256, 256),
+        context=context,
+    )
+
+    assert np.array_equal(precomputed, direct)
+
+
 def test_group_augmentation_keeps_large_disconnected_tissue_without_support() -> None:
     trusted = np.zeros((200, 300), dtype=bool)
     trusted[70:150, 50:150] = True
@@ -1517,6 +1549,91 @@ def test_mask_score_computes_morphology_metrics_once(monkeypatch) -> None:
     assert calls == 1
 
 
+def test_group_ranking_reuses_independent_candidate_metrics(monkeypatch) -> None:
+    tissue = np.zeros((100, 120), dtype=bool)
+    tissue[25:80, 30:95] = True
+    metrics = _mask_metrics(tissue)
+    result = TissueMaskResult(
+        mask=tissue,
+        method="initial",
+        metrics=dict(metrics),
+        accepted=True,
+        warnings=[],
+        candidate_metrics={
+            "object_aware_fusion": dict(metrics),
+            "background_corrected": dict(metrics),
+        },
+        candidate_warnings={
+            "object_aware_fusion": [],
+            "background_corrected": [],
+        },
+        candidate_masks={
+            "object_aware_fusion": tissue,
+            "background_corrected": tissue,
+        },
+    )
+
+    def unexpected_metrics(mask: np.ndarray) -> dict[str, float]:
+        raise AssertionError("independent candidate metrics must be reused")
+
+    monkeypatch.setattr(masking, "_mask_metrics", unexpected_metrics)
+
+    selected = masking._select_group_supported_candidate(
+        result,
+        np.ones((256, 256), dtype=float),
+        (256, 256),
+        physical_pixel_area=None,
+        expected_physical_area=None,
+    )
+
+    assert selected.metrics == metrics
+    assert selected.metrics is not result.candidate_metrics["object_aware_fusion"]
+
+
+def test_group_ranking_prepares_one_shared_augmentation_context(monkeypatch) -> None:
+    tissue = np.zeros((100, 120), dtype=bool)
+    tissue[25:80, 30:95] = True
+    expanded = ndi.binary_dilation(tissue, iterations=3)
+    metrics = _mask_metrics(tissue)
+    result = TissueMaskResult(
+        mask=tissue,
+        method="object_aware_fusion",
+        metrics=dict(metrics),
+        accepted=True,
+        warnings=[],
+        candidate_metrics={"object_aware_fusion": dict(metrics)},
+        candidate_warnings={
+            "object_aware_fusion": [],
+            "group_density_union": [],
+            "group_pale_tissue": [],
+        },
+        candidate_masks={
+            "object_aware_fusion": tissue,
+            "group_density_union": expanded,
+            "group_pale_tissue": expanded,
+        },
+    )
+    original = masking._group_augmentation_context
+    calls = 0
+
+    def count_context(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(masking, "_group_augmentation_context", count_context)
+
+    masking._select_group_supported_candidate(
+        result,
+        np.ones((256, 256), dtype=float),
+        (256, 256),
+        physical_pixel_area=None,
+        expected_physical_area=None,
+    )
+
+    assert calls == 1
+
+
 def test_reused_peer_alignment_matches_independent_support_maps() -> None:
     target = np.zeros((80, 100), dtype=bool)
     target[25:65, 35:80] = True
@@ -1558,3 +1675,22 @@ def test_reused_peer_alignment_matches_independent_support_maps() -> None:
             dilation_iterations=5,
         ),
     )
+
+
+def test_group_peer_alignment_computes_target_centroid_once(monkeypatch) -> None:
+    target = np.zeros((80, 100), dtype=bool)
+    target[25:65, 35:80] = True
+    peers = [np.roll(target, shift, axis=1) for shift in (-5, 3, 7)]
+    original = masking._dominant_component_centroid
+    calls = 0
+
+    def count_centroid(mask: np.ndarray) -> np.ndarray:
+        nonlocal calls
+        calls += 1
+        return original(mask)
+
+    monkeypatch.setattr(masking, "_dominant_component_centroid", count_centroid)
+
+    _align_group_peer_masks(peers, target, align_translations=True)
+
+    assert calls == len(peers) + 1

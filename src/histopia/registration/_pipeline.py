@@ -21,6 +21,8 @@ from histopia.compute import configure_vips_threads
 from histopia.registration._config import RegistrationConfig
 from histopia.registration._errors import RegistrationApprovalRequired
 from histopia.registration._io import (
+    _MaskOverlayContext,
+    _prepare_mask_overlay,
     blend_rgb,
     checkerboard_rgb,
     overlay_mask,
@@ -388,6 +390,7 @@ def _register_sections(
                 config.output_dir,
             )
             if not current:
+                overlay_context = _prepare_mask_overlay(image)
                 save_rgb(processed_dir / f"{path.stem}.thumbnail.png", image)
                 save_rgb(
                     processed_dir / f"{path.stem}.mask.png",
@@ -395,13 +398,18 @@ def _register_sections(
                 )
                 save_rgb(
                     qc_dir / f"{path.stem}.mask_overlay.png",
-                    overlay_mask(image, mask.mask),
+                    overlay_mask(
+                        image,
+                        mask.mask,
+                        context=overlay_context,
+                    ),
                 )
                 _write_candidate_mask_overlays(
                     mask_candidate_dir,
                     path,
                     image,
                     mask,
+                    overlay_context=overlay_context,
                 )
             return path, artifact_fingerprint, artifact_paths, not current
 
@@ -1784,17 +1792,24 @@ def _write_candidate_mask_overlays(
     path: Path,
     image: np.ndarray,
     mask: TissueMaskResult,
+    *,
+    overlay_context: _MaskOverlayContext | None = None,
 ) -> None:
     from PIL import Image
 
     output_dir.mkdir(parents=True, exist_ok=True)
+    resolved_context = overlay_context or _prepare_mask_overlay(image)
     for method, candidate in mask.candidate_masks.items():
         Image.fromarray(candidate.astype(np.uint8) * 255).save(
             output_dir / f"{path.stem}.{method}.mask.png"
         )
         save_rgb(
             output_dir / f"{path.stem}.{method}.png",
-            overlay_mask(image, candidate),
+            overlay_mask(
+                image,
+                candidate,
+                context=resolved_context,
+            ),
         )
 
 

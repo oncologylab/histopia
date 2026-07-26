@@ -51,6 +51,17 @@ class _BrightfieldFeatures:
     value: np.ndarray
 
 
+@dataclass(slots=True)
+class _GroupAugmentationContext:
+    """Candidate-independent geometry for one group augmentation pass."""
+
+    trusted_neighborhood: np.ndarray
+    largest_trusted: int
+    minimum_component_area: int
+    distance_to_trusted: np.ndarray
+    strongly_supported_native: np.ndarray
+
+
 def create_tissue_mask(
     image: np.ndarray,
     config: BrightfieldMaskConfig | None = None,
@@ -743,7 +754,16 @@ def _align_group_peer_masks(
 
     if not align_translations:
         return peer_masks
-    return [_align_peer_mask_translation(peer, target_mask) for peer in peer_masks]
+    target = np.asarray(target_mask, dtype=bool)
+    target_center = _dominant_component_centroid(target) if target.any() else None
+    return [
+        _align_peer_mask_translation(
+            peer,
+            target,
+            target_center=target_center,
+        )
+        for peer in peer_masks
+    ]
 
 
 def _dilated_group_support(
@@ -789,6 +809,8 @@ def _brightfield_component_evidence(
 def _align_peer_mask_translation(
     peer_mask: np.ndarray,
     target_mask: np.ndarray,
+    *,
+    target_center: np.ndarray | None = None,
 ) -> np.ndarray:
     """Translate a peer only when dominant-object alignment improves overlap."""
 
@@ -797,8 +819,10 @@ def _align_peer_mask_translation(
     if not peer.any() or not target.any() or peer.shape != target.shape:
         return peer
     peer_center = _dominant_component_centroid(peer)
-    target_center = _dominant_component_centroid(target)
-    shift = np.rint(target_center - peer_center).astype(int)
+    resolved_target_center = (
+        _dominant_component_centroid(target) if target_center is None else target_center
+    )
+    shift = np.rint(resolved_target_center - peer_center).astype(int)
     if np.max(np.abs(shift)) > max(peer.shape) * 0.40:
         return peer
     aligned = ndi.shift(
@@ -1191,16 +1215,25 @@ def _select_group_supported_candidate(
     }
     default_config = BrightfieldMaskConfig()
     candidates: list[tuple[str, np.ndarray, dict[str, float] | None]] = []
+    augmentation_context: _GroupAugmentationContext | None = None
     for method, candidate in result.candidate_masks.items():
         if method not in allowed_methods or not candidate.any():
             continue
         metrics = None
         if method in {"group_density_union", "group_pale_tissue"}:
+            if augmentation_context is None:
+                augmentation_context = _group_augmentation_context(
+                    result.mask,
+                    peer_support,
+                    candidate.shape,
+                    small_fragment_support=0.30,
+                )
             candidate = _augment_with_group_components(
                 candidate,
                 result.mask,
                 peer_support,
                 normalized_shape,
+                context=augmentation_context,
             )
             if not candidate.any():
                 continue
@@ -1209,6 +1242,8 @@ def _select_group_supported_candidate(
                 continue
         elif result.candidate_warnings.get(method, []):
             continue
+        elif method in result.candidate_metrics:
+            metrics = dict(result.candidate_metrics[method])
         candidates.append((method, candidate, metrics))
     if not candidates:
         return result
@@ -1389,38 +1424,42 @@ def _augment_with_group_components(
     minimum_support: float = 0.12,
     small_fragment_support: float = 0.30,
     small_fragments_only: bool = False,
+    context: _GroupAugmentationContext | None = None,
 ) -> np.ndarray:
     labels, count = ndi.label(candidate)
     if count == 0:
         return trusted
     augmented = trusted.copy()
-    trusted_neighborhood = ndi.binary_dilation(trusted, iterations=12)
-    trusted_labels, trusted_count = ndi.label(trusted)
-    trusted_sizes = np.bincount(trusted_labels.ravel())
-    largest_trusted = int(np.max(trusted_sizes[1:])) if trusted_count else 64
-    minimum_component_area = max(64, int(largest_trusted * 0.015))
-    distance_to_trusted = ndi.distance_transform_edt(~trusted)
+    resolved_context = context or _group_augmentation_context(
+        trusted,
+        peer_support,
+        candidate.shape,
+        small_fragment_support=small_fragment_support,
+    )
+    trusted_neighborhood = resolved_context.trusted_neighborhood
+    largest_trusted = resolved_context.largest_trusted
+    minimum_component_area = resolved_context.minimum_component_area
+    distance_to_trusted = resolved_context.distance_to_trusted
+    strongly_supported_native = resolved_context.strongly_supported_native
     maximum_fragment_gap = (0.15 if small_fragments_only else 0.08) * float(
         np.hypot(*candidate.shape)
     )
-    strongly_supported_native = _resize_binary(
-        peer_support >= small_fragment_support,
-        candidate.shape,
-    )
+    component_sizes = np.bincount(labels.ravel(), minlength=count + 1)
     for label in range(1, count + 1):
         component = labels == label
         if np.any(component & trusted):
             augmented |= component & trusted_neighborhood
             augmented |= component & strongly_supported_native
             continue
-        if np.count_nonzero(component) < minimum_component_area:
+        component_area = int(component_sizes[label])
+        if component_area < minimum_component_area:
             continue
         rows, cols = np.nonzero(component)
         row_span = rows.max() - rows.min() + 1
         col_span = cols.max() - cols.min() + 1
         long_axis = max(row_span / candidate.shape[0], col_span / candidate.shape[1])
         short_axis = min(row_span / candidate.shape[0], col_span / candidate.shape[1])
-        bbox_fill = np.count_nonzero(component) / max(row_span * col_span, 1)
+        bbox_fill = component_area / max(row_span * col_span, 1)
         near_border = (
             rows.min() < candidate.shape[0] * 0.03
             or rows.max() >= candidate.shape[0] * 0.97
@@ -1433,7 +1472,6 @@ def _augment_with_group_components(
             continue
         if near_border and long_axis > 0.25 and short_axis < 0.15:
             continue
-        component_area = np.count_nonzero(component)
         fragment_ratio_limit = 0.20 if small_fragments_only else 0.10
         if (
             small_fragments_only
@@ -1464,6 +1502,31 @@ def _augment_with_group_components(
         ) or native_continuation:
             augmented |= component
     return augmented
+
+
+def _group_augmentation_context(
+    trusted: np.ndarray,
+    peer_support: np.ndarray,
+    candidate_shape: tuple[int, int],
+    *,
+    small_fragment_support: float,
+) -> _GroupAugmentationContext:
+    """Prepare geometry shared by candidates with the same trusted mask."""
+
+    trusted_neighborhood = ndi.binary_dilation(trusted, iterations=12)
+    trusted_labels, trusted_count = ndi.label(trusted)
+    trusted_sizes = np.bincount(trusted_labels.ravel())
+    largest_trusted = int(np.max(trusted_sizes[1:])) if trusted_count else 64
+    return _GroupAugmentationContext(
+        trusted_neighborhood=trusted_neighborhood,
+        largest_trusted=largest_trusted,
+        minimum_component_area=max(64, int(largest_trusted * 0.015)),
+        distance_to_trusted=ndi.distance_transform_edt(~trusted),
+        strongly_supported_native=_resize_binary(
+            peer_support >= small_fragment_support,
+            candidate_shape,
+        ),
+    )
 
 
 def _group_density_union_candidate(
