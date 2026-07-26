@@ -286,22 +286,23 @@ Independent group-cache entries are compressed, loaded, and verified through
 the same ordered worker pool.
 Worker count does not change mask pixels, review JSON, or rendered artifact
 bytes. Each worker holds several thumbnail-sized arrays, so `1` remains the
-memory-conservative default; benchmark `2` or `4` before increasing it. On a
-24-slide, 1200-pixel cold-mask run, four workers reduced mask preparation from
-407.43 seconds to 112.64 seconds (3.62x) at 1.10 GB peak RSS; all 504 artifacts
-and the mask review were byte-identical. Eight workers completed in 63.22
-seconds at 1.62 GB, while 16 workers required 48.87 seconds at 2.55 GB. Eight
-is therefore the measured high-throughput setting for this 24-slide workload;
-16 provided only another 1.29x speedup for 57% more peak memory. An exact warm
-rerun took 2.33 seconds.
+memory-conservative default; `4` is a balanced server setting and `8` should
+be treated as a high-throughput ceiling until the target host is benchmarked.
+On a 20-slide, 1200-pixel cold independent-mask benchmark on a 32-vCPU AMD EPYC
+host, one, two, four, eight, and 16 workers took 48.39, 25.00, 13.59, 8.21, and
+8.27 seconds, with peak RSS of 0.54, 0.66, 0.83, 1.19, and 2.02 GB. Sixteen
+workers therefore doubled peak memory without improving elapsed time.
 
-Mask scoring reuses each canonical morphology metric set, and group consensus
-reuses target-specific peer translations across its broad, direct, and
-adjacent support radii. On a 17-slide, 1200-pixel real cohort with four
-workers, these exact-output changes reduced independent mask generation from
-25.63 to 22.26 seconds and group refinement from 7.67 to 5.92 seconds.
-Complete result digests were identical. Two additional 22- and 23-slide
-cohorts also retained exact group-result digests.
+Candidate-independent brightness, optical-density, saturation, background, and
+blank-glass maps are computed once per slide. Connected-component filters use
+label bounds instead of repeatedly scanning full label images. On the same
+four-worker workload these exact-output changes reduced independent candidate
+generation from 43.68 to 13.38 seconds (69.4%). Complete result digests,
+including every candidate mask and QC field, remained identical across 140
+real slides from seven cohorts, so the scientific cache schema did not change.
+Mask scoring also reuses each canonical morphology metric set, and group
+consensus reuses target-specific peer translations across its broad, direct,
+and adjacent support radii.
 
 Set `qc_workers` above one to render independent pair-crop, registered-view,
 non-rigid, and primary-review bundles concurrently. Bundle filenames, pixels,

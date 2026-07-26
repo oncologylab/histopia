@@ -24,6 +24,7 @@ from histopia.registration._masking import (
     _fill_small_holes,
     _group_density_union_candidate,
     _has_unrepresented_group_component,
+    _large_blank_region_mask,
     _mask_metrics,
     _mask_score,
     _mask_score_from_metrics,
@@ -1254,6 +1255,123 @@ def test_large_blank_region_is_carved_from_tissue_mask() -> None:
 
     assert carved[60:140, 50:130].mean() > 0.8
     assert carved[60:140, 175:215].mean() < 0.1
+
+
+def test_precomputed_blank_regions_match_direct_carving() -> None:
+    image = np.ones((200, 260, 3), dtype=np.float32)
+    image[35:165, 30:150] = [0.75, 0.45, 0.40]
+    image[35:165:4, 30:150:4] = [0.35, 0.15, 0.12]
+    mask = np.zeros((200, 260), dtype=bool)
+    mask[30:170, 25:225] = True
+
+    blank_regions = _large_blank_region_mask(image)
+    direct = _carve_large_blank_regions(image, mask)
+    precomputed = _carve_large_blank_regions(
+        image,
+        mask,
+        blank_regions=blank_regions,
+    )
+
+    assert np.array_equal(precomputed, direct)
+
+
+def test_shared_brightfield_features_preserve_candidate_outputs() -> None:
+    image = np.full((120, 160, 3), 255, dtype=np.uint8)
+    image[25:100, 30:135] = [228, 186, 168]
+    image[35:95:4, 40:125:5] = [155, 95, 88]
+    rgb = masking._as_rgb_float(image)
+    features = masking._brightfield_features(rgb)
+    candidate_functions = (
+        masking._hysteresis_tissue_candidate,
+        masking._background_corrected_candidate,
+        masking._edge_texture_candidate,
+        masking._od_candidate,
+        masking._saturation_value_candidate,
+        masking._adaptive_brightness_candidate,
+    )
+
+    for candidate_function in candidate_functions:
+        direct = candidate_function(rgb)
+        shared = candidate_function(rgb, features=features)
+        assert np.array_equal(shared, direct)
+
+    raw_candidates = {
+        str(index): candidate_function(rgb)
+        for index, candidate_function in enumerate(candidate_functions)
+    }
+    evidence = np.sum(
+        np.stack(tuple(raw_candidates.values())),
+        axis=0,
+        dtype=np.uint8,
+    )
+    optical_density = features.optical_density
+    config = BrightfieldMaskConfig()
+
+    assert np.array_equal(
+        _pale_tissue_candidate(rgb, evidence, optical_density, config),
+        _pale_tissue_candidate(
+            rgb,
+            evidence,
+            optical_density,
+            config,
+            features=features,
+        ),
+    )
+    assert np.array_equal(
+        masking._object_aware_fusion(rgb, raw_candidates, config),
+        masking._object_aware_fusion(
+            rgb,
+            raw_candidates,
+            config,
+            features=features,
+        ),
+    )
+    assert np.array_equal(
+        _large_blank_region_mask(rgb),
+        _large_blank_region_mask(rgb, features=features),
+    )
+
+
+def test_create_tissue_mask_computes_blank_regions_once(monkeypatch) -> None:
+    image = np.full((100, 120, 3), 255, dtype=np.uint8)
+    image[25:80, 35:95] = [238, 223, 204]
+    original = masking._large_blank_region_mask
+    calls = 0
+
+    def count_blank_regions(
+        rgb: np.ndarray,
+        *,
+        features: masking._BrightfieldFeatures | None = None,
+    ) -> np.ndarray:
+        nonlocal calls
+        calls += 1
+        return original(rgb, features=features)
+
+    monkeypatch.setattr(masking, "_large_blank_region_mask", count_blank_regions)
+
+    create_tissue_mask(image)
+
+    assert calls == 1
+
+
+def test_create_tissue_mask_skips_blank_region_map_for_blank_slide(
+    monkeypatch,
+) -> None:
+    image = np.full((64, 64, 3), 255, dtype=np.uint8)
+
+    def unexpected_blank_regions(*args, **kwargs) -> np.ndarray:
+        raise AssertionError("blank slides must not compute a blank-region map")
+
+    monkeypatch.setattr(
+        masking,
+        "_large_blank_region_mask",
+        unexpected_blank_regions,
+    )
+
+    result = create_tissue_mask(image)
+
+    assert not result.accepted
+    assert not result.mask.any()
 
 
 def test_small_attached_blank_artifact_is_carved_from_tissue_mask() -> None:

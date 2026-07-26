@@ -39,6 +39,18 @@ class TissueMaskResult:
         }
 
 
+@dataclass(slots=True)
+class _BrightfieldFeatures:
+    """Reusable image-level signals shared by mask candidates."""
+
+    brightness: np.ndarray
+    background_rgb: np.ndarray
+    color_delta: np.ndarray
+    optical_density: np.ndarray
+    saturation: np.ndarray
+    value: np.ndarray
+
+
 def create_tissue_mask(
     image: np.ndarray,
     config: BrightfieldMaskConfig | None = None,
@@ -59,16 +71,23 @@ def create_tissue_mask(
             warnings=["full mask requested explicitly"],
         )
 
+    features = _brightfield_features(rgb)
     raw_candidates = {
-        "hysteresis_tissue": _hysteresis_tissue_candidate(rgb),
-        "background_corrected": _background_corrected_candidate(rgb),
-        "edge_texture": _edge_texture_candidate(rgb),
-        "optical_density": _od_candidate(rgb),
-        "saturation_value": _saturation_value_candidate(rgb),
-        "adaptive_brightness": _adaptive_brightness_candidate(rgb),
+        "hysteresis_tissue": _hysteresis_tissue_candidate(rgb, features=features),
+        "background_corrected": _background_corrected_candidate(
+            rgb,
+            features=features,
+        ),
+        "edge_texture": _edge_texture_candidate(rgb, features=features),
+        "optical_density": _od_candidate(rgb, features=features),
+        "saturation_value": _saturation_value_candidate(rgb, features=features),
+        "adaptive_brightness": _adaptive_brightness_candidate(
+            rgb,
+            features=features,
+        ),
     }
     evidence = np.sum(np.stack(tuple(raw_candidates.values())), axis=0, dtype=np.uint8)
-    optical_density = np.mean(-np.log(np.clip(rgb, 1 / 255, 1.0)), axis=2)
+    optical_density = features.optical_density
     candidates = {
         method: _retain_tissue_objects(
             _clean_mask(mask, config), evidence, optical_density, config
@@ -85,13 +104,22 @@ def create_tissue_mask(
         evidence,
         optical_density,
         config,
+        features=features,
     )
     candidates["group_pale_tissue"] |= candidates["group_density_union"]
     candidates["object_aware_fusion"] = _object_aware_fusion(
-        rgb, raw_candidates, config
+        rgb,
+        raw_candidates,
+        config,
+        features=features,
+    )
+    blank_regions = (
+        _large_blank_region_mask(rgb, features=features)
+        if any(mask.any() for mask in candidates.values())
+        else np.zeros((height, width), dtype=bool)
     )
     candidates = {
-        method: _carve_large_blank_regions(rgb, mask)
+        method: _carve_large_blank_regions(rgb, mask, blank_regions=blank_regions)
         for method, mask in candidates.items()
     }
     candidate_metrics = {
@@ -1694,11 +1722,16 @@ def _pale_tissue_candidate(
     evidence: np.ndarray,
     optical_density: np.ndarray,
     config: BrightfieldMaskConfig,
+    *,
+    features: _BrightfieldFeatures | None = None,
 ) -> np.ndarray:
     """Propose low-contrast tissue only for group-gated recovery."""
 
-    background = _estimate_background_rgb(rgb)
-    color_delta = np.linalg.norm(rgb - background, axis=2)
+    color_delta = (
+        np.linalg.norm(rgb - _estimate_background_rgb(rgb), axis=2)
+        if features is None
+        else features.color_delta
+    )
     candidate = _clean_mask(_remove_scanner_edges(color_delta > 0.025), config)
     # Do not rank disconnected pieces here. The group augmentation step has
     # adjacent-section support that can distinguish pale tissue from debris.
@@ -1726,12 +1759,14 @@ def _fill_small_holes(mask: np.ndarray, *, max_area: int) -> np.ndarray:
     return mask | fill[background_labels]
 
 
-def _carve_large_blank_regions(rgb: np.ndarray, mask: np.ndarray) -> np.ndarray:
-    """Remove large low-texture glass regions absorbed into a tissue mask."""
+def _large_blank_region_mask(
+    rgb: np.ndarray,
+    *,
+    features: _BrightfieldFeatures | None = None,
+) -> np.ndarray:
+    """Return candidate-independent low-texture glass regions."""
 
-    if not mask.any():
-        return mask
-    brightness = np.mean(rgb, axis=2)
+    brightness = np.mean(rgb, axis=2) if features is None else features.brightness
     local_mean = ndi.uniform_filter(brightness, size=15, mode="nearest")
     local_square_mean = ndi.uniform_filter(
         brightness * brightness,
@@ -1739,18 +1774,27 @@ def _carve_large_blank_regions(rgb: np.ndarray, mask: np.ndarray) -> np.ndarray:
         mode="nearest",
     )
     local_std = np.sqrt(np.maximum(local_square_mean - local_mean * local_mean, 0))
-    background = _estimate_background_rgb(rgb)
-    color_delta = np.linalg.norm(rgb - background, axis=2)
+    color_delta = (
+        np.linalg.norm(rgb - _estimate_background_rgb(rgb), axis=2)
+        if features is None
+        else features.color_delta
+    )
     low_texture = local_std < 0.025
     neutral_plate_proposal = (
         low_texture
-        & (_saturation(rgb) < 0.025)
+        & (
+            _saturation(rgb) < 0.025
+            if features is None
+            else features.saturation < 0.025
+        )
         & (brightness > 0.65)
         & (brightness < 0.96)
     )
     neutral_plate_labels, _ = ndi.label(neutral_plate_proposal)
     neutral_plate_sizes = np.bincount(neutral_plate_labels.ravel())
-    fragmented_plate_ids = np.flatnonzero(neutral_plate_sizes >= mask.size * 0.005)
+    fragmented_plate_ids = np.flatnonzero(
+        neutral_plate_sizes >= neutral_plate_labels.size * 0.005
+    )
     fragmented_plate_ids = fragmented_plate_ids[fragmented_plate_ids != 0]
     white = np.all(rgb > 0.995, axis=2)
     separating_rows = np.mean(white, axis=1) > 0.95
@@ -1761,13 +1805,13 @@ def _carve_large_blank_regions(rgb: np.ndarray, mask: np.ndarray) -> np.ndarray:
     neutral_plate = (
         np.isin(neutral_plate_labels, fragmented_plate_ids)
         if fragmented_canvas and fragmented_plate_ids.size >= 3
-        else np.zeros_like(mask, dtype=bool)
+        else np.zeros(rgb.shape[:2], dtype=bool)
     )
     labels, count = ndi.label((low_texture & (color_delta < 0.15)) | neutral_plate)
     if count == 0:
-        return mask
+        return np.zeros(rgb.shape[:2], dtype=bool)
     sizes = np.bincount(labels.ravel())
-    large = sizes >= mask.size * 0.01
+    large = sizes >= labels.size * 0.01
     large[0] = False
     blank = ndi.binary_closing(large[labels], iterations=6)
     neutral_labels = np.unique(labels[neutral_plate])
@@ -1775,6 +1819,26 @@ def _carve_large_blank_regions(rgb: np.ndarray, mask: np.ndarray) -> np.ndarray:
     if neutral_labels.size:
         neutral_blank = np.isin(labels, neutral_labels)
         blank |= ndi.binary_dilation(neutral_blank, iterations=12)
+    return blank
+
+
+def _carve_large_blank_regions(
+    rgb: np.ndarray,
+    mask: np.ndarray,
+    *,
+    blank_regions: np.ndarray | None = None,
+) -> np.ndarray:
+    """Remove large low-texture glass regions absorbed into a tissue mask."""
+
+    if not mask.any():
+        return mask
+    blank = (
+        _large_blank_region_mask(rgb)
+        if blank_regions is None
+        else np.asarray(blank_regions, dtype=bool)
+    )
+    if blank.shape != mask.shape:
+        raise ValueError("blank_regions must match the tissue mask shape")
     removed = mask & blank
     if np.count_nonzero(removed) < np.count_nonzero(mask) * 0.005:
         return mask
@@ -1806,6 +1870,8 @@ def _object_aware_fusion(
     rgb: np.ndarray,
     candidates: dict[str, np.ndarray],
     config: BrightfieldMaskConfig,
+    *,
+    features: _BrightfieldFeatures | None = None,
 ) -> np.ndarray:
     """Fuse complementary evidence, then retain tissue-like objects.
 
@@ -1815,7 +1881,11 @@ def _object_aware_fusion(
     """
 
     evidence = np.sum(np.stack(tuple(candidates.values())), axis=0, dtype=np.uint8)
-    optical_density = np.mean(-np.log(np.clip(rgb, 1 / 255, 1.0)), axis=2)
+    optical_density = (
+        np.mean(-np.log(np.clip(rgb, 1 / 255, 1.0)), axis=2)
+        if features is None
+        else features.optical_density
+    )
     strong = (evidence >= 3) & (optical_density > 0.018)
     if config.close_radius_px > 0:
         strong = ndi.binary_closing(strong, iterations=config.close_radius_px)
@@ -1843,9 +1913,14 @@ def _retain_tissue_objects(
     height, width = mask.shape
     border_rows = max(1, int(height * 0.05))
     border_cols = max(1, int(width * 0.05))
-    for label in range(1, label_count + 1):
-        component = labels == label
-        rows, cols = np.nonzero(component)
+    component_bounds = ndi.find_objects(labels)
+    for label, bounds in enumerate(component_bounds, start=1):
+        if bounds is None:
+            continue
+        local_component = labels[bounds] == label
+        rows, cols = np.nonzero(local_component)
+        rows = rows + bounds[0].start
+        cols = cols + bounds[1].start
         area = rows.size
         if area < config.min_object_area_px:
             continue
@@ -1877,11 +1952,14 @@ def _retain_tissue_objects(
         return np.zeros_like(mask, dtype=bool)
     largest = int(max(sizes[label] for label in valid_labels))
     for label in valid_labels:
-        component = labels == label
+        bounds = component_bounds[label - 1]
+        if bounds is None:
+            continue
+        component = labels[bounds] == label
         area = int(sizes[label])
 
-        agreement = float(np.mean(evidence[component]))
-        density = float(np.mean(optical_density[component]))
+        agreement = float(np.mean(evidence[bounds][component]))
+        density = float(np.mean(optical_density[bounds][component]))
         strongly_supported = (
             area >= max(config.min_object_area_px, largest * 0.05)
             and agreement >= 2.75
@@ -1992,17 +2070,53 @@ def _as_rgb_float(image: np.ndarray) -> np.ndarray:
     return np.clip(arr, 0.0, 1.0)
 
 
-def _od_candidate(rgb: np.ndarray) -> np.ndarray:
-    od = -np.log(np.clip(rgb, 1 / 255, 1.0))
-    od_signal = np.mean(od, axis=2)
+def _brightfield_features(rgb: np.ndarray) -> _BrightfieldFeatures:
+    """Compute image-level signals once for all automatic mask candidates."""
+
+    brightness = np.mean(rgb, axis=2)
+    background_rgb = _estimate_background_rgb(rgb)
+    value = np.max(rgb, axis=2)
+    return _BrightfieldFeatures(
+        brightness=brightness,
+        background_rgb=background_rgb,
+        color_delta=np.linalg.norm(rgb - background_rgb, axis=2),
+        optical_density=np.mean(
+            -np.log(np.clip(rgb, 1 / 255, 1.0)),
+            axis=2,
+        ),
+        saturation=(value - np.min(rgb, axis=2)) / np.maximum(value, 1e-6),
+        value=value,
+    )
+
+
+def _od_candidate(
+    rgb: np.ndarray,
+    *,
+    features: _BrightfieldFeatures | None = None,
+) -> np.ndarray:
+    od_signal = (
+        np.mean(-np.log(np.clip(rgb, 1 / 255, 1.0)), axis=2)
+        if features is None
+        else features.optical_density
+    )
     threshold = max(_otsu_threshold(od_signal), 0.035)
     return od_signal > threshold
 
 
-def _background_corrected_candidate(rgb: np.ndarray) -> np.ndarray:
-    background_rgb = _estimate_background_rgb(rgb)
-    color_delta = np.linalg.norm(rgb - background_rgb, axis=2)
-    brightness = np.mean(rgb, axis=2)
+def _background_corrected_candidate(
+    rgb: np.ndarray,
+    *,
+    features: _BrightfieldFeatures | None = None,
+) -> np.ndarray:
+    background_rgb = (
+        _estimate_background_rgb(rgb) if features is None else features.background_rgb
+    )
+    color_delta = (
+        np.linalg.norm(rgb - background_rgb, axis=2)
+        if features is None
+        else features.color_delta
+    )
+    brightness = np.mean(rgb, axis=2) if features is None else features.brightness
     background_brightness = float(np.mean(background_rgb))
     dark_delta = background_brightness - brightness
 
@@ -2016,7 +2130,7 @@ def _background_corrected_candidate(rgb: np.ndarray) -> np.ndarray:
         float(np.percentile(border_dark_delta, 99.5)) + 0.015,
         0.035,
     )
-    saturation = _saturation(rgb)
+    saturation = _saturation(rgb) if features is None else features.saturation
     candidate = (
         (color_delta > color_threshold)
         | (dark_delta > dark_threshold)
@@ -2025,13 +2139,27 @@ def _background_corrected_candidate(rgb: np.ndarray) -> np.ndarray:
     return candidate & (brightness < 0.985)
 
 
-def _hysteresis_tissue_candidate(rgb: np.ndarray) -> np.ndarray:
+def _hysteresis_tissue_candidate(
+    rgb: np.ndarray,
+    *,
+    features: _BrightfieldFeatures | None = None,
+) -> np.ndarray:
     """Grow pale tissue from stain-rich or textured tissue seeds."""
 
-    background_rgb = _estimate_background_rgb(rgb)
-    color_delta = np.linalg.norm(rgb - background_rgb, axis=2)
-    brightness = np.mean(rgb, axis=2)
-    optical_density = np.mean(-np.log(np.clip(rgb, 1 / 255, 1.0)), axis=2)
+    background_rgb = (
+        _estimate_background_rgb(rgb) if features is None else features.background_rgb
+    )
+    color_delta = (
+        np.linalg.norm(rgb - background_rgb, axis=2)
+        if features is None
+        else features.color_delta
+    )
+    brightness = np.mean(rgb, axis=2) if features is None else features.brightness
+    optical_density = (
+        np.mean(-np.log(np.clip(rgb, 1 / 255, 1.0)), axis=2)
+        if features is None
+        else features.optical_density
+    )
     gradient = np.hypot(
         ndi.sobel(brightness, axis=0),
         ndi.sobel(brightness, axis=1),
@@ -2050,17 +2178,26 @@ def _hysteresis_tissue_candidate(rgb: np.ndarray) -> np.ndarray:
     return ndi.binary_propagation(seeds, mask=weak | seeds)
 
 
-def _saturation_value_candidate(rgb: np.ndarray) -> np.ndarray:
-    max_channel = np.max(rgb, axis=2)
-    min_channel = np.min(rgb, axis=2)
-    chroma = max_channel - min_channel
-    saturation = chroma / np.maximum(max_channel, 1e-6)
-    value = max_channel
+def _saturation_value_candidate(
+    rgb: np.ndarray,
+    *,
+    features: _BrightfieldFeatures | None = None,
+) -> np.ndarray:
+    value = np.max(rgb, axis=2) if features is None else features.value
+    saturation = (
+        (value - np.min(rgb, axis=2)) / np.maximum(value, 1e-6)
+        if features is None
+        else features.saturation
+    )
     return ((saturation > 0.035) | (value < 0.90)) & (value < 0.985)
 
 
-def _adaptive_brightness_candidate(rgb: np.ndarray) -> np.ndarray:
-    brightness = np.mean(rgb, axis=2)
+def _adaptive_brightness_candidate(
+    rgb: np.ndarray,
+    *,
+    features: _BrightfieldFeatures | None = None,
+) -> np.ndarray:
+    brightness = np.mean(rgb, axis=2) if features is None else features.brightness
     inverted = 1.0 - brightness
     window = max(15, int(min(rgb.shape[:2]) / 16))
     local_mean = ndi.uniform_filter(inverted, size=window, mode="nearest")
@@ -2070,8 +2207,12 @@ def _adaptive_brightness_candidate(rgb: np.ndarray) -> np.ndarray:
     return (inverted > threshold) & (brightness < 0.985)
 
 
-def _edge_texture_candidate(rgb: np.ndarray) -> np.ndarray:
-    brightness = np.mean(rgb, axis=2)
+def _edge_texture_candidate(
+    rgb: np.ndarray,
+    *,
+    features: _BrightfieldFeatures | None = None,
+) -> np.ndarray:
+    brightness = np.mean(rgb, axis=2) if features is None else features.brightness
     gradient = np.hypot(
         ndi.sobel(brightness, axis=0),
         ndi.sobel(brightness, axis=1),
@@ -2137,27 +2278,31 @@ def _remove_long_thin_components(
         return mask
     keep = np.ones(label_count + 1, dtype=bool)
     keep[0] = False
-    for label in range(1, label_count + 1):
-        rows, cols = np.nonzero(labels == label)
-        row_span = rows.max() - rows.min() + 1
-        col_span = cols.max() - cols.min() + 1
+    sizes = np.bincount(labels.ravel(), minlength=label_count + 1)
+    for label, bounds in enumerate(ndi.find_objects(labels), start=1):
+        if bounds is None:
+            keep[label] = False
+            continue
+        row_bounds, col_bounds = bounds
+        row_span = row_bounds.stop - row_bounds.start
+        col_span = col_bounds.stop - col_bounds.start
         bbox_area = row_span * col_span
-        fill = rows.size / max(bbox_area, 1)
+        fill = sizes[label] / max(bbox_area, 1)
         long_axis = max(row_span / mask.shape[0], col_span / mask.shape[1])
         short_axis = min(row_span / mask.shape[0], col_span / mask.shape[1])
         border_rows = max(1, int(mask.shape[0] * 0.05))
         border_cols = max(1, int(mask.shape[1] * 0.05))
         lies_near_border = (
-            rows.min() < border_rows
-            or rows.max() >= mask.shape[0] - border_rows
-            or cols.min() < border_cols
-            or cols.max() >= mask.shape[1] - border_cols
+            row_bounds.start < border_rows
+            or row_bounds.stop - 1 >= mask.shape[0] - border_rows
+            or col_bounds.start < border_cols
+            or col_bounds.stop - 1 >= mask.shape[1] - border_cols
         )
         if long_axis > 0.65 and short_axis < 0.08 and fill < 0.35:
             keep[label] = False
         if lies_near_border and long_axis > 0.65 and short_axis < 0.06:
             keep[label] = False
-        if rows.size < config.min_object_area_px:
+        if sizes[label] < config.min_object_area_px:
             keep[label] = False
     return keep[labels]
 
@@ -2184,10 +2329,13 @@ def _remove_border_dominated_components(
     keep[0] = False
     border_fraction = border_sizes / np.maximum(sizes, 1)
     keep &= border_fraction <= config.max_component_border_fraction
-    for label in range(1, label_count + 1):
-        component_rows, component_cols = np.nonzero(labels == label)
-        row_span = (component_rows.max() - component_rows.min() + 1) / mask.shape[0]
-        col_span = (component_cols.max() - component_cols.min() + 1) / mask.shape[1]
+    for label, bounds in enumerate(ndi.find_objects(labels), start=1):
+        if bounds is None:
+            keep[label] = False
+            continue
+        row_bounds, col_bounds = bounds
+        row_span = (row_bounds.stop - row_bounds.start) / mask.shape[0]
+        col_span = (col_bounds.stop - col_bounds.start) / mask.shape[1]
         is_frame_like = row_span > 0.80 and col_span > 0.80
         if (
             is_frame_like
@@ -2208,9 +2356,17 @@ def _mask_metrics(mask: np.ndarray) -> dict[str, float]:
     largest = float(component_sizes.max(initial=0))
 
     if area:
-        extent_mask = _dominant_component_mask(mask)
-        rows, cols = np.nonzero(extent_mask)
-        bbox_area = float((rows.max() - rows.min() + 1) * (cols.max() - cols.min() + 1))
+        dominant_threshold = max(1, int(np.ceil(largest * 0.01)))
+        dominant_bounds = [
+            bounds
+            for label, bounds in enumerate(ndi.find_objects(labels), start=1)
+            if bounds is not None and sizes[label] >= dominant_threshold
+        ]
+        top = min(bounds[0].start for bounds in dominant_bounds)
+        bottom = max(bounds[0].stop for bounds in dominant_bounds)
+        left = min(bounds[1].start for bounds in dominant_bounds)
+        right = max(bounds[1].stop for bounds in dominant_bounds)
+        bbox_area = float((bottom - top) * (right - left))
         border_pixels = np.concatenate(
             [mask[0, :], mask[-1, :], mask[:, 0], mask[:, -1]]
         )
