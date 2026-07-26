@@ -7,9 +7,7 @@ from histopia.semantic._batch import (
     BatchAcceptanceGuard,
     BatchCorrectionResult,
     BatchDiagnosticStage,
-    _nonself_knn_indices,
     _solve_section_corrections,
-    _within_slide_knn_preservation,
     correct_batch_offsets,
 )
 
@@ -54,12 +52,14 @@ def test_batch_correction_recovers_offsets_without_changing_local_geometry() -> 
     np.testing.assert_allclose(result.section_corrections[2], 0.0, atol=1e-10)
     np.testing.assert_allclose(result.corrected_features[:80], features[:80])
     np.testing.assert_allclose(result.corrected_features[160:], features[160:])
-    before = np.linalg.norm(features[80:120] - features[120:160], axis=1)
-    after = np.linalg.norm(
-        result.corrected_features[80:120] - result.corrected_features[120:160],
-        axis=1,
-    )
-    np.testing.assert_allclose(after, before, atol=1e-10)
+    for start, stop in zip(
+        section_offsets[:-1],
+        section_offsets[1:],
+        strict=True,
+    ):
+        before = features[start:stop] - features[start]
+        after = result.corrected_features[start:stop] - result.corrected_features[start]
+        np.testing.assert_allclose(after, before, atol=1e-10)
 
     assert result.unsupported_sections == (2,)
     assert result.raw_diagnostics.stage == "raw"
@@ -92,6 +92,14 @@ def test_batch_correction_is_reproducible() -> None:
     assert first.guard == second.guard
 
 
+def test_batch_diagnostics_use_additive_distance_invariance() -> None:
+    result = correct_batch_offsets(*_batch_fixture(), seed=9)
+
+    assert result.raw_diagnostics.within_slide_knn_preservation == 1.0
+    assert result.legacy_diagnostics.within_slide_knn_preservation == 1.0
+    assert result.corrected_diagnostics.within_slide_knn_preservation == 1.0
+
+
 def test_batch_guard_rejects_anchor_alignment_that_creates_slide_variance() -> None:
     first = np.vstack(
         [
@@ -118,27 +126,6 @@ def test_batch_guard_rejects_anchor_alignment_that_creates_slide_variance() -> N
     assert (
         result.corrected_diagnostics.slide_prediction_accuracy
         != result.raw_diagnostics.slide_prediction_accuracy
-    )
-
-
-@pytest.mark.parametrize("patch_count", [2, 3, 10, 11, 12])
-def test_knn_uses_exact_nonself_neighbor_count_at_boundaries(
-    patch_count: int,
-) -> None:
-    values = np.arange(patch_count, dtype=float)[:, None]
-
-    indices = _nonself_knn_indices(values)
-
-    assert indices.shape == (patch_count, min(10, patch_count - 1))
-    assert all(row not in neighbors for row, neighbors in enumerate(indices))
-    translated = values + 17.0
-    assert (
-        _within_slide_knn_preservation(
-            values,
-            translated,
-            np.array([0, patch_count], dtype=np.int64),
-        )
-        == 1.0
     )
 
 

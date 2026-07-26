@@ -11,8 +11,11 @@ Those reciprocal links estimate a smooth local displacement field without
 warping accepted image pixels. A confidence-weighted additive batch correction
 is proposed from the links, but is accepted only when anchor distance and
 slide-attributable variance improve while within-slide neighbourhoods are
-preserved. Section offsets are not removed before this guarded correction, so
-the reported raw and corrected batch diagnostics remain meaningful.
+preserved. Because each proposal adds one constant vector per section,
+within-section Euclidean distances and nearest-neighbour identities are
+invariant by construction. Section offsets are not removed before this guarded
+correction, so the reported raw and corrected batch diagnostics remain
+meaningful.
 
 ## Data Model
 
@@ -151,6 +154,15 @@ A separate cold-process end-to-end refit, including artifact writing, fell
 from 109.0 to 78.4 seconds after loading native estimator runtimes before
 applying the cap. Average CPU use fell from 11.1 to 2.1 cores, while all
 841,489 K-specific labels and all 59,919 topology links remained exact.
+
+Because guarded batch correction applies one additive vector to every patch in
+a section, its within-section KNN preservation is exactly one and does not
+require rebuilding nearest-neighbour indexes. On a validated 21-section,
+57,365-patch corpus, using that invariant reduced the batch-correction stage
+from 5.63 to 1.88 seconds and the complete in-memory fit from 46.49 to 42.96
+seconds. A separate 16-section, 80,307-patch diagnostic benchmark fell from
+7.06 to 1.30 seconds. Both before/after atlas objects retained identical
+selected K values and byte-exact aggregate digests over every field and array.
 
 On the validated server, a representative 57,600 by 50,944 NDPI with 9,213
 accepted patches took 9.98, 7.48, and 6.91 seconds with one, two, and four

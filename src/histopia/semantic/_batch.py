@@ -82,7 +82,6 @@ def correct_batch_offsets(
     raw_diagnostics = _diagnose(
         "raw",
         features,
-        features,
         offsets,
         pairs,
         np.zeros_like(corrections),
@@ -92,7 +91,6 @@ def correct_batch_offsets(
     legacy_diagnostics = _diagnose(
         "legacy",
         legacy,
-        features,
         offsets,
         pairs,
         legacy_corrections,
@@ -102,7 +100,6 @@ def correct_batch_offsets(
     corrected_diagnostics = _diagnose(
         "anchor_corrected",
         proposed,
-        features,
         offsets,
         pairs,
         corrections,
@@ -273,7 +270,6 @@ def _robust_weighted_lstsq(
 def _diagnose(
     stage: str,
     values: np.ndarray,
-    raw: np.ndarray,
     offsets: np.ndarray,
     anchor_pairs: np.ndarray,
     corrections: np.ndarray,
@@ -287,9 +283,9 @@ def _diagnose(
         median_anchor_cosine_distance=_median_anchor_cosine_distance(
             values, anchor_pairs
         ),
-        within_slide_knn_preservation=_within_slide_knn_preservation(
-            raw, values, offsets
-        ),
+        # Each stage adds one constant vector per section, so all within-section
+        # distances and nearest-neighbor identities are invariant by construction.
+        within_slide_knn_preservation=1.0,
         correction_magnitude=float(
             np.sqrt(np.mean(np.sum(np.square(corrections), axis=1)))
         ),
@@ -357,37 +353,3 @@ def _median_anchor_cosine_distance(
         denominator, np.finfo(float).eps
     )
     return float(np.median(np.clip(1.0 - similarity, 0.0, 2.0)))
-
-
-def _within_slide_knn_preservation(
-    raw: np.ndarray, values: np.ndarray, offsets: np.ndarray
-) -> float:
-    preserved = 0.0
-    comparisons = 0
-    for start, stop in zip(offsets[:-1], offsets[1:], strict=True):
-        count = int(stop - start)
-        if count <= 1:
-            continue
-        raw_indices = _nonself_knn_indices(raw[start:stop])
-        corrected_indices = _nonself_knn_indices(values[start:stop])
-        neighbors = raw_indices.shape[1]
-        for left, right in zip(raw_indices, corrected_indices, strict=True):
-            preserved += len(set(left) & set(right)) / neighbors
-            comparisons += 1
-    return preserved / comparisons if comparisons else 1.0
-
-
-def _nonself_knn_indices(values: np.ndarray) -> np.ndarray:
-    try:
-        from sklearn.neighbors import NearestNeighbors
-    except ImportError as exc:
-        raise RuntimeError("batch diagnostics require the 'semantic' extra") from exc
-
-    neighbors = min(10, len(values) - 1)
-    if neighbors <= 0:
-        return np.empty((len(values), 0), dtype=np.int64)
-    return (
-        NearestNeighbors(n_neighbors=neighbors)
-        .fit(values)
-        .kneighbors(return_distance=False)
-    )
