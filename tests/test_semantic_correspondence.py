@@ -468,10 +468,51 @@ def test_batched_candidate_scores_are_bit_exact_with_scalar_ranking() -> None:
         scores = (1.0 - geometry_weight) * feature_rank + geometry_weight * geometry
         ranked = observed[source_index]
         assert ranked is not None
-        observed_indices, observed_similarities, observed_scores = ranked
+        (
+            observed_indices,
+            observed_similarities,
+            observed_scores,
+            observed_best,
+            observed_margin,
+        ) = ranked
         np.testing.assert_array_equal(observed_indices, indices)
         np.testing.assert_array_equal(observed_similarities, similarities)
         np.testing.assert_array_equal(observed_scores, scores)
+        order = np.lexsort((indices, -scores))
+        assert observed_best == int(order[0])
+        expected_margin = (
+            float(scores[order[0]] - scores[order[1]]) if len(order) > 1 else 0.0
+        )
+        assert observed_margin == expected_margin
+
+
+def test_batched_candidate_ranking_breaks_score_ties_by_target_index() -> None:
+    candidates = [[2, 4, 7], [1]]
+    source_xy = np.zeros((2, 2))
+    target_xy = np.zeros((8, 2))
+    source_descriptor = np.ones((2, 1), dtype=np.float32)
+    target_descriptor = np.ones((8, 1), dtype=np.float32)
+
+    observed = _score_candidate_window(
+        candidates,
+        source_start=0,
+        source_xy=source_xy,
+        target_xy=target_xy,
+        source_descriptor=source_descriptor,
+        target_descriptor=target_descriptor,
+        field=np.zeros_like(source_xy),
+        config=CorrespondenceConfig(
+            patch_width_um=112.0,
+            geometry_score_weight=0.0,
+        ),
+    )
+
+    assert observed[0] is not None
+    assert observed[0][3] == 0
+    assert observed[0][4] == 0.0
+    assert observed[1] is not None
+    assert observed[1][3] == 0
+    assert observed[1][4] == 0.0
 
 
 def test_matching_rejects_an_isolated_near_decoy_without_runner_up() -> None:

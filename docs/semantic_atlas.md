@@ -303,6 +303,18 @@ seconds, with slightly lower peak memory. On a larger 24-section,
 K, result fingerprints, and all 194 and 290 scientific artifacts,
 respectively, remained byte-for-byte identical.
 
+Winner and runner-up scores are extracted once per equal-neighbourhood matrix
+batch rather than sorting every source row independently. Target updates remain
+sequential, including deterministic lowest-index tie-breaking. On the
+23-section, 76,499-patch atlas, three controlled correspondence passes improved
+from a 14.368-second median to 13.766 seconds (4.19 percent), with the same
+60,265 accepted links and exact aggregate array digest. Its complete measured
+workflow fell from 52.10 to 49.63 seconds. On the 15-section,
+333,739-patch stress atlas, both correspondence stages fell from 125.90 to
+119.50 seconds and the complete workflow from 196.88 to 189.82 seconds, while
+selected K, peak memory, and all 182 non-observational artifacts remained
+unchanged.
+
 ## Review And Viewer
 
 Every fit writes `semantic_result.json`, per-slide label grids,

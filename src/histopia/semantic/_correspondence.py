@@ -12,6 +12,13 @@ import numpy as np
 
 _RANKING_SOURCE_BATCH = 1_024
 _RANKING_TARGET_CANDIDATE_EDGES = 8_192
+_RankedCandidate = tuple[
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    int,
+    float,
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -439,14 +446,10 @@ def _reciprocal_matches(
             if row is None:
                 continue
             source_index = start + offset
-            indices, similarities, scores = row
-            order = np.lexsort((indices, -scores))
-            best = int(order[0])
+            indices, similarities, scores, best, row_margin = row
             source_best[source_index] = indices[best]
             best_similarity[source_index] = similarities[best]
-            source_margin[source_index] = (
-                float(scores[best] - scores[order[1]]) if len(order) > 1 else 0.0
-            )
+            source_margin[source_index] = row_margin
             current_scores = target_best_score[indices]
             current_sources = target_best[indices]
             replace_best = (scores > current_scores) | (
@@ -490,13 +493,11 @@ def _score_candidate_window(
     target_descriptor: np.ndarray,
     field: np.ndarray,
     config: CorrespondenceConfig,
-) -> list[tuple[np.ndarray, np.ndarray, np.ndarray] | None]:
+) -> list[_RankedCandidate | None]:
     """Score one bounded source window while retaining scalar-kernel arithmetic."""
 
     grouped: dict[int, list[tuple[int, int, np.ndarray]]] = defaultdict(list)
-    ranked: list[tuple[np.ndarray, np.ndarray, np.ndarray] | None] = [None] * len(
-        candidates
-    )
+    ranked: list[_RankedCandidate | None] = [None] * len(candidates)
     for offset, candidate_indices in enumerate(candidates):
         indices = np.asarray(candidate_indices, dtype=np.int64)
         if len(indices):
@@ -548,11 +549,23 @@ def _score_candidate_window(
                     config.geometry_score_weight * geometry[low_similarity]
                 )
             scores = feature_score + geometry_score
+            row_indices = np.arange(len(batch))
+            best_positions = np.argmax(scores, axis=1)
+            best_scores = scores[row_indices, best_positions].copy()
+            if candidate_count > 1:
+                scores[row_indices, best_positions] = -np.inf
+                runner_up_scores = np.max(scores, axis=1)
+                scores[row_indices, best_positions] = best_scores
+                source_margins = best_scores - runner_up_scores
+            else:
+                source_margins = np.zeros(len(batch), dtype=scores.dtype)
             for row, offset in enumerate(offsets):
                 ranked[offset] = (
                     target_indices[row],
                     similarities[row],
                     scores[row],
+                    int(best_positions[row]),
+                    float(source_margins[row]),
                 )
     return ranked
 
