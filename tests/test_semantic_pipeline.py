@@ -413,6 +413,30 @@ def test_run_forwards_explicit_fit_overwrite(
     assert captured == [True]
 
 
+def test_fit_records_system_exit_as_interrupted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    slides = _write_preflight(config)
+    _save_expected_features(config, slides)
+
+    def terminate(*args: object, **kwargs: object) -> object:
+        raise SystemExit(143)
+
+    monkeypatch.setattr(pipeline, "fit_joint_atlas", terminate)
+
+    with pytest.raises(SystemExit) as raised:
+        pipeline.fit_saved_features(config)
+
+    assert raised.value.code == 143
+    performance = json.loads(
+        (config.output_dir / "semantic_performance.json").read_text()
+    )
+    assert performance["fit"]["status"] == "interrupted"
+    assert performance["fit"]["failure_type"] == "SystemExit"
+
+
 def _two_section_atlas(
     sections: tuple[PatchFeatures, ...],
 ) -> JointAtlas:

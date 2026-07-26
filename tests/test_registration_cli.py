@@ -1,12 +1,73 @@
 from __future__ import annotations
 
 import json
+import os
+import signal
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 from histopia.registration import _cli
 from histopia.registration._errors import RegistrationApprovalRequired
+
+
+@pytest.mark.skipif(os.name != "posix", reason="requires POSIX SIGTERM semantics")
+def test_sigterm_records_interrupted_registration_stage(tmp_path: Path) -> None:
+    output = tmp_path / "output"
+    config = tmp_path / "registration.json"
+    config.write_text(
+        json.dumps(
+            {
+                "input_dir": str(tmp_path / "input"),
+                "output_dir": str(output),
+            }
+        )
+    )
+    child_code = """
+import sys
+import time
+import histopia.registration._pipeline as pipeline
+
+def hold(config, performance):
+    performance.start_stage("slide_discovery")
+    print("READY", flush=True)
+    while True:
+        time.sleep(1)
+
+pipeline._register_sections = hold
+from histopia.registration._cli import main
+raise SystemExit(main(["--config", sys.argv[1]]))
+"""
+    environment = os.environ.copy()
+    source = Path(__file__).parents[1] / "src"
+    environment["PYTHONPATH"] = os.pathsep.join(
+        value for value in (str(source), environment.get("PYTHONPATH", "")) if value
+    )
+    process = subprocess.Popen(
+        [sys.executable, "-c", child_code, str(config)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        env=environment,
+    )
+    try:
+        assert process.stdout is not None
+        assert process.stdout.readline().strip() == "READY"
+        process.send_signal(signal.SIGTERM)
+        remaining_output, _ = process.communicate(timeout=5)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+
+    assert process.returncode == 128 + signal.SIGTERM
+    assert remaining_output == ""
+    performance = json.loads((output / "registration_performance.json").read_text())
+    assert performance["status"] == "interrupted"
+    assert performance["failure_type"] == "SystemExit"
+    assert performance["stages"]["slide_discovery"]["status"] == "interrupted"
 
 
 def test_staged_registration_reports_review_gate_as_success(

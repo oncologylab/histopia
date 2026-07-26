@@ -7,6 +7,7 @@ import json
 import sys
 from pathlib import Path
 
+from histopia._signals import graceful_sigterm
 from histopia.semantic._config import load_semantic_config, override_compute_config
 
 
@@ -107,6 +108,13 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Run the semantic CLI with graceful launcher cancellation."""
+
+    with graceful_sigterm():
+        return _main(argv)
+
+
+def _main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 

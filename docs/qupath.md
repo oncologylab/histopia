@@ -90,8 +90,10 @@ The primary **Project workflow** tab supports:
 - conservative automatic preprocessing and QC worker counts capped at four,
   with independent editable controls so faster mask preparation does not
   over-parallelize memory-heavier registration diagnostics
-- live process output, review-note redaction, and complete process-tree
-  cancellation with bounded force escalation
+- unbuffered live process output, review-note redaction, and complete
+  process-tree cancellation with bounded force escalation; POSIX termination
+  is translated into a graceful exit so registration and semantic stage
+  telemetry records `interrupted` instead of remaining `running`
 - one self-contained browser portal that opens at the mask-only preparation
   stage, then adds section order and registered-stack QC when available
 - stage-artifact cohort checks that hide downstream QC left by an earlier

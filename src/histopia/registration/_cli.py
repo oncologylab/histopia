@@ -7,6 +7,7 @@ import json
 import sys
 from pathlib import Path
 
+from histopia._signals import graceful_sigterm
 from histopia.registration._config import (
     load_registration_config,
     registration_config_from_mapping,
@@ -22,6 +23,13 @@ def _positive_int(value: str) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Run the registration CLI with graceful launcher cancellation."""
+
+    with graceful_sigterm():
+        return _main(argv)
+
+
+def _main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Run Histopia registration, validation, and WSI export."
     )

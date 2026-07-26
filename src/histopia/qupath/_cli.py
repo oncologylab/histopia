@@ -7,6 +7,7 @@ import json
 import sys
 from pathlib import Path
 
+from histopia._signals import graceful_sigterm
 from histopia.qupath._doctor import (
     QUPATH_WORKFLOW_API_VERSION,
     QUPATH_WORKFLOWS,
@@ -22,6 +23,13 @@ def _positive_int(value: str) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Run interchange commands with graceful launcher cancellation."""
+
+    with graceful_sigterm():
+        return _main(argv)
+
+
+def _main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Check Histopia or export validated results for QuPath."
     )

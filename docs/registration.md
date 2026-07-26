@@ -426,7 +426,9 @@ It records safe worker and algorithm controls, total elapsed time, and durations
 for discovery, thumbnail loading, masks, ordering, rigid alignment, optional
 refinement, QC rendering, full-resolution export, and result writing. A normal
 mask or order pause is recorded as `review_required`; cancellation is
-`interrupted`, and an actual exception is `failed`. This file is observational:
+`interrupted`, and an actual exception is `failed`. The command-line boundary
+translates launcher `SIGTERM` into a graceful exit so the active stage is
+checkpointed before the process stops. This file is observational:
 it is excluded from the registration result and approval fingerprints, so
 timing differences cannot invalidate or alter scientific results.
 Review generation uses legacy artifact discovery only when this telemetry file

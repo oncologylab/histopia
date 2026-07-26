@@ -6,6 +6,8 @@ import argparse
 import sys
 from pathlib import Path
 
+from histopia._signals import graceful_sigterm
+
 
 def build_section_viewer(*args, **kwargs) -> Path:
     """Lazily dispatch viewer generation without importing optional dependencies."""
@@ -55,6 +57,13 @@ def _named_path(value: str) -> tuple[str, Path]:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Run viewer commands with graceful launcher cancellation."""
+
+    with graceful_sigterm():
+        return _main(argv)
+
+
+def _main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Build and serve Histopia viewers.")
     commands = parser.add_subparsers(dest="command", required=True)
     serve = commands.add_parser("serve", help="Serve a generated viewer root.")
