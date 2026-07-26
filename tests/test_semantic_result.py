@@ -6,6 +6,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+import histopia.semantic._approval as approval_module
 from histopia.semantic import PatchFeatures, approve_semantic_result
 from histopia.semantic._atlas import AtlasClustering, JointAtlas
 from histopia.semantic._performance import write_performance_stage
@@ -18,7 +19,13 @@ from histopia.semantic._result import (
 
 def test_write_atlas_result_is_review_gated_and_keeps_per_slide_grids(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(
+        approval_module,
+        "validate_semantic_registration_binding",
+        lambda *args, **kwargs: None,
+    )
     sections = tuple(
         PatchFeatures(
             slide_id=name,
@@ -73,6 +80,7 @@ def test_write_atlas_result_is_review_gated_and_keeps_per_slide_grids(
         np.testing.assert_array_equal(saved["grid_rc"], [[0, 0], [0, 1]])
     approve_semantic_result(
         tmp_path,
+        registration_run=tmp_path / "registration",
         reviewer="Test Reviewer",
         notes="Exact deterministic rerun reviewed.",
         reviewed_at="2026-07-25T01:00:00+00:00",

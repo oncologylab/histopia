@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+import histopia.semantic._approval as approval_module
 from histopia.semantic import (
     approve_semantic_result,
     validate_semantic_approval,
@@ -15,14 +16,29 @@ from histopia.semantic import (
 from histopia.semantic._result import _seal_semantic_result
 
 
-def test_semantic_approval_is_fingerprint_bound_and_atomic(tmp_path: Path) -> None:
+def test_semantic_approval_is_fingerprint_bound_and_atomic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     fingerprint = _write_semantic_result(tmp_path)
+    registration = tmp_path / "registration"
+    checked: list[tuple[Path, Path]] = []
+
+    def validate_binding(registration_run, semantic_run, **kwargs):
+        checked.append((Path(registration_run), Path(semantic_run)))
+
+    monkeypatch.setattr(
+        approval_module,
+        "validate_semantic_registration_binding",
+        validate_binding,
+    )
 
     with pytest.raises(ValueError, match="not approved"):
         validate_semantic_approval(tmp_path)
 
     approval = approve_semantic_result(
         tmp_path,
+        registration_run=registration,
         reviewer=" Test Reviewer ",
         notes=" Reviewed overlays and K sensitivity. ",
         reviewed_at="2026-07-24T18:30:00+00:00",
@@ -31,6 +47,7 @@ def test_semantic_approval_is_fingerprint_bound_and_atomic(tmp_path: Path) -> No
     assert approval.fingerprint == fingerprint
     assert approval.reviewer == "Test Reviewer"
     assert approval.reviewed_at == "2026-07-24T18:30:00+00:00"
+    assert checked == [(registration, tmp_path)]
     assert validate_semantic_approval(tmp_path) == approval
     review = json.loads((tmp_path / "semantic_review.json").read_text())
     assert review["approved"] is True
@@ -66,8 +83,8 @@ def test_semantic_approval_rejects_stale_review_and_result_artifacts(
         validate_semantic_approval(tmp_path)
 
 
-def test_semantic_approval_cli_writes_auditable_timestamp(tmp_path: Path) -> None:
-    fingerprint = _write_semantic_result(tmp_path)
+def test_semantic_approval_cli_requires_registration_binding(tmp_path: Path) -> None:
+    _write_semantic_result(tmp_path)
 
     completed = subprocess.run(
         [
@@ -82,15 +99,15 @@ def test_semantic_approval_cli_writes_auditable_timestamp(tmp_path: Path) -> Non
             "--review-notes",
             "Reviewed semantic and blend views.",
         ],
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
     )
 
     review = json.loads((tmp_path / "semantic_review.json").read_text())
-    assert review["fingerprint"] == fingerprint
-    assert review["reviewed_at"].endswith("+00:00")
-    assert f"fingerprint={fingerprint}" in completed.stdout
+    assert completed.returncode == 2
+    assert "--registration-run" in completed.stderr
+    assert review["approved"] is False
 
 
 def _write_semantic_result(root: Path) -> str:

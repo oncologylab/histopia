@@ -9,6 +9,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from histopia.semantic._registration_binding import (
+    validate_semantic_registration_binding,
+)
 from histopia.semantic._result_validation import validate_semantic_result
 
 
@@ -25,14 +28,20 @@ class SemanticApproval:
 def approve_semantic_result(
     run_dir: Path | str,
     *,
+    registration_run: Path | str,
     reviewer: str,
     notes: str,
     reviewed_at: str | None = None,
 ) -> SemanticApproval:
-    """Approve the exact, integrity-checked result currently in ``run_dir``."""
+    """Approve a result bound to the exact current registration run."""
 
     root = Path(run_dir)
     result = validate_semantic_result(root)
+    validate_semantic_registration_binding(
+        registration_run,
+        root,
+        semantic_payload=result,
+    )
     review_path = root / "semantic_review.json"
     review = _load_review(review_path)
     if review.get("schema_version") != 3:

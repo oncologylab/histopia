@@ -96,9 +96,10 @@ def _build_parser() -> argparse.ArgumentParser:
     cache.add_argument("--cache-dir", type=Path, required=True)
     approve = subparsers.add_parser(
         "approve",
-        help="Approve one exact, integrity-checked semantic result.",
+        help="Approve one semantic result bound to its current registration.",
     )
     approve.add_argument("--run", type=Path, required=True)
+    approve.add_argument("--registration-run", type=Path, required=True)
     approve.add_argument("--reviewer", required=True)
     approve.add_argument("--review-notes", required=True)
     cohort = subparsers.add_parser("cohort-qc")
@@ -130,6 +131,7 @@ def _main(argv: list[str] | None = None) -> int:
 
         approval = approve_semantic_result(
             args.run,
+            registration_run=args.registration_run,
             reviewer=args.reviewer,
             notes=args.review_notes,
         )

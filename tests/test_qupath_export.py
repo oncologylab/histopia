@@ -338,6 +338,57 @@ def test_schema_four_semantic_bundle_binds_final_registration_approval(
         )
 
 
+def test_semantic_approval_cli_requires_exact_current_registration(
+    tmp_path: Path,
+) -> None:
+    registration, semantic = _write_runs(tmp_path, approval_bound=True)
+    review_path = semantic / "semantic_review.json"
+    review = json.loads(review_path.read_text())
+    review["approved"] = False
+    review["reviewer"] = None
+    review["reviewed_at"] = None
+    review["notes"] = ""
+    review_path.write_text(json.dumps(review))
+    command = [
+        sys.executable,
+        "-m",
+        "histopia.semantic._cli",
+        "approve",
+        "--run",
+        str(semantic),
+        "--registration-run",
+        str(registration),
+        "--reviewer",
+        "CLI Reviewer",
+        "--review-notes",
+        "Reviewed semantic and blend views.",
+    ]
+
+    completed = subprocess.run(command, check=True, capture_output=True, text=True)
+
+    approved = json.loads(review_path.read_text())
+    assert approved["approved"] is True
+    assert approved["reviewer"] == "CLI Reviewer"
+    assert approved["reviewed_at"].endswith("+00:00")
+    assert f"fingerprint={approved['fingerprint']}" in completed.stdout
+
+    registration_approval_path = registration / "registration_approval.json"
+    registration_approval = json.loads(registration_approval_path.read_text())
+    registration_approval["notes"] = "Changed after semantic preflight."
+    registration_approval_path.write_text(json.dumps(registration_approval))
+    approved["approved"] = False
+    approved["reviewer"] = None
+    approved["reviewed_at"] = None
+    approved["notes"] = ""
+    review_path.write_text(json.dumps(approved))
+
+    stale = subprocess.run(command, check=False, capture_output=True, text=True)
+
+    assert stale.returncode != 0
+    assert "semantic preflight registration approval is stale" in stale.stderr
+    assert json.loads(review_path.read_text())["approved"] is False
+
+
 def _write_runs(
     root: Path,
     *,

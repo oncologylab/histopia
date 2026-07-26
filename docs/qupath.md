@@ -102,7 +102,7 @@ The primary **Project workflow** tab supports:
   sealing of the registered result
 - direct semantic execution from the approved registration workspace
 - local semantic, blend, K-sensitivity, and topology review followed by
-  fingerprint-bound semantic approval
+  semantic approval bound to the exact current registration result and seal
 
 The extension writes runtime-only configs and an exact slide-selection
 manifest under `<workspace>/.histopia`. **Open registration QC** generates the

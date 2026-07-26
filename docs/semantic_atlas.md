@@ -288,13 +288,15 @@ Approve the exact reviewed fingerprint with:
 ```bash
 histopia-semantic approve \
   --run /path/to/semantic-run \
+  --registration-run /path/to/registration-run \
   --reviewer "Reviewer name" \
   --review-notes "Reviewed semantic, blend, K sensitivity, and topology views."
 ```
 
-Approval revalidates every sealed result artifact before atomically updating
-`semantic_review.json`. QuPath export rejects missing, unapproved, or stale
-review records.
+Approval revalidates every sealed result artifact and verifies that the atlas
+belongs to the exact current registration result and registration approval
+before atomically updating `semantic_review.json`. QuPath export rejects
+missing, unapproved, stale, or registration-mismatched review records.
 
 Preflight also requires every registration mask to be accepted and backed by
 an approved mask-review record. Its portable slide provenance records the
