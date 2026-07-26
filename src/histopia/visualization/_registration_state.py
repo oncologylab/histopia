@@ -5,11 +5,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from histopia.registration._performance import load_performance_report
+
 _ALL_REVIEW_STAGES = frozenset({"mask", "order", "alignment"})
 _FINISHED_STAGE_STATUSES = frozenset({"completed", "review_required"})
-_PERFORMANCE_STATUSES = frozenset(
-    {"running", "completed", "review_required", "failed", "interrupted"}
-)
 
 
 def current_registration_review_stages(
@@ -18,37 +17,26 @@ def current_registration_review_stages(
     """Return stages reached by the latest observable registration execution.
 
     Runs created before performance telemetry retain legacy artifact-based
-    behavior. A valid current report prevents downstream files left by an older
-    execution from appearing in a newly prepared review.
+    behavior only when the telemetry file is absent. A present invalid report
+    fails closed so downstream files left by an older execution cannot appear
+    in a newly prepared review.
     """
 
     report_path = Path(registration_run) / "registration_performance.json"
     try:
-        report = json.loads(report_path.read_text())
-    except (OSError, json.JSONDecodeError):
+        report = load_performance_report(report_path)
+    except FileNotFoundError:
         return _ALL_REVIEW_STAGES
-    if (
-        not isinstance(report, dict)
-        or report.get("schema_version") != 1
-        or report.get("workflow") != "registration"
-        or report.get("observational_only") is not True
-        or report.get("status") not in _PERFORMANCE_STATUSES
-    ):
-        return _ALL_REVIEW_STAGES
-
-    status = report.get("status")
-    if status == "completed":
-        return _ALL_REVIEW_STAGES
-    if status == "review_required":
-        review_stage = report.get("review_stage")
-        if review_stage == "masks":
-            return frozenset({"mask"})
-        if review_stage == "order":
-            return frozenset({"mask", "order"})
+    except (OSError, TypeError, ValueError) as exc:
+        raise ValueError(
+            "registration_performance.json is invalid; refusing stale review stages"
+        ) from exc
 
     stages = report.get("stages")
     if not isinstance(stages, dict):
-        return frozenset()
+        raise ValueError(
+            "registration_performance.json is invalid; refusing stale review stages"
+        )
     reached: set[str] = set()
     mask_review = stages.get("mask_review")
     if (

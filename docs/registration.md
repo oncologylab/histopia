@@ -429,6 +429,10 @@ mask or order pause is recorded as `review_required`; cancellation is
 `interrupted`, and an actual exception is `failed`. This file is observational:
 it is excluded from the registration result and approval fingerprints, so
 timing differences cannot invalidate or alter scientific results.
+Review generation uses legacy artifact discovery only when this telemetry file
+is absent. If a current telemetry file exists but is unreadable or invalid,
+review generation fails closed instead of exposing potentially stale mask,
+order, or alignment artifacts.
 Mask telemetry additionally separates independent candidate extraction, group
 refinement, review resolution, artifact encoding, and rendered/reused slide
 counts. Ordering telemetry distinguishes distance/proposal cache hits and

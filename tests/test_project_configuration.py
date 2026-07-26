@@ -15,6 +15,8 @@ def test_ci_installs_dependencies_exercised_by_semantic_tests() -> None:
 
     assert '".[dev,registration,semantic,wsi]"' in workflow
     assert '".[browser-test,registration,semantic,wsi]"' in workflow
+    assert '".[dev,registration-repro,semantic-repro,qupath]"' in workflow
+    assert "HISTOPIA_VERIFY_REPRO" in workflow
     assert "python -m pytest -m browser" in workflow
 
 
@@ -29,11 +31,14 @@ def test_browser_test_extra_contains_its_test_runner() -> None:
 
 def test_uni2h_repro_extra_matches_checked_in_constraints() -> None:
     metadata = tomllib.loads(Path("pyproject.toml").read_text())
-    requirements = set(metadata["project"]["optional-dependencies"]["uni2h-repro"])
+    requirements = {
+        requirement.replace('"', "'")
+        for requirement in metadata["project"]["optional-dependencies"]["uni2h-repro"]
+    }
     constrained = {
-        line
+        line.replace('"', "'")
         for line in Path("constraints/semantic-repro.txt").read_text().splitlines()
-        if line and not line.startswith("#") and "tomli" not in line
+        if line and not line.startswith("#")
     }
 
     assert requirements == constrained

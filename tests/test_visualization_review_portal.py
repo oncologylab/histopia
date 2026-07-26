@@ -208,6 +208,26 @@ def test_registration_review_hides_stale_downstream_stages_at_new_mask_gate(
     }
 
 
+def test_registration_review_refuses_stale_artifacts_when_telemetry_is_invalid(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    run = tmp_path / "registration"
+    run.mkdir()
+    (run / "mask_review.json").write_text(
+        json.dumps({"slides": [{"slide": "stale.ndpi"}]})
+    )
+    (run / "registration_performance.json").write_text("truncated")
+
+    def reject_stale(*args, **kwargs) -> Path:
+        raise AssertionError("stale review must not be built")
+
+    monkeypatch.setattr(_review_portal, "build_mask_review", reject_stale)
+
+    with pytest.raises(ValueError, match="refusing stale review stages"):
+        _review_portal.build_registration_review(run, tmp_path / "review")
+
+
 def test_registration_review_rejects_mask_from_unreached_latest_stage(
     tmp_path: Path, monkeypatch
 ) -> None:

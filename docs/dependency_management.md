@@ -80,6 +80,12 @@ The `registration-repro` extra pins the same package versions directly:
 python -m pip install -e ".[dev,registration-repro]"
 ```
 
+On Python 3.10, the exact profiles also pin the conditional `tomli` parser
+used to read TOML configuration. CI installs the complete reproducible CPU
+registration and atlas-fitting profiles, verifies every installed version,
+runs the registration and interchange QuPath doctors, and checks dependency
+consistency.
+
 Full reproducible registration, WSI, UNI2-h, and QuPath workflow:
 
 ```bash
@@ -135,7 +141,8 @@ failure can terminate Python before Histopia can report a normal exception.
 - Keep runtime dependencies in optional extras unless needed at import time.
 - Use lower and upper bounds for normal workflow extras.
 - Keep exact `*-repro` extras synchronized with their checked-in constraint
-  files. The test suite rejects version drift between those two interfaces.
+  files, including conditional Python dependencies. The test suite rejects
+  version drift between those two interfaces.
 - Use `constraints/registration-repro.txt` for exact validation reruns.
 - Use `constraints/semantic-repro.txt` for the tested semantic analysis and
   GPU extraction stack. Validation used Python 3.10, an NVIDIA A100, and the
