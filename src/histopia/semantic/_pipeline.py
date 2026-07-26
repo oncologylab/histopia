@@ -118,6 +118,18 @@ def _fit_saved_features(
         performance["runtime_prepare_seconds"] = elapsed_seconds(stage_started)
 
         stage_started = time.perf_counter()
+        fit_phase_seconds: dict[str, float] = {}
+        correspondence_workers = min(
+            2,
+            config.fit_threads,
+            max(1, len(sections) - 1),
+        )
+        performance["correspondence_workers"] = correspondence_workers
+
+        def record_fit_phase(name: str, seconds: float) -> None:
+            fit_phase_seconds[name] = seconds
+            performance["atlas_fit_phase_seconds"] = dict(fit_phase_seconds)
+
         with threadpool_limits(limits=config.fit_threads):
             atlas = fit_joint_atlas(
                 sections,
@@ -127,6 +139,8 @@ def _fit_saved_features(
                 seed=config.seed,
                 regularize=True,
                 max_cross_section_distance_um=config.max_cross_section_distance_um,
+                phase_callback=record_fit_phase,
+                correspondence_workers=correspondence_workers,
             )
         performance["atlas_fit_seconds"] = elapsed_seconds(stage_started)
 

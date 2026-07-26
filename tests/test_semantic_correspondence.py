@@ -125,6 +125,7 @@ def test_section_sequence_reuses_descriptors_and_matches_pairwise(
         coordinates,
         features,
         configs=configs,
+        workers=2,
     )
 
     assert descriptor_calls == 3
@@ -136,6 +137,21 @@ def test_section_sequence_reuses_descriptors_and_matches_pairwise(
                 np.testing.assert_array_equal(left, right)
             else:
                 assert left == right
+
+
+def test_section_sequence_rejects_invalid_worker_count() -> None:
+    grid = np.array([[0, 0]], dtype=np.int32)
+    xy = np.array([[0.0, 0.0]])
+    features = np.array([[1.0, 0.0]], dtype=np.float32)
+
+    with pytest.raises(ValueError, match="workers"):
+        _match_section_sequence(
+            (grid, grid),
+            (xy, xy),
+            (features, features),
+            configs=(CorrespondenceConfig(patch_width_um=100.0),),
+            workers=0,
+        )
 
 
 def test_section_sequence_preserves_empty_section_results() -> None:

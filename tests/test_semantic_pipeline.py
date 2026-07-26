@@ -131,9 +131,13 @@ def test_fit_uses_preflight_order_and_ignores_stale_extra_features(
         def __exit__(self, *args: object) -> None:
             return None
 
-    def capture_fit(sections: tuple[PatchFeatures, ...], **_: object) -> object:
+    def capture_fit(sections: tuple[PatchFeatures, ...], **kwargs: object) -> object:
         runtime_events.append("fit")
         captured.append(tuple(section.slide_id for section in sections))
+        assert kwargs["correspondence_workers"] == 1
+        phase_callback = kwargs["phase_callback"]
+        assert callable(phase_callback)
+        phase_callback("cluster_selection", 1.25)
         return atlas
 
     def capture_write(*args: object, **kwargs: object) -> Path:
@@ -171,8 +175,10 @@ def test_fit_uses_preflight_order_and_ignores_stale_extra_features(
     )
     assert performance["fit"]["status"] == "completed"
     assert performance["fit"]["fit_threads"] == 4
+    assert performance["fit"]["correspondence_workers"] == 1
     assert performance["fit"]["semantic_result_fingerprint"] == "result-fingerprint"
     assert performance["fit"]["total_patches"] == 4
+    assert performance["fit"]["atlas_fit_phase_seconds"] == {"cluster_selection": 1.25}
 
 
 def test_fit_rejects_wrong_feature_slide_before_global_computation(

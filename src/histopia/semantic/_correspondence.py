@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
 
@@ -123,6 +124,7 @@ def _match_section_sequence(
     features: Sequence[np.ndarray],
     *,
     configs: Sequence[CorrespondenceConfig],
+    workers: int = 1,
 ) -> tuple[AdjacentSectionCorrespondence, ...]:
     """Match every adjacent pair while reusing each section descriptor."""
 
@@ -133,6 +135,8 @@ def _match_section_sequence(
         raise ValueError("section sequence inputs must contain the same sections")
     if len(configs) != section_count - 1:
         raise ValueError("section sequence requires one config per adjacent pair")
+    if isinstance(workers, bool) or not isinstance(workers, int) or workers <= 0:
+        raise ValueError("workers must be a positive integer")
 
     prepared = tuple(
         _validate_section(section_grid, section_xy, section_features, name="section")
@@ -163,8 +167,9 @@ def _match_section_sequence(
         )
         for section_grid, _, section_features in prepared
     )
-    return tuple(
-        _match_prepared_adjacent_sections(
+
+    def match_pair(index: int) -> AdjacentSectionCorrespondence:
+        return _match_prepared_adjacent_sections(
             prepared[index][1],
             descriptors[index],
             prepared[index + 1][1],
@@ -173,8 +178,15 @@ def _match_section_sequence(
             target_section=index + 1,
             config=configs[index],
         )
-        for index in range(section_count - 1)
-    )
+
+    pair_count = section_count - 1
+    if workers == 1 or pair_count == 1:
+        return tuple(match_pair(index) for index in range(pair_count))
+    with ThreadPoolExecutor(
+        max_workers=min(workers, pair_count),
+        thread_name_prefix="histopia-correspondence",
+    ) as executor:
+        return tuple(executor.map(match_pair, range(pair_count)))
 
 
 def _match_prepared_adjacent_sections(

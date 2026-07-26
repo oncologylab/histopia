@@ -137,14 +137,23 @@ from `patch_workers`. The setting is applied before pyvips is imported and
 therefore cannot be changed later in the same process. Leave it unset to use
 libvips' adaptive default.
 
-`fit_threads` independently caps native BLAS and OpenMP pools during PCA,
-batch correction, global clustering, K selection, and topology
-regularization. It defaults to four and is recorded in sealed result runtime
-provenance. Keeping this value explicit avoids machine-dependent
+`fit_threads` independently bounds CPU work during global fitting. PCA, batch
+correction, global clustering, K selection, and topology regularization cap
+their native BLAS and OpenMP pools at this value. Adjacent-section
+correspondence uses one pair worker when the budget is one and at most two pair
+workers otherwise; each matcher receives one native math thread to avoid
+nested oversubscription. It defaults to four and is recorded in sealed result
+runtime provenance. Keeping this value explicit avoids machine-dependent
 oversubscription and makes fitting performance reproducible without changing
-feature artifacts. The observational `semantic_performance.json` report records
-`cache_hit`, the validation time, and why a candidate result was not reusable;
-an exact hit reports zero atlas-fit and artifact-write time.
+feature artifacts.
+
+The observational `semantic_performance.json` report records `cache_hit`, the
+validation time, and why a candidate result was not reusable; an exact hit
+reports zero atlas-fit and artifact-write time. A computed fit also records
+`correspondence_workers` and an `atlas_fit_phase_seconds` object covering
+feature preparation, PCA fit and projection, initial and corrected
+correspondence and graph construction, guarded batch correction, K selection,
+and label regularization.
 
 On a validated 23-section atlas with 76,499 patches, one, four, eight, 16, and
 32 fit threads took 95.7, 71.7, 73.3, 73.6, and 106.2 seconds, respectively.
@@ -164,6 +173,19 @@ A separate cold-process end-to-end refit, including artifact writing, fell
 from 109.0 to 78.4 seconds after loading native estimator runtimes before
 applying the cap. Average CPU use fell from 11.1 to 2.1 cores, while all
 841,489 K-specific labels and all 59,919 topology links remained exact.
+
+Phase-level profiling on the same 23-section, 76,499-patch atlas showed that
+the initial and corrected correspondence passes used 40.41 of 62.75 atlas-fit
+seconds. Running independent adjacent pairs with the bounded two-worker policy
+reduced correspondence to 29.31 seconds and the complete measured workflow
+from 68.34 to 52.10 seconds. The semantic fingerprint, model, result and review
+records, and all 22 topology artifacts were byte-identical. On this host, four
+and eight pair workers were slower than two, so Histopia deliberately caps
+pair concurrency instead of equating it with the full native thread limit.
+On a larger 15-section atlas with 333,739 patches, the same policy reduced
+atlas fitting from 242.35 to 181.84 seconds and the complete workflow from
+257.84 to 196.88 seconds. All 182 non-observational output files retained the
+same aggregate digest and semantic fingerprint.
 
 Because guarded batch correction applies one additive vector to every patch in
 a section, its within-section KNN preservation is exactly one and does not
@@ -298,11 +320,12 @@ been reviewed.
 `semantic_performance.json` is a separate atomic observational record. During
 extraction it reports running/completed/failed state, effective device and
 worker controls, per-slide cache status, patch counts, elapsed time, and patch
-throughput. Fitting adds feature-load, native-runtime preparation, atlas-fit,
-and artifact-write durations plus the result fingerprint. A fresh extraction
-clears stale fit timing. This file is deliberately excluded from semantic
-result artifacts, fingerprints, and approval because elapsed time is
-machine-dependent and has no scientific meaning.
+throughput. Fitting adds feature-load, native-runtime preparation, phase-level
+atlas-fit, and artifact-write durations, effective correspondence workers, and
+the result fingerprint. A fresh extraction clears stale fit timing. This file
+is deliberately excluded from semantic result artifacts, fingerprints, and
+approval because elapsed time is machine-dependent and has no scientific
+meaning.
 
 Approve the exact reviewed fingerprint with:
 

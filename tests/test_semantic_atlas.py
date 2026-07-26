@@ -89,6 +89,61 @@ def test_joint_atlas_is_deterministic_and_returns_each_sensitivity() -> None:
     assert first.clusterings[2].labels.shape == (24,)
 
 
+def test_fit_phase_callback_is_observational() -> None:
+    sections = (_section("a", 0), _section("b", 2))
+    phases: list[tuple[str, float]] = []
+
+    measured = fit_joint_atlas(
+        sections,
+        cluster_counts=(2, 3),
+        pca_components=2,
+        balanced_patch_cap=12,
+        seed=8,
+        regularize=False,
+        phase_callback=lambda name, seconds: phases.append((name, seconds)),
+    )
+    unmeasured = fit_joint_atlas(
+        sections,
+        cluster_counts=(2, 3),
+        pca_components=2,
+        balanced_patch_cap=12,
+        seed=8,
+        regularize=False,
+    )
+
+    assert [name for name, _ in phases] == [
+        "feature_preparation",
+        "pca_fit",
+        "pca_projection",
+        "cluster_selection",
+        "label_regularization",
+    ]
+    assert all(seconds >= 0 for _, seconds in phases)
+    np.testing.assert_array_equal(measured.pca_mean, unmeasured.pca_mean)
+    np.testing.assert_array_equal(measured.pca_basis, unmeasured.pca_basis)
+    for count in measured.clusterings:
+        np.testing.assert_array_equal(
+            measured.clusterings[count].labels,
+            unmeasured.clusterings[count].labels,
+        )
+        np.testing.assert_array_equal(
+            measured.clusterings[count].centroids,
+            unmeasured.clusterings[count].centroids,
+        )
+
+
+def test_joint_atlas_rejects_invalid_correspondence_workers() -> None:
+    with pytest.raises(ValueError, match="correspondence_workers"):
+        fit_joint_atlas(
+            (_section("a", 0), _section("b", 2)),
+            cluster_counts=(2,),
+            pca_components=2,
+            balanced_patch_cap=12,
+            regularize=False,
+            correspondence_workers=0,
+        )
+
+
 def test_regularized_atlas_builds_and_passes_adjacent_correspondences(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
