@@ -292,6 +292,14 @@ is therefore the measured high-throughput setting for this 24-slide workload;
 16 provided only another 1.29x speedup for 57% more peak memory. An exact warm
 rerun took 2.33 seconds.
 
+Mask scoring reuses each canonical morphology metric set, and group consensus
+reuses target-specific peer translations across its broad, direct, and
+adjacent support radii. On a 17-slide, 1200-pixel real cohort with four
+workers, these exact-output changes reduced independent mask generation from
+25.63 to 22.26 seconds and group refinement from 7.67 to 5.92 seconds.
+Complete result digests were identical. Two additional 22- and 23-slide
+cohorts also retained exact group-result digests.
+
 Set `qc_workers` above one to render independent pair-crop, registered-view,
 non-rigid, and primary-review bundles concurrently. Bundle filenames, pixels,
 checksums, cache manifests, registration results, and approval fingerprints are
@@ -424,6 +432,12 @@ counts. Ordering telemetry distinguishes distance/proposal cache hits and
 proposal-search time; rigid telemetry records feature-preparation time and
 slide count plus the number of exact pair transforms preloaded before
 alignment.
+
+Registration currently uses CPU implementations in NumPy, SciPy, and OpenCV;
+it does not expose a GPU selector or silently move registration work to CUDA.
+The performance record reports `compute_backend = "cpu"` alongside the worker
+and libvips controls. GPU, CPU, and Apple MPS selection is available for the
+separate UNI2-h feature-extraction stage.
 
 After reviewing the completed mask, order, and registration views, seal the
 exact artifacts without recomputing unchanged transforms:

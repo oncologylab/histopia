@@ -198,6 +198,7 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
     performance = RegistrationPerformance(
         config.output_dir,
         controls={
+            "compute_backend": "cpu",
             "thumbnail_workers": config.thumbnail_workers,
             "mask_workers": config.mask_workers,
             "ordering_workers": config.ordering_workers,

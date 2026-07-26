@@ -79,6 +79,7 @@ def test_register_sections_writes_thumbnail_result(
     assert performance["status"] == "completed"
     assert performance["slide_count"] == 2
     assert performance["registered_slide_count"] == 2
+    assert performance["controls"]["compute_backend"] == "cpu"
     assert performance["controls"]["thumbnail_workers"] == 1
     assert performance["controls"]["vips_threads"] == 3
     assert performance["stages"]["result_write"]["status"] == "completed"

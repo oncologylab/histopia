@@ -29,6 +29,12 @@ Registration algorithms on standard images:
 python -m pip install -e ".[registration]"
 ```
 
+Registration uses NumPy, SciPy, and OpenCV on CPU. Its bounded mask, ordering,
+thumbnail, and QC worker controls plus the optional libvips thread cap govern
+throughput; there is no registration GPU selector. Accelerator selection is
+reserved for workflows, such as UNI2-h extraction, that have a validated
+PyTorch backend.
+
 Whole-slide registration development:
 
 ```bash

@@ -3,6 +3,7 @@ from copy import deepcopy
 import numpy as np
 from scipy import ndimage as ndi
 
+import histopia.registration._masking as masking
 from histopia.registration import (
     BrightfieldMaskConfig,
     create_tissue_mask,
@@ -10,16 +11,22 @@ from histopia.registration import (
 )
 from histopia.registration._masking import (
     TissueMaskResult,
+    _align_group_peer_masks,
     _align_peer_mask_translation,
+    _aligned_group_support,
     _augment_with_group_components,
     _axis_binary_dilation,
     _axis_binary_opening,
     _carve_large_blank_regions,
     _clean_mask,
+    _dilated_group_support,
     _fill_small_holes,
     _group_density_union_candidate,
     _has_unrepresented_group_component,
+    _mask_metrics,
     _mask_score,
+    _mask_score_from_metrics,
+    _mask_warnings_from_metrics,
     _pale_tissue_candidate,
     _polish_selected_mask,
     _recover_supported_pale_pixels,
@@ -1241,3 +1248,74 @@ def test_mask_score_prefers_balanced_tissue_over_scattered_artifacts() -> None:
     config = BrightfieldMaskConfig()
 
     assert _mask_score(coherent, config) > _mask_score(scattered, config)
+
+
+def test_mask_score_from_existing_metrics_matches_direct_score() -> None:
+    mask = np.zeros((200, 240), dtype=bool)
+    mask[55:155, 75:185] = True
+    config = BrightfieldMaskConfig()
+    metrics = _mask_metrics(mask)
+    warnings = _mask_warnings_from_metrics(metrics, config)
+
+    assert _mask_score_from_metrics(metrics, warnings) == _mask_score(mask, config)
+
+
+def test_mask_score_computes_morphology_metrics_once(monkeypatch) -> None:
+    mask = np.zeros((100, 120), dtype=bool)
+    mask[25:80, 30:90] = True
+    original = masking._mask_metrics
+    calls = 0
+
+    def count_metrics(value: np.ndarray) -> dict[str, float]:
+        nonlocal calls
+        calls += 1
+        return original(value)
+
+    monkeypatch.setattr(masking, "_mask_metrics", count_metrics)
+
+    masking._mask_score(mask, BrightfieldMaskConfig())
+
+    assert calls == 1
+
+
+def test_reused_peer_alignment_matches_independent_support_maps() -> None:
+    target = np.zeros((80, 100), dtype=bool)
+    target[25:65, 35:80] = True
+    peers = []
+    for row_shift, col_shift in ((-4, -3), (2, 5), (5, -6)):
+        peer = np.zeros_like(target)
+        peer[
+            25 + row_shift : 65 + row_shift,
+            35 + col_shift : 80 + col_shift,
+        ] = True
+        peers.append(peer)
+
+    aligned = _align_group_peer_masks(
+        peers,
+        target,
+        align_translations=True,
+    )
+
+    for iterations in (3, 24):
+        assert np.array_equal(
+            _dilated_group_support(
+                aligned,
+                dilation_iterations=iterations,
+            ),
+            _aligned_group_support(
+                peers,
+                target,
+                dilation_iterations=iterations,
+            ),
+        )
+    assert np.array_equal(
+        _dilated_group_support(
+            aligned[:1],
+            dilation_iterations=5,
+        ),
+        _aligned_group_support(
+            peers[:1],
+            target,
+            dilation_iterations=5,
+        ),
+    )

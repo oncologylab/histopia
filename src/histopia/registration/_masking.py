@@ -98,14 +98,18 @@ def create_tissue_mask(
         method: _mask_metrics(mask) for method, mask in candidates.items()
     }
     candidate_warnings = {
-        method: _mask_warnings(mask, config) for method, mask in candidates.items()
+        method: _mask_warnings_from_metrics(candidate_metrics[method], config)
+        for method in candidates
     }
 
     fusion = candidates["object_aware_fusion"]
     fusion_warnings = candidate_warnings["object_aware_fusion"]
     candidate_scores = {
-        method: _mask_score(mask, config)
-        for method, mask in candidates.items()
+        method: _mask_score_from_metrics(
+            candidate_metrics[method],
+            candidate_warnings[method],
+        )
+        for method in candidates
         if method not in {"group_density_union", "group_pale_tissue"}
     }
     best_method = max(candidate_scores, key=candidate_scores.__getitem__)
@@ -281,8 +285,8 @@ def refine_group_tissue_masks(
         )
         if not np.array_equal(recovered, ranked.mask):
             recovered_metrics = _mask_metrics(recovered)
-            recovered_warnings = _mask_warnings(
-                recovered,
+            recovered_warnings = _mask_warnings_from_metrics(
+                recovered_metrics,
                 BrightfieldMaskConfig(),
             )
             if not recovered_warnings:
@@ -328,34 +332,31 @@ def refine_group_tissue_masks(
             (images or {}).get(key),
             result.mask.shape,
         )
-        peer_support = _aligned_group_support(
-            [normalized[peer] for peer in keys if peer != key],
+        peer_keys = [peer for peer in keys if peer != key]
+        aligned_peers = _align_group_peer_masks(
+            [normalized[peer] for peer in peer_keys],
             normalized[key],
-            dilation_iterations=24,
             align_translations=(
                 np.mean(normalized[key]) < expected_selected_fraction * 0.78
             ),
         )
-        direct_peer_support = _aligned_group_support(
-            [normalized[peer] for peer in keys if peer != key],
-            normalized[key],
+        aligned_by_key = dict(zip(peer_keys, aligned_peers, strict=True))
+        peer_support = _dilated_group_support(
+            aligned_peers,
+            dilation_iterations=24,
+        )
+        direct_peer_support = _dilated_group_support(
+            aligned_peers,
             dilation_iterations=3,
-            align_translations=(
-                np.mean(normalized[key]) < expected_selected_fraction * 0.78
-            ),
         )
         key_index = keys.index(key)
         adjacent_keys = (
             keys[max(0, key_index - 1) : key_index]
             + keys[key_index + 1 : key_index + 2]
         )
-        adjacent_support = _aligned_group_support(
-            [normalized[peer] for peer in adjacent_keys],
-            normalized[key],
+        adjacent_support = _dilated_group_support(
+            [aligned_by_key[peer] for peer in adjacent_keys],
             dilation_iterations=5,
-            align_translations=(
-                np.mean(normalized[key]) < expected_selected_fraction * 0.78
-            ),
         )
         keep = np.zeros(count + 1, dtype=bool)
         component_sizes = np.bincount(labels.ravel())
@@ -509,7 +510,7 @@ def refine_group_tissue_masks(
         if np.array_equal(mask, result.mask):
             return result
         metrics = _mask_metrics(mask)
-        warnings = _mask_warnings(mask, BrightfieldMaskConfig())
+        warnings = _mask_warnings_from_metrics(metrics, BrightfieldMaskConfig())
         return TissueMaskResult(
             mask=mask,
             method=f"{result.method}+group_consensus",
@@ -536,11 +537,15 @@ def refine_group_tissue_masks(
             cleaned = _remove_image_frame_exterior(result.mask, image)
             if np.array_equal(cleaned, result.mask):
                 return result
-            warnings = _mask_warnings(cleaned, BrightfieldMaskConfig())
+            metrics = _mask_metrics(cleaned)
+            warnings = _mask_warnings_from_metrics(
+                metrics,
+                BrightfieldMaskConfig(),
+            )
             return TissueMaskResult(
                 mask=cleaned,
                 method=f"{result.method}+frame_cleanup",
-                metrics=_mask_metrics(cleaned),
+                metrics=metrics,
                 accepted=not warnings,
                 warnings=warnings,
                 candidate_metrics=result.candidate_metrics,
@@ -610,16 +615,43 @@ def _aligned_group_support(
 ) -> np.ndarray:
     """Average peer masks after conservative dominant-object translation."""
 
+    aligned = _align_group_peer_masks(
+        peer_masks,
+        target_mask,
+        align_translations=align_translations,
+    )
+    return _dilated_group_support(
+        aligned,
+        dilation_iterations=dilation_iterations,
+    )
+
+
+def _align_group_peer_masks(
+    peer_masks: list[np.ndarray],
+    target_mask: np.ndarray,
+    *,
+    align_translations: bool,
+) -> list[np.ndarray]:
+    """Apply each target-specific peer translation once."""
+
+    if not align_translations:
+        return peer_masks
+    return [_align_peer_mask_translation(peer, target_mask) for peer in peer_masks]
+
+
+def _dilated_group_support(
+    aligned_peer_masks: list[np.ndarray],
+    *,
+    dilation_iterations: int,
+) -> np.ndarray:
+    """Average already-aligned peer masks at one support radius."""
+
     aligned = [
         ndi.binary_dilation(
-            (
-                _align_peer_mask_translation(peer, target_mask)
-                if align_translations
-                else peer
-            ),
+            peer,
             iterations=dilation_iterations,
         )
-        for peer in peer_masks
+        for peer in aligned_peer_masks
     ]
     return np.mean(np.stack(aligned), axis=0)
 
@@ -770,13 +802,14 @@ def _recover_undercovered_pale_tissue(
             maximum_area_ratio = 1.35 if missing_group_object else 1.25
             if candidate_area > expected_physical_area * maximum_area_ratio:
                 return result
-        warnings = _mask_warnings(candidate, BrightfieldMaskConfig())
+        metrics = _mask_metrics(candidate)
+        warnings = _mask_warnings_from_metrics(metrics, BrightfieldMaskConfig())
         if warnings:
             return result
         return TissueMaskResult(
             mask=candidate,
             method=f"{result.method}+group_pale_recovery",
-            metrics=_mask_metrics(candidate),
+            metrics=metrics,
             accepted=True,
             warnings=[],
             candidate_metrics=result.candidate_metrics,
@@ -986,10 +1019,12 @@ def _select_group_supported_candidate(
         "group_density_union",
         "group_pale_tissue",
     }
-    candidates: list[tuple[str, np.ndarray]] = []
+    default_config = BrightfieldMaskConfig()
+    candidates: list[tuple[str, np.ndarray, dict[str, float] | None]] = []
     for method, candidate in result.candidate_masks.items():
         if method not in allowed_methods or not candidate.any():
             continue
+        metrics = None
         if method in {"group_density_union", "group_pale_tissue"}:
             candidate = _augment_with_group_components(
                 candidate,
@@ -997,26 +1032,27 @@ def _select_group_supported_candidate(
                 peer_support,
                 normalized_shape,
             )
-            if not candidate.any() or _mask_warnings(
-                candidate, BrightfieldMaskConfig()
-            ):
+            if not candidate.any():
+                continue
+            metrics = _mask_metrics(candidate)
+            if _mask_warnings_from_metrics(metrics, default_config):
                 continue
         elif result.candidate_warnings.get(method, []):
             continue
-        candidates.append((method, candidate))
+        candidates.append((method, candidate, metrics))
     if not candidates:
         return result
     baseline_fraction = max(
         (
             float(np.mean(mask))
-            for method, mask in candidates
+            for method, mask, _ in candidates
             if method not in {"group_density_union", "group_pale_tissue"}
         ),
         default=0.0,
     )
     candidates = [
-        (method, mask)
-        for method, mask in candidates
+        (method, mask, metrics)
+        for method, mask, metrics in candidates
         if method not in {"group_density_union", "group_pale_tissue"}
         or float(np.mean(mask)) >= baseline_fraction * 0.60
     ]
@@ -1027,19 +1063,21 @@ def _select_group_supported_candidate(
         >= expected_physical_area * 0.90
     ):
         candidates = [
-            (method, mask)
-            for method, mask in candidates
+            (method, mask, metrics)
+            for method, mask, metrics in candidates
             if method not in {"group_density_union", "group_pale_tissue"}
         ]
-    candidate_fractions = np.array([np.mean(mask) for _, mask in candidates])
+    candidate_fractions = np.array([np.mean(mask) for _, mask, _ in candidates])
     typical_fraction = float(np.median(candidate_fractions[candidate_fractions > 0]))
     support_total = float(np.sum(peer_support))
-    scored: list[tuple[float, str, np.ndarray]] = []
-    for method, mask in candidates:
+    scored: list[tuple[float, str, np.ndarray, dict[str, float], list[str]]] = []
+    for method, mask, metrics in candidates:
         normalized = _resize_binary(mask, normalized_shape)
         covered = float(np.sum(peer_support[normalized])) / max(support_total, 1.0)
         unsupported = float(np.mean(peer_support[normalized] < 0.05))
-        score = _mask_score(mask, BrightfieldMaskConfig())
+        metrics = metrics if metrics is not None else _mask_metrics(mask)
+        warnings = _mask_warnings_from_metrics(metrics, default_config)
+        score = _mask_score_from_metrics(metrics, warnings)
         score += 2.0 * covered - 1.5 * unsupported
         if method == "adaptive_brightness":
             score -= 0.30
@@ -1057,12 +1095,10 @@ def _select_group_supported_candidate(
             area = float(np.count_nonzero(mask) * physical_pixel_area)
             ratio = max(area / expected_physical_area, 1e-6)
             score -= 0.35 * abs(float(np.log(ratio)))
-        scored.append((score, method, mask))
-    _, method, mask = max(scored, key=lambda item: item[0])
+        scored.append((score, method, mask, metrics, warnings))
+    _, method, mask, metrics, warnings = max(scored, key=lambda item: item[0])
     if method == result.method:
         return result
-    metrics = _mask_metrics(mask)
-    warnings = _mask_warnings(mask, BrightfieldMaskConfig())
     return TissueMaskResult(
         mask=mask,
         method=f"{method}+group_ranked",
@@ -1092,7 +1128,7 @@ def _polish_selected_mask(result: TissueMaskResult) -> TissueMaskResult:
         if np.array_equal(cleaned, result.mask):
             return result
         metrics = _mask_metrics(cleaned)
-        warnings = _mask_warnings(cleaned, BrightfieldMaskConfig())
+        warnings = _mask_warnings_from_metrics(metrics, BrightfieldMaskConfig())
         return TissueMaskResult(
             mask=cleaned,
             method=f"{result.method}+polished",
@@ -1114,7 +1150,7 @@ def _polish_selected_mask(result: TissueMaskResult) -> TissueMaskResult:
     if np.array_equal(polished, result.mask):
         return result
     metrics = _mask_metrics(polished)
-    warnings = _mask_warnings(polished, BrightfieldMaskConfig())
+    warnings = _mask_warnings_from_metrics(metrics, BrightfieldMaskConfig())
     return TissueMaskResult(
         mask=polished,
         method=f"{result.method}+polished",
@@ -1783,7 +1819,8 @@ def evaluate_tissue_mask(
     binary = np.asarray(mask, dtype=bool)
     if binary.ndim != 2:
         raise ValueError("mask must be a two-dimensional array")
-    return _mask_metrics(binary), _mask_warnings(binary, config)
+    metrics = _mask_metrics(binary)
+    return metrics, _mask_warnings_from_metrics(metrics, config)
 
 
 def clean_external_tissue_mask(
@@ -2092,6 +2129,15 @@ def _dominant_component_mask(
 
 def _mask_warnings(mask: np.ndarray, config: BrightfieldMaskConfig) -> list[str]:
     metrics = _mask_metrics(mask)
+    return _mask_warnings_from_metrics(metrics, config)
+
+
+def _mask_warnings_from_metrics(
+    metrics: dict[str, float],
+    config: BrightfieldMaskConfig,
+) -> list[str]:
+    """Return mask warnings without recomputing an existing metric set."""
+
     warnings: list[str] = []
     if metrics["foreground_fraction"] < config.min_foreground_fraction:
         warnings.append("foreground fraction is too small")
@@ -2111,10 +2157,19 @@ def _mask_warnings(mask: np.ndarray, config: BrightfieldMaskConfig) -> list[str]
 
 
 def _mask_score(mask: np.ndarray, config: BrightfieldMaskConfig) -> float:
-    warnings = _mask_warnings(mask, config)
+    metrics = _mask_metrics(mask)
+    warnings = _mask_warnings_from_metrics(metrics, config)
+    return _mask_score_from_metrics(metrics, warnings)
+
+
+def _mask_score_from_metrics(
+    metrics: dict[str, float],
+    warnings: list[str],
+) -> float:
+    """Score one canonical metric set without repeating morphology work."""
+
     if warnings:
         return -float(len(warnings))
-    metrics = _mask_metrics(mask)
     area = metrics["foreground_fraction"]
     bbox = metrics["bbox_fraction"]
     largest = metrics["largest_component_fraction"]
