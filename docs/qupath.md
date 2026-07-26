@@ -78,6 +78,8 @@ The primary **Project workflow** tab supports:
 - automatic or explicit registration reference selection
 - registration resolution and bounded thumbnail, mask, ordering, and QC
   worker controls
+- registration QC detail with a production `review` tier, a minimal `none`
+  tier, and a forensic `full` tier
 - semantic device including explicit `cuda:N`, K range, batch-size,
   patch-reader, optional native libvips thread cap, bounded global-fit threads,
   and model-cache controls
@@ -142,6 +144,17 @@ The QuPath **Device** control selects the backend for UNI2-h feature extraction.
 The global semantic atlas then uses the validated CPU implementation;
 **Fit threads** bounds its native BLAS and OpenMP pools. An idle GPU during the
 fit stage is therefore expected and does not indicate a fallback or failure.
+
+The **QC detail** control selects Histopia's post-mask alignment artifact tier.
+`review` is the production default and retains the primary per-slide panels
+used by the registration portal plus non-rigid acceptance panels. `full` adds
+pair, crop, blend, checkerboard, and contact diagnostics for algorithm
+debugging. `none` skips those post-mask images while retaining transforms,
+metrics, registration results, and full-resolution export support. On a
+representative 24-slide brightfield run, `review` reduced cold
+registration-plus-QC time from 69.83 to 10.97 seconds and retained artifact
+volume from 1.278 GB to 437 MB, while preserving the exact registration result
+and all primary review panels.
 
 Selected slides may come from different directories, but each must have a
 unique filename and a single local NDPI, SCN, SVS, TIFF, or OME-TIFF source
