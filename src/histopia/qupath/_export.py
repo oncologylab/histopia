@@ -16,6 +16,9 @@ from histopia.semantic._approval import (
     SemanticApproval,
     validate_semantic_approval,
 )
+from histopia.semantic._registration_binding import (
+    validate_semantic_registration_binding,
+)
 from histopia.semantic._result_validation import validate_semantic_result
 
 if TYPE_CHECKING:
@@ -222,78 +225,17 @@ def _validate_registration_binding(
     semantic_root: Path,
     semantic_payload: dict[str, object],
 ) -> tuple[str, RegistrationApproval | None, str | None]:
-    preflight_path = semantic_root / "preflight.json"
-    preflight = json.loads(preflight_path.read_text())
-    if not isinstance(preflight, dict):
-        raise ValueError("semantic preflight root must be an object")
-    schema = preflight.get("schema_version")
-    if schema not in {1, 2, 3}:
-        raise ValueError("semantic preflight schema is unsupported")
-    fingerprint = preflight.get("fingerprint")
-    provenance = semantic_payload.get("feature_provenance")
-    if (
-        not isinstance(fingerprint, str)
-        or not fingerprint
-        or not isinstance(provenance, dict)
-        or provenance.get("preflight_fingerprint") != fingerprint
-    ):
-        raise ValueError("semantic preflight fingerprint is stale")
-    core = {
-        "schema_version": schema,
-        "registration_result_sha256": preflight.get("registration_result_sha256"),
-        "order_review_fingerprint": preflight.get("order_review_fingerprint"),
-        "reference_slide": preflight.get("reference_slide"),
-        "slides": _portable_preflight_slides(preflight.get("slides")),
-    }
-    if schema == 3:
-        core["registration_approval_sha256"] = preflight.get(
-            "registration_approval_sha256"
-        )
-    if _json_sha256(core) != fingerprint:
-        raise ValueError("semantic preflight record is stale")
-    if core["registration_result_sha256"] != _file_sha256(registration_path):
-        raise ValueError("semantic atlas belongs to a different registration result")
-    slides = registration.get("slides")
-    if not isinstance(slides, list):
-        raise ValueError("registration result contains no slides")
-    registration_ids = [
-        Path(str(row.get("path", ""))).name for row in slides if isinstance(row, dict)
-    ]
-    preflight_ids = [str(row.get("slide_name", "")) for row in core["slides"]]
-    semantic_ids = [
-        str(row.get("id", ""))
-        for row in semantic_payload.get("slides", [])
-        if isinstance(row, dict)
-    ]
-    if (
-        len(registration_ids) != len(slides)
-        or any(not value for value in registration_ids)
-        or len(set(registration_ids)) != len(registration_ids)
-        or registration_ids != preflight_ids
-        or registration_ids != semantic_ids
-    ):
-        raise ValueError("semantic and registration slide order differs")
-    references = [
-        slide_id
-        for slide_id, row in zip(registration_ids, slides, strict=True)
-        if row.get("is_reference")
-    ]
-    if references != [preflight.get("reference_slide")]:
-        raise ValueError("semantic and registration references differ")
-    approval = None
-    approval_sha256 = None
-    if schema == 3:
-        expected_approval = core["registration_approval_sha256"]
-        if not isinstance(expected_approval, str) or not expected_approval:
-            raise ValueError("semantic preflight registration approval is stale")
-        approval, approval_sha256 = _validate_registration_approval(
-            registration_path.parent
-        )
-        if expected_approval != approval_sha256:
-            raise ValueError("semantic preflight registration approval is stale")
-        if approval.registration_result_sha256 != core["registration_result_sha256"]:
-            raise ValueError("registration approval differs from semantic preflight")
-    return fingerprint, approval, approval_sha256
+    binding = validate_semantic_registration_binding(
+        registration_path.parent,
+        semantic_root,
+        registration_payload=registration,
+        semantic_payload=semantic_payload,
+    )
+    return (
+        binding.preflight_fingerprint,
+        binding.registration_approval,
+        binding.registration_approval_sha256,
+    )
 
 
 def _validate_registration_approval(
@@ -308,25 +250,6 @@ def _validate_registration_approval(
     if before != after:
         raise ValueError("registration approval changed during validation")
     return approval, after
-
-
-def _portable_preflight_slides(value: object) -> list[dict[str, object]]:
-    if not isinstance(value, list) or not value:
-        raise ValueError("semantic preflight contains no slides")
-    portable: list[dict[str, object]] = []
-    for row in value:
-        if not isinstance(row, dict):
-            raise ValueError("semantic preflight slides must be objects")
-        portable.append(
-            {key: item for key, item in row.items() if key != "source_path"}
-        )
-    return portable
-
-
-def _json_sha256(value: object) -> str:
-    return hashlib.sha256(
-        json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
 
 
 def _write_semantic_geojson(

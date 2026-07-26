@@ -63,6 +63,15 @@ def validate_semantic_approval(run_dir: Path | str) -> SemanticApproval:
 
     root = Path(run_dir)
     result = validate_semantic_result(root)
+    return _validate_semantic_approval_for_result(root, result)
+
+
+def _validate_semantic_approval_for_result(
+    root: Path,
+    result: dict[str, object],
+) -> SemanticApproval:
+    """Validate review metadata for an already integrity-checked result."""
+
     review = _load_review(root / "semantic_review.json")
     if review.get("schema_version") != 3:
         raise ValueError("semantic review must use schema version 3")

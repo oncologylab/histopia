@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -75,6 +76,12 @@ def test_viewer_embeds_seven_mouse_qc_and_exact_review_state(tmp_path: Path) -> 
         "approved": False,
         "fingerprint_matches": True,
     }
+    binding = semantic["registration_binding"]
+    assert binding["preflight_schema_version"] == 2
+    assert len(binding["preflight_fingerprint"]) == 64
+    assert len(binding["registration_result_sha256"]) == 64
+    assert binding["registration_approval_sha256"] is None
+    assert binding["approval_bound"] is False
     assert semantic["link_pair_count"] == 1
     topology = json.loads((index.parent / semantic["links_url"]).read_text())
     assert topology["links"][0]["accepted_links"] == 600
@@ -96,6 +103,43 @@ def test_viewer_requires_qc_for_every_semantic_mouse(tmp_path: Path) -> None:
             semantic_runs={"4000": semantic_run},
             cohort_qc=cohort_path,
         )
+
+
+def test_viewer_rejects_semantics_from_changed_registration(tmp_path: Path) -> None:
+    run, semantic_run, _ = _write_mouse(tmp_path, "4000", with_topology=False)
+    result_path = run / "registration_result.json"
+    result = json.loads(result_path.read_text())
+    result["changed_after_feature_extraction"] = True
+    result_path.write_text(json.dumps(result))
+
+    with pytest.raises(ValueError, match="different registration result"):
+        build_section_viewer(
+            {"4000": run},
+            tmp_path / "viewer",
+            semantic_runs={"4000": semantic_run},
+        )
+
+
+def test_viewer_requires_complete_semantic_approval_metadata(tmp_path: Path) -> None:
+    run, semantic_run, _ = _write_mouse(tmp_path, "4000", with_topology=False)
+    review_path = semantic_run / "semantic_review.json"
+    review = json.loads(review_path.read_text())
+    review.update({"approved": True, "reviewer": "Reviewer", "notes": ""})
+    review_path.write_text(json.dumps(review))
+
+    index = build_section_viewer(
+        {"4000": run},
+        tmp_path / "viewer",
+        semantic_runs={"4000": semantic_run},
+    )
+
+    semantic = json.loads((index.parent / "manifest.json").read_text())["mice"][0][
+        "semantic"
+    ]
+    assert semantic["review"] == {
+        "approved": False,
+        "fingerprint_matches": True,
+    }
 
 
 def test_viewer_reuses_checksum_verified_mouse(
@@ -289,11 +333,60 @@ def _write_mouse(
             )
             labels[str(k)] = str(label_path)
         semantic_slides.append({"id": name, "labels": labels})
-    (run_dir / "registration_result.json").write_text(
+    registration_path = run_dir / "registration_result.json"
+    registration_path.write_text(
         json.dumps(
             {
                 "reference_slide": str(root / "section-1.ndpi"),
                 "slides": registration_slides,
+            }
+        )
+    )
+    preflight_slides = [
+        {
+            "slide_name": Path(str(row["path"])).name,
+            "source_sha256": f"source-{index}",
+            "thumbnail_sha256": f"thumbnail-{index}",
+            "mask_sha256": f"mask-{index}",
+            "mask_method": "test",
+            "mask_review_status": "auto_pass",
+            "transform_sha256": f"transform-{index}",
+            "thumbnail_shape": [20, 20],
+            "mpp_xy": [0.5, 0.5],
+            "is_reference": bool(row["is_reference"]),
+        }
+        for index, row in enumerate(registration_slides)
+    ]
+    preflight_core = {
+        "schema_version": 2,
+        "registration_result_sha256": hashlib.sha256(
+            registration_path.read_bytes()
+        ).hexdigest(),
+        "order_review_fingerprint": None,
+        "reference_slide": "section-1.ndpi",
+        "slides": preflight_slides,
+    }
+    preflight_fingerprint = hashlib.sha256(
+        json.dumps(
+            preflight_core,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+    (semantic_dir / "preflight.json").write_text(
+        json.dumps(
+            {
+                **preflight_core,
+                "registration_run": str(run_dir),
+                "slides": [
+                    {
+                        **row,
+                        "source_path": str(registration_slides[index]["path"]),
+                    }
+                    for index, row in enumerate(preflight_slides)
+                ],
+                "fingerprint": preflight_fingerprint,
+                "slide_count": slide_count,
             }
         )
     )
@@ -338,6 +431,12 @@ def _write_mouse(
             "corrected": {"slide_variance_fraction": 0.02},
         },
         "k_selection": [{"k": 7, "composite_score": 0.8}],
+        "feature_provenance": {
+            "preflight_fingerprint": preflight_fingerprint,
+            "expected_slide_ids": [
+                Path(str(row["path"])).name for row in registration_slides
+            ],
+        },
     }
     payload = _seal_semantic_result(semantic_dir, core)
     (semantic_dir / "semantic_result.json").write_text(json.dumps(payload))

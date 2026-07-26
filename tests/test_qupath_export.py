@@ -13,6 +13,7 @@ import histopia.qupath._export as qupath_export_module
 import histopia.registration._approval as registration_approval_module
 from histopia.qupath import export_qupath_bundle
 from histopia.registration import approve_registration_run
+from histopia.semantic import validate_semantic_registration_binding
 from histopia.semantic._result import _seal_semantic_result
 
 
@@ -60,6 +61,26 @@ def test_qupath_bundle_exports_native_semantic_geojson(tmp_path: Path) -> None:
     assert first["properties"]["classification"]["color"] == [215, 48, 39]
     assert first["geometry"]["type"] == "MultiPolygon"
     assert first["geometry"]["coordinates"][0][0][0] == [0.0, 0.0]
+
+
+@pytest.mark.parametrize("approval_bound", [False, True])
+def test_semantic_registration_binding_reports_preflight_contract(
+    tmp_path: Path,
+    approval_bound: bool,
+) -> None:
+    registration, semantic = _write_runs(
+        tmp_path,
+        approval_bound=approval_bound,
+    )
+
+    binding = validate_semantic_registration_binding(registration, semantic)
+
+    assert binding.preflight_schema_version == (3 if approval_bound else 2)
+    assert binding.approval_bound is approval_bound
+    assert len(binding.preflight_fingerprint) == 64
+    assert len(binding.registration_result_sha256) == 64
+    assert (binding.registration_approval is not None) is approval_bound
+    assert (binding.registration_approval_sha256 is not None) is approval_bound
 
 
 def test_qupath_bundle_rejects_unavailable_k(tmp_path: Path) -> None:

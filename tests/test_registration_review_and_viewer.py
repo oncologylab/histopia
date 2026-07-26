@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -390,7 +391,8 @@ def test_viewer_adds_lazy_semantic_and_blend_modes(tmp_path: Path) -> None:
         "mpp_xy": [0.5, 0.5],
         "mpp_source": "test",
     }
-    (run_dir / "registration_result.json").write_text(
+    registration_path = run_dir / "registration_result.json"
+    registration_path.write_text(
         json.dumps(
             {
                 "reference_slide": str(tmp_path / "section.ndpi"),
@@ -416,6 +418,51 @@ def test_viewer_adds_lazy_semantic_and_blend_modes(tmp_path: Path) -> None:
         analysis_mpp=np.float64(0.5),
     )
     np.savez_compressed(semantic / "atlas_model.npz", pca_mean=np.zeros(2))
+    preflight_core = {
+        "schema_version": 2,
+        "registration_result_sha256": hashlib.sha256(
+            registration_path.read_bytes()
+        ).hexdigest(),
+        "order_review_fingerprint": None,
+        "reference_slide": "section.ndpi",
+        "slides": [
+            {
+                "slide_name": "section.ndpi",
+                "source_sha256": "source-sha256",
+                "thumbnail_sha256": "thumbnail-sha256",
+                "mask_sha256": "mask-sha256",
+                "mask_method": "test",
+                "mask_review_status": "auto_pass",
+                "transform_sha256": "transform-sha256",
+                "thumbnail_shape": [20, 20],
+                "mpp_xy": [0.5, 0.5],
+                "is_reference": True,
+            }
+        ],
+    }
+    preflight_fingerprint = hashlib.sha256(
+        json.dumps(
+            preflight_core,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+    (semantic / "preflight.json").write_text(
+        json.dumps(
+            {
+                **preflight_core,
+                "registration_run": str(run_dir),
+                "slides": [
+                    {
+                        **preflight_core["slides"][0],
+                        "source_path": str(tmp_path / "section.ndpi"),
+                    }
+                ],
+                "fingerprint": preflight_fingerprint,
+                "slide_count": 1,
+            }
+        )
+    )
     payload = _seal_semantic_result(
         semantic,
         {
@@ -432,6 +479,10 @@ def test_viewer_adds_lazy_semantic_and_blend_modes(tmp_path: Path) -> None:
                 }
             ],
             "topology_pairs": [],
+            "feature_provenance": {
+                "preflight_fingerprint": preflight_fingerprint,
+                "expected_slide_ids": ["section.ndpi"],
+            },
         },
     )
     (semantic / "semantic_result.json").write_text(json.dumps(payload))

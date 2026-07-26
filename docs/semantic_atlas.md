@@ -309,6 +309,14 @@ registration whose masks and order were reviewed but whose completed alignment
 was never finally approved. Historical schema-1 and schema-2 preflights remain
 readable for fitting and approved-result export.
 
+Viewer and QuPath export use the same registration-binding validator. It
+requires the exact registration-result bytes, section order, reference, and
+semantic preflight fingerprint recorded during extraction; schema-3 runs also
+require the exact final registration approval. A later transform edit is
+therefore rejected even when all slide filenames still match. The viewer
+records the validated binding in its manifest and rechecks it after asset
+generation before publishing a new manifest.
+
 Add an atlas to the section viewer with:
 
 ```bash

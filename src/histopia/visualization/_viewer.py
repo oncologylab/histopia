@@ -25,7 +25,12 @@ from histopia.registration._io import (
     warp_mask_thumbnail,
     warp_rgb_thumbnail,
 )
-from histopia.semantic._result import validate_semantic_result
+from histopia.semantic._approval import _validate_semantic_approval_for_result
+from histopia.semantic._registration_binding import (
+    SemanticRegistrationBinding,
+    validate_semantic_registration_binding,
+)
+from histopia.semantic._result_validation import validate_semantic_result
 from histopia.visualization._registration_state import (
     current_registration_review_stages,
     registration_artifact_slide_names,
@@ -38,7 +43,7 @@ THREE_VENDOR_SHA256 = {
     "three.module.min.js": "08fd7545d13d2c7fb65ab691530a802dafefd638596501854f267d0fb13c39e7",
 }
 MAX_DISPLAY_LINKS = 500
-VIEWER_MOUSE_CACHE_VERSION = 1
+VIEWER_MOUSE_CACHE_VERSION = 2
 _VIEWER_QC_FIELDS = (
     "fingerprint",
     "selected_k",
@@ -252,6 +257,7 @@ def build_section_viewer(
     semantic_runs = semantic_runs or {}
     cohort_rows = _load_cohort_rows(cohort_qc)
     mouse_payloads: list[dict[str, object]] = []
+    semantic_validations: list[tuple[Path, Path, str, SemanticRegistrationBinding]] = []
 
     for mouse_id, run_value in sorted(runs.items()):
         run_dir = Path(run_value)
@@ -262,6 +268,25 @@ def build_section_viewer(
         semantic_payload = (
             validate_semantic_result(semantic_dir) if semantic_dir is not None else None
         )
+        semantic_binding = (
+            validate_semantic_registration_binding(
+                run_dir,
+                semantic_dir,
+                registration_payload=payload,
+                semantic_payload=semantic_payload,
+            )
+            if semantic_dir is not None and semantic_payload is not None
+            else None
+        )
+        if semantic_binding is not None and semantic_dir is not None:
+            semantic_validations.append(
+                (
+                    run_dir,
+                    semantic_dir,
+                    str(semantic_payload["fingerprint"]),
+                    semantic_binding,
+                )
+            )
         semantic_review = (
             _semantic_review_payload(semantic_dir, semantic_payload)
             if semantic_dir is not None and semantic_payload is not None
@@ -283,6 +308,7 @@ def build_section_viewer(
             payload,
             semantic_payload=semantic_payload,
             semantic_qc=semantic_qc,
+            semantic_binding=semantic_binding,
         )
         previous_mouse = old_mice.get(mouse_id)
         previous_cache = old_mouse_cache.get(mouse_id)
@@ -304,6 +330,11 @@ def build_section_viewer(
             if previous_mouse.get("semantic") is not None:
                 previous_mouse["semantic"]["review"] = semantic_review
                 previous_mouse["semantic"]["qc"] = semantic_qc
+                previous_mouse["semantic"]["registration_binding"] = (
+                    semantic_binding.to_json_dict()
+                    if semantic_binding is not None
+                    else None
+                )
             mouse_payloads.append(previous_mouse)
             new_mouse_cache[mouse_id] = previous_cache
             mouse_stats["reused"] += 1
@@ -446,6 +477,11 @@ def build_section_viewer(
                     "batch_correction": semantic_payload.get("batch_correction"),
                     "k_selection": semantic_payload.get("k_selection"),
                     "fingerprint": semantic_payload.get("fingerprint"),
+                    "registration_binding": (
+                        semantic_binding.to_json_dict()
+                        if semantic_binding is not None
+                        else None
+                    ),
                     "review": semantic_review,
                     "qc": semantic_qc,
                     "links_url": topology_url,
@@ -462,6 +498,23 @@ def build_section_viewer(
         }
 
     webp_batch.flush()
+    for run_dir, semantic_dir, fingerprint, expected_binding in semantic_validations:
+        current_semantic = validate_semantic_result(semantic_dir)
+        if current_semantic.get("fingerprint") != fingerprint:
+            raise ValueError("semantic result changed during viewer generation")
+        current_registration = json.loads(
+            (run_dir / "registration_result.json").read_text()
+        )
+        current_binding = validate_semantic_registration_binding(
+            run_dir,
+            semantic_dir,
+            registration_payload=current_registration,
+            semantic_payload=current_semantic,
+        )
+        if current_binding != expected_binding:
+            raise ValueError(
+                "semantic registration binding changed during viewer generation"
+            )
     (output_dir / "manifest.json").write_text(
         json.dumps({"schema_version": 1, "mice": mouse_payloads}, indent=2) + "\n"
     )
@@ -961,6 +1014,7 @@ def _viewer_mouse_fingerprint(
     *,
     semantic_payload: dict[str, object] | None,
     semantic_qc: dict[str, object] | None,
+    semantic_binding: SemanticRegistrationBinding | None,
 ) -> str:
     slides = []
     for slide in registration.get("slides", []):
@@ -994,6 +1048,9 @@ def _viewer_mouse_fingerprint(
             semantic_payload.get("fingerprint")
             if semantic_payload is not None
             else None
+        ),
+        "semantic_registration_binding": (
+            semantic_binding.to_json_dict() if semantic_binding is not None else None
         ),
         "semantic_qc": semantic_qc,
     }
@@ -1238,10 +1295,21 @@ def _semantic_review_payload(
     semantic_payload: dict[str, object],
 ) -> dict[str, object]:
     review_path = semantic_dir / "semantic_review.json"
-    review = json.loads(review_path.read_text()) if review_path.exists() else {}
+    try:
+        review = json.loads(review_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        review = {}
+    if not isinstance(review, dict):
+        review = {}
     matches = review.get("fingerprint") == semantic_payload.get("fingerprint")
+    try:
+        _validate_semantic_approval_for_result(semantic_dir, semantic_payload)
+    except (OSError, TypeError, ValueError):
+        approved = False
+    else:
+        approved = True
     return {
-        "approved": bool(review.get("approved")) and matches,
+        "approved": approved,
         "fingerprint_matches": matches,
     }
 

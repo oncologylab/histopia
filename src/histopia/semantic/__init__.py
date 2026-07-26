@@ -6,6 +6,10 @@ _PUBLIC_IMPORTS = {
     "PatchFeatures": ("histopia.semantic._features", "PatchFeatures"),
     "SemanticApproval": ("histopia.semantic._approval", "SemanticApproval"),
     "SemanticPreflight": ("histopia.semantic._preflight", "SemanticPreflight"),
+    "SemanticRegistrationBinding": (
+        "histopia.semantic._registration_binding",
+        "SemanticRegistrationBinding",
+    ),
     "SemanticAtlasConfig": ("histopia.semantic._config", "SemanticAtlasConfig"),
     "approve_semantic_result": (
         "histopia.semantic._approval",
@@ -29,6 +33,10 @@ _PUBLIC_IMPORTS = {
         "histopia.semantic._approval",
         "validate_semantic_approval",
     ),
+    "validate_semantic_registration_binding": (
+        "histopia.semantic._registration_binding",
+        "validate_semantic_registration_binding",
+    ),
     "write_cohort_qc": ("histopia.semantic._qc", "write_cohort_qc"),
     "write_preflight": ("histopia.semantic._preflight", "write_preflight"),
 }
@@ -49,6 +57,7 @@ __all__ = [
     "PatchFeatures",
     "SemanticApproval",
     "SemanticPreflight",
+    "SemanticRegistrationBinding",
     "SemanticAtlasConfig",
     "approve_semantic_result",
     "fit_or_reuse_saved_features",
@@ -57,6 +66,7 @@ __all__ = [
     "run_semantic_atlas",
     "summarize_semantic_run",
     "validate_semantic_approval",
+    "validate_semantic_registration_binding",
     "write_cohort_qc",
     "write_preflight",
 ]

@@ -56,6 +56,9 @@ the same rounded native-pixel patch dimensions as feature extraction.
 Selecting an unavailable K, pairing a different registration, missing a slide,
 changing grid rows, or using uncalibrated geometry fails before a new manifest
 is presented as complete.
+The browser viewer and QuPath exporter share this fail-closed binding
+validator, including exact section order and reference checks and the final
+registration-approval digest for schema-3 preflights.
 Fingerprinted annotation directories keep an older manifest internally
 consistent while a new export is being written.
 
