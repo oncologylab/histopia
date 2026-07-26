@@ -9,7 +9,8 @@ import math
 import os
 import re
 import time
-from concurrent.futures import ThreadPoolExecutor
+from collections import deque
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
@@ -67,10 +68,11 @@ class _WebpWriteJob:
     image: np.ndarray | None
     cache_entry: dict[str, object] | None
     encoded: bool
+    future: Future[dict[str, object]] | None = None
 
 
 class _WebpWriteBatch:
-    """Encode one slide's independent WebPs with deterministic cache commits."""
+    """Encode one mouse's WebPs through a bounded deterministic CPU pipeline."""
 
     def __init__(
         self,
@@ -88,7 +90,11 @@ class _WebpWriteBatch:
         self.new_cache = new_cache
         self.stats = stats
         self.workers = workers
-        self.jobs: list[_WebpWriteJob] = []
+        self.jobs: deque[_WebpWriteJob] = deque()
+        self.executor: ThreadPoolExecutor | None = None
+        self.pending_encoded = 0
+        self.max_pending_encoded = max(1, workers * 2)
+        self.peak_pending_encoded = 0
 
     def queue(
         self,
@@ -127,45 +133,74 @@ class _WebpWriteBatch:
             )
             return
         path.parent.mkdir(parents=True, exist_ok=True)
-        self.jobs.append(
-            _WebpWriteJob(
-                relative,
-                input_sha256,
-                path,
-                options,
-                array,
-                None,
-                True,
-            )
+        job = _WebpWriteJob(
+            relative,
+            input_sha256,
+            path,
+            options,
+            array,
+            None,
+            True,
         )
+        self.jobs.append(job)
+        if self.workers == 1:
+            job.cache_entry = self._encode(job)
+            self._commit_next()
+            return
+
+        if self.executor is None:
+            self.executor = ThreadPoolExecutor(
+                max_workers=self.workers,
+                thread_name_prefix="viewer-webp",
+            )
+        job.future = self.executor.submit(self._encode, job)
+        self.pending_encoded += 1
+        self.peak_pending_encoded = max(
+            self.peak_pending_encoded,
+            self.pending_encoded,
+        )
+        while self.pending_encoded >= self.max_pending_encoded:
+            self._commit_next()
 
     def flush(self) -> None:
         if not self.jobs:
+            self._shutdown_executor()
             return
-        pending = [job for job in self.jobs if job.encoded]
-        if self.workers == 1 or len(pending) < 2:
-            entries = map(self._encode, pending)
-            for job, entry in zip(pending, entries, strict=True):
-                job.cache_entry = entry
-        else:
-            with ThreadPoolExecutor(
-                max_workers=min(self.workers, len(pending)),
-                thread_name_prefix="viewer-webp",
-            ) as executor:
-                entries = executor.map(self._encode, pending)
-                for job, entry in zip(pending, entries, strict=True):
-                    job.cache_entry = entry
-        for job in self.jobs:
-            if job.cache_entry is None:
-                raise RuntimeError(f"WEBP encoding did not complete: {job.relative}")
-            self.new_cache[job.relative] = job.cache_entry
-            self.stats["encoded" if job.encoded else "reused"] += 1
-        self.jobs.clear()
+        try:
+            while self.jobs:
+                self._commit_next()
+        finally:
+            self._shutdown_executor()
+
+    def _commit_next(self) -> None:
+        job = self.jobs.popleft()
+        if job.future is not None:
+            try:
+                job.cache_entry = job.future.result()
+            finally:
+                self.pending_encoded -= 1
+        if job.cache_entry is None:
+            raise RuntimeError(f"WEBP encoding did not complete: {job.relative}")
+        self.new_cache[job.relative] = job.cache_entry
+        self.stats["encoded" if job.encoded else "reused"] += 1
+
+    def _shutdown_executor(self) -> None:
+        if self.executor is None:
+            return
+        self.executor.shutdown(wait=True, cancel_futures=True)
+        self.executor = None
 
     def _encode(self, job: _WebpWriteJob) -> dict[str, object]:
         if job.image is None:
             raise RuntimeError(f"WEBP encoding is missing pixels: {job.relative}")
-        self.image_module.fromarray(job.image).save(job.path, "WEBP", **job.options)
+        try:
+            self.image_module.fromarray(job.image).save(
+                job.path,
+                "WEBP",
+                **job.options,
+            )
+        finally:
+            job.image = None
         return {
             "input_sha256": job.input_sha256,
             "output_sha256": _file_sha256(job.path),
@@ -390,7 +425,7 @@ def build_section_viewer(
                     f"assets/{_safe_name(mouse_id)}/{blend_name}"
                 )
             slides.append(slide_payload)
-            webp_batch.flush()
+        webp_batch.flush()
         mouse_payload = {
             "id": mouse_id,
             "provisional_order": mouse_id in provisional_mice,
@@ -453,6 +488,8 @@ def build_section_viewer(
             "mice_rendered": mouse_stats["rendered"],
             "three_version": THREE_VERSION,
             "workers": workers,
+            "compute_backend": "cpu",
+            "peak_pending_assets": webp_batch.peak_pending_encoded,
             "elapsed_seconds": round(time.perf_counter() - build_started, 3),
         },
     )
@@ -1200,12 +1237,14 @@ def _semantic_rgba(
     reference_geometry: dict[str, object],
     registered_mask: np.ndarray,
 ) -> np.ndarray:
-    from PIL import Image, ImageDraw
+    from PIL import ImageColor
 
     with np.load(labels_path, allow_pickle=False) as data:
-        labels = data["labels"]
-        points_um = data["reference_um_xy"]
+        labels = np.asarray(data["labels"])
+        points_um = np.asarray(data["reference_um_xy"])
         patch_um = float(data["patch_size_px"]) * float(data["analysis_mpp"])
+    if labels.ndim != 1 or points_um.shape != (len(labels), 2):
+        raise ValueError("semantic labels and coordinates have incompatible shapes")
     mpp_x, mpp_y = (float(value) for value in reference_geometry["mpp_xy"])
     x, y, native_width, native_height = (
         float(value) for value in reference_geometry["content_bbox_xywh"]
@@ -1219,21 +1258,98 @@ def _semantic_rgba(
     )
     half_width = patch_um / mpp_x * thumb_width / native_width / 2
     half_height = patch_um / mpp_y * thumb_height / native_height / 2
-    canvas = Image.new("RGBA", (thumb_width, thumb_height), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(canvas)
-    for label, (center_x, center_y) in zip(labels, points_px, strict=True):
-        color = palette[int(label) % len(palette)]
-        draw.rectangle(
-            (
-                center_x - half_width,
-                center_y - half_height,
-                center_x + half_width,
-                center_y + half_height,
-            ),
-            fill=color + "dc",
-        )
-    rgba = np.asarray(canvas).copy()
+    bounds = np.column_stack(
+        [
+            np.trunc(points_px[:, 0] - half_width),
+            np.trunc(points_px[:, 1] - half_height),
+            np.trunc(points_px[:, 0] + half_width),
+            np.trunc(points_px[:, 1] + half_height),
+        ]
+    ).astype(np.intp)
+    colors = np.asarray(
+        [(*ImageColor.getrgb(color), 220) for color in palette],
+        dtype=np.uint8,
+    )
+    rgba = _rasterize_semantic_rectangles(
+        labels,
+        bounds,
+        colors,
+        (thumb_height, thumb_width),
+    )
     rgba[..., 3] = np.where(registered_mask, rgba[..., 3], 0)
+    return rgba
+
+
+def _rasterize_semantic_rectangles(
+    labels: np.ndarray,
+    bounds_xyxy: np.ndarray,
+    colors: np.ndarray,
+    shape: tuple[int, int],
+) -> np.ndarray:
+    """Paint constant-size patch boxes while preserving last-write ordering."""
+
+    height, width = shape
+    rgba = np.zeros((height, width, 4), dtype=np.uint8)
+    if len(labels) == 0:
+        return rgba
+    left, top, right, bottom = bounds_xyxy.T
+    maximum_width = int(np.max(right - left + 1, initial=0))
+    maximum_height = int(np.max(bottom - top + 1, initial=0))
+    expanded_cells = len(labels) * maximum_width * maximum_height
+    if maximum_width <= 0 or maximum_height <= 0:
+        return rgba
+    if expanded_cells > 4_000_000:
+        for label, x0, y0, x1, y1 in zip(
+            labels,
+            left,
+            top,
+            right,
+            bottom,
+            strict=True,
+        ):
+            clipped_x0 = max(0, int(x0))
+            clipped_y0 = max(0, int(y0))
+            clipped_x1 = min(width - 1, int(x1))
+            clipped_y1 = min(height - 1, int(y1))
+            if clipped_x0 <= clipped_x1 and clipped_y0 <= clipped_y1:
+                rgba[
+                    clipped_y0 : clipped_y1 + 1,
+                    clipped_x0 : clipped_x1 + 1,
+                ] = colors[int(label) % len(colors)]
+        return rgba
+
+    rows = (
+        top[:, None, None]
+        + np.arange(
+            maximum_height,
+            dtype=np.intp,
+        )[None, :, None]
+    )
+    columns = (
+        left[:, None, None]
+        + np.arange(
+            maximum_width,
+            dtype=np.intp,
+        )[None, None, :]
+    )
+    valid = (
+        (rows >= 0)
+        & (rows < height)
+        & (rows <= bottom[:, None, None])
+        & (columns >= 0)
+        & (columns < width)
+        & (columns <= right[:, None, None])
+    )
+    linear = np.broadcast_to(rows * width + columns, valid.shape)[valid]
+    patch_indices = np.broadcast_to(
+        np.arange(len(labels), dtype=np.int32)[:, None, None],
+        valid.shape,
+    )[valid]
+    last_patch = np.full(height * width, -1, dtype=np.int32)
+    np.maximum.at(last_patch, linear, patch_indices)
+    painted = last_patch >= 0
+    flat = rgba.reshape(-1, 4)
+    flat[painted] = colors[labels[last_patch[painted]].astype(np.intp) % len(colors)]
     return rgba
 
 

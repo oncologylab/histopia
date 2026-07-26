@@ -353,5 +353,15 @@ Viewer builds checksum their generated WEBP assets and reuse exact matches.
 `build-report.json` records elapsed time and encoded/reused asset counts for
 each build. A changed image, transform, mask, label grid, palette, or encoder
 setting produces different rendered pixels and replaces only the affected
-asset. `--workers` bounds concurrent encoders and defaults to one; worker
-counts do not change rendered bytes or cache ordering.
+asset. Viewer rasterization and WEBP encoding are CPU-backed. `--workers`
+bounds a persistent encoder pool and defaults to one, while a deterministic
+producer queue retains at most twice that many pending images. Worker counts
+do not change rendered bytes or cache ordering. `build-report.json` records
+`compute_backend = "cpu"` and `peak_pending_assets` so execution and memory
+controls are explicit.
+
+On a clean 134-section, five-sample build containing 1,742 assets, this bounded
+pipeline plus vectorized semantic patch rasterization reduced four-worker wall
+time from 227.48 to 177.79 seconds (21.8%). All 1,756 generated non-report
+files remained byte-identical; an unchanged warm build continued to reuse
+every asset in 0.67 seconds.

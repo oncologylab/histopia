@@ -5,10 +5,11 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from histopia.semantic._result import _seal_semantic_result
 from histopia.visualization import build_section_viewer
+from histopia.visualization._viewer import _rasterize_semantic_rectangles
 
 
 def test_viewer_embeds_seven_mouse_qc_and_exact_review_state(tmp_path: Path) -> None:
@@ -187,12 +188,54 @@ def test_parallel_viewer_encoding_matches_serial_output(tmp_path: Path) -> None:
     assert parallel_files == serial_files
     report = json.loads((parallel / "build-report.json").read_text())
     assert report["workers"] == 4
+    assert report["compute_backend"] == "cpu"
+    assert report["peak_pending_assets"] == 8
     assert report["assets_encoded"] == 26
 
 
 def test_viewer_rejects_nonpositive_workers(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="viewer workers must be positive"):
         build_section_viewer({}, tmp_path / "viewer", workers=0)
+
+
+@pytest.mark.parametrize(
+    ("bounds", "shape"),
+    [
+        (
+            np.array(
+                [
+                    [-3, -2, 4, 5],
+                    [2, 3, 10, 11],
+                    [7, 1, 16, 8],
+                    [20, 20, 24, 24],
+                ]
+            ),
+            (14, 18),
+        ),
+        (np.array([[0, 0, 2_000, 2_000]]), (18, 20)),
+    ],
+)
+def test_semantic_rectangle_rasterizer_matches_ordered_pillow_paint(
+    bounds: np.ndarray,
+    shape: tuple[int, int],
+) -> None:
+    labels = np.arange(len(bounds), dtype=np.int16) % 3
+    colors = np.array(
+        [
+            [210, 30, 45, 220],
+            [25, 145, 80, 220],
+            [45, 95, 210, 220],
+        ],
+        dtype=np.uint8,
+    )
+    expected = Image.new("RGBA", (shape[1], shape[0]), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(expected)
+    for label, box in zip(labels, bounds, strict=True):
+        draw.rectangle(tuple(int(value) for value in box), fill=tuple(colors[label]))
+
+    actual = _rasterize_semantic_rectangles(labels, bounds, colors, shape)
+
+    assert np.array_equal(actual, np.asarray(expected))
 
 
 def _write_mouse(
