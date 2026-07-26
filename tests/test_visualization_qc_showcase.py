@@ -92,13 +92,40 @@ def test_export_registration_qc_showcase_rejects_missing_review(
 ) -> None:
     source = tmp_path / "source"
     _write_source(source)
+    missing = source / "4435-mask-review"
+    for path in missing.iterdir():
+        path.unlink()
+    missing.rmdir()
+
+    with pytest.raises(FileNotFoundError, match="mask review"):
+        export_registration_qc_showcase(source, tmp_path / "qc", "4435")
+
+
+def test_export_registration_qc_showcase_disables_missing_legacy_order(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    output = tmp_path / "qc"
+    _write_source(source)
     missing = source / "4435-order-review"
     for path in missing.iterdir():
         path.unlink()
     missing.rmdir()
 
-    with pytest.raises(FileNotFoundError, match="order review"):
-        export_registration_qc_showcase(source, tmp_path / "qc", "4435")
+    export_registration_qc_showcase(source, output, "4435")
+
+    portal = json.loads((output / "qc-manifest.json").read_text())
+    assert portal["mice"] == [
+        {
+            "id": "4435",
+            "stages": {
+                "mask": "reviews/4435/mask/",
+                "registration": "registration/",
+            },
+        }
+    ]
+    assert not (output / "reviews" / "4435" / "order").exists()
+    assert (output / "registration" / "assets" / "4435" / "section.webp").exists()
 
 
 def test_export_registration_qc_showcase_supports_provisional_reviews(
@@ -178,6 +205,8 @@ def test_registration_qc_portal_switches_embedded_mouse(tmp_path: Path) -> None:
                 "?mouse=4943&stage=order",
                 wait_until="networkidle",
             )
+            assert page.get_by_role("button", name="Tissue masks").count() == 1
+            assert page.get_by_role("button", name="Orientation & order").count() == 1
             assert page.locator("#mouse").input_value() == "4943"
             page.wait_for_function(
                 """() => document.querySelector('#review')
@@ -196,6 +225,21 @@ def test_registration_qc_portal_switches_embedded_mouse(tmp_path: Path) -> None:
             assert (
                 page.evaluate("new URL(location.href).searchParams.get('stage')")
                 == "registration"
+            )
+            page.locator("#review").evaluate(
+                "frame => { frame.contentWindow.__histopiaSentinel = 1; }"
+            )
+            page.locator("#mouse").select_option("4435")
+            page.wait_for_function(
+                """id => document.querySelector('#review')
+                  .contentDocument.querySelector('#mouse')?.value === id""",
+                arg="4435",
+            )
+            assert (
+                page.locator("#review").evaluate(
+                    "frame => frame.contentWindow.__histopiaSentinel"
+                )
+                == 1
             )
             dimensions = page.evaluate(
                 """() => ({

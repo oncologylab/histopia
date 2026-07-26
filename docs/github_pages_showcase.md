@@ -48,9 +48,7 @@ current stack over the stable light viewport.
 
 ## Registration QC Portal
 
-The same release contains a separate `/qc/` portal for approved workflow
-diagnostics. The current portal presents the mask/orientation, section-order,
-and 3D registration evidence for four recently sealed cohorts:
+The same release contains a separate `/qc/` portal for workflow diagnostics:
 
 ```bash
 histopia-visualize qc-showcase \
@@ -61,10 +59,19 @@ histopia-visualize qc-showcase \
 ```
 
 The portal contains only selected review artifacts and registered histology
-textures. It provides mask/orientation, section-order, and interactive 3D
+textures. It provides tissue-mask, orientation/order, and interactive 3D
 registration views. Semantic textures, raw slides, source paths, and unrelated
-specimens are excluded. The exporter rejects missing reviews, unsafe texture
-paths, local absolute paths, and non-empty output directories.
+specimens are excluded. Tissue-mask review is required. A legacy cohort that
+predates a formal orientation/order artifact remains exportable, but that stage
+is visibly disabled rather than reconstructed from incomplete provenance. The
+exporter rejects missing mask reviews, unsafe texture paths, local absolute
+paths, and non-empty output directories.
+
+The current public portal covers the same 16 registration stacks and 401 serial
+sections as the atlas. Tissue-mask evidence is available for all 16 cohorts;
+13 cohorts also have a formal orientation/order review. For the three legacy
+cohorts without that record, the orientation/order control is disabled. A
+visible workflow stage does not itself confer scientific approval.
 
 QC portals accept shareable `mouse` and `stage` query parameters, for example
 `?mouse=sample-a&stage=order`. Changing the selected specimen or review stage

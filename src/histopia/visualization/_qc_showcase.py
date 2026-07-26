@@ -28,8 +28,8 @@ _INDEX_HTML = """<!doctype html>
     <strong>Histopia Registration QC</strong>
     <label>Mouse <select id="mouse"></select></label>
     <nav aria-label="Review stage">
-      <button data-stage="mask" class="active">Mask &amp; rotation</button>
-      <button data-stage="order">Section order</button>
+      <button data-stage="mask" class="active">Tissue masks</button>
+      <button data-stage="order">Orientation &amp; order</button>
       <button data-stage="registration">3D registration</button>
     </nav>
     <a href="../">Semantic atlas</a>
@@ -117,7 +117,8 @@ function render() {
   });
   buttons.forEach(button =>
     button.classList.toggle('active', button.dataset.stage === stage));
-  frame.src = item.stages[stage];
+  const source = item.stages[stage];
+  if (frame.getAttribute('src') !== source) frame.src = source;
   syncLocation();
 }
 
@@ -160,12 +161,9 @@ def export_registration_qc_showcase(
         raise ValueError("viewer manifest must contain a mice list")
     mice_by_id = {str(mouse.get("id")): mouse for mouse in mice}
     for mouse_id in selected_ids:
-        for kind in ("mask", "order"):
-            review = source / f"{mouse_id}-{kind}-review"
-            if not review.is_dir():
-                raise FileNotFoundError(
-                    f"{kind} review not found for mouse: {mouse_id}"
-                )
+        review = source / f"{mouse_id}-mask-review"
+        if not review.is_dir():
+            raise FileNotFoundError(f"mask review not found for mouse: {mouse_id}")
 
     output.mkdir(parents=True, exist_ok=True)
     registration: Path | None = None
@@ -179,15 +177,15 @@ def export_registration_qc_showcase(
             review_root / "mask",
             ignore=ignore_cache,
         )
-        shutil.copytree(
-            source / f"{mouse_id}-order-review",
-            review_root / "order",
-            ignore=ignore_cache,
-        )
-        stages = {
-            "mask": f"reviews/{mouse_id}/mask/",
-            "order": f"reviews/{mouse_id}/order/",
-        }
+        stages = {"mask": f"reviews/{mouse_id}/mask/"}
+        order_review = source / f"{mouse_id}-order-review"
+        if order_review.is_dir():
+            shutil.copytree(
+                order_review,
+                review_root / "order",
+                ignore=ignore_cache,
+            )
+            stages["order"] = f"reviews/{mouse_id}/order/"
         mouse = mice_by_id.get(mouse_id)
         if mouse is not None:
             if registration is None:
