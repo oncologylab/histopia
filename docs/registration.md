@@ -473,6 +473,12 @@ Review generation uses legacy artifact discovery only when this telemetry file
 is absent. If a current telemetry file exists but is unreadable or invalid,
 review generation fails closed instead of exposing potentially stale mask,
 order, or alignment artifacts.
+Stable viewer generation follows the same rule for final approvals. An absent
+`registration_approval.json` remains an explicit review gate. If the file
+exists but its schema, artifact digests, order fingerprint, slide count, mask
+states, reviewer, or timestamp is invalid, viewer generation fails rather than
+silently presenting the run as merely unapproved. Unsealed runs are labeled
+`Registration approval required` in the 3D viewer.
 Mask telemetry additionally separates independent candidate extraction, group
 refinement, review resolution, artifact encoding, and rendered/reused slide
 counts. Ordering telemetry distinguishes distance/proposal cache hits and

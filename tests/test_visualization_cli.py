@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+
+import pytest
 
 from histopia.visualization import _cli
 
@@ -272,3 +275,42 @@ def test_qc_showcase_command_exports_selected_mice(tmp_path: Path, monkeypatch) 
 
     assert result == 0
     assert calls == [(source, output, ["4435", "4943"])]
+
+
+def test_audit_command_emits_portable_json_and_integrity_exit_code(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    output = tmp_path / "audit.json"
+
+    result = _cli.main(
+        [
+            "audit",
+            "--run",
+            f"mouse={tmp_path / 'missing-registration'}",
+            "--output",
+            str(output),
+        ]
+    )
+
+    payload = json.loads(capsys.readouterr().out)
+    assert result == 1
+    assert payload == json.loads(output.read_text())
+    assert payload["status"] == "incomplete"
+    assert payload["cohorts"][0]["registration"]["issue"] == (
+        "registration_result_missing"
+    )
+    assert str(tmp_path) not in json.dumps(payload)
+
+
+def test_audit_command_rejects_duplicate_named_runs(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="duplicate registration run name"):
+        _cli.main(
+            [
+                "audit",
+                "--run",
+                f"mouse={tmp_path / 'first'}",
+                "--run",
+                f"mouse={tmp_path / 'second'}",
+            ]
+        )

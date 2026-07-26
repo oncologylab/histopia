@@ -2,12 +2,27 @@ from __future__ import annotations
 
 import gzip
 import http.client
+import io
 import threading
 from pathlib import Path
 
 import pytest
 
-from histopia.visualization._server import create_viewer_server
+from histopia.visualization._server import (
+    _ViewerRequestHandler,
+    create_viewer_server,
+)
+
+
+@pytest.mark.parametrize("error", (BrokenPipeError, ConnectionResetError))
+def test_server_ignores_expected_cancelled_texture_writes(error: type[OSError]) -> None:
+    class CancelledOutput:
+        def write(self, _payload: bytes) -> None:
+            raise error
+
+    handler = object.__new__(_ViewerRequestHandler)
+
+    handler.copyfile(io.BytesIO(b"cancelled texture"), CancelledOutput())
 
 
 def test_server_redirects_root_to_stable_endpoint(tmp_path: Path) -> None:

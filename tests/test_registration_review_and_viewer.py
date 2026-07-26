@@ -333,7 +333,6 @@ def test_alignment_review_builds_direct_file_checkerboards(
     (run_dir / "registration_result.json").write_text(
         json.dumps({"reference_slide": slides[0]["path"], "slides": slides})
     )
-    (run_dir / "registration_approval.json").write_text("{}")
 
     serial = tmp_path / "serial"
     parallel = tmp_path / "parallel"
@@ -486,6 +485,17 @@ def test_viewer_adds_lazy_semantic_and_blend_modes(tmp_path: Path) -> None:
         },
     )
     (semantic / "semantic_result.json").write_text(json.dumps(payload))
+    (semantic / "semantic_review.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "approved": False,
+                "fingerprint": payload["fingerprint"],
+                "reviewer": None,
+                "notes": "",
+            }
+        )
+    )
 
     index = build_section_viewer(
         {"mouse": run_dir},

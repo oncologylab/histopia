@@ -70,6 +70,14 @@ class _ViewerRequestHandler(SimpleHTTPRequestHandler):
             return self._send_gzip_head(path)
         return super().send_head()
 
+    def copyfile(self, source, outputfile) -> None:  # type: ignore[no-untyped-def]
+        """Ignore expected disconnects when a browser cancels stale textures."""
+
+        try:
+            super().copyfile(source, outputfile)
+        except (BrokenPipeError, ConnectionResetError):
+            return
+
     def _send_gzip_head(self, path: Path) -> BytesIO | None:
         stat = path.stat()
         etag = f'"{stat.st_mtime_ns:x}-{stat.st_size:x}-gzip"'

@@ -4,6 +4,24 @@ from importlib import import_module
 
 _PUBLIC_IMPORTS = {
     "MAX_DISPLAY_LINKS": ("histopia.visualization._viewer", "MAX_DISPLAY_LINKS"),
+    "CohortWorkflowAudit": (
+        "histopia.visualization._audit",
+        "CohortWorkflowAudit",
+    ),
+    "RegistrationWorkflowAudit": (
+        "histopia.visualization._audit",
+        "RegistrationWorkflowAudit",
+    ),
+    "SemanticWorkflowAudit": (
+        "histopia.visualization._audit",
+        "SemanticWorkflowAudit",
+    ),
+    "ViewerWorkflowAudit": (
+        "histopia.visualization._audit",
+        "ViewerWorkflowAudit",
+    ),
+    "WorkflowAudit": ("histopia.visualization._audit", "WorkflowAudit"),
+    "audit_workflows": ("histopia.visualization._audit", "audit_workflows"),
     "build_alignment_review": (
         "histopia.visualization._viewer",
         "build_alignment_review",
@@ -45,6 +63,10 @@ _PUBLIC_IMPORTS = {
         "export_static_showcase",
     ),
     "serve_viewer": ("histopia.visualization._server", "serve_viewer"),
+    "write_workflow_audit": (
+        "histopia.visualization._audit",
+        "write_workflow_audit",
+    ),
 }
 
 
@@ -61,6 +83,12 @@ def __getattr__(name: str):
 
 __all__ = [
     "MAX_DISPLAY_LINKS",
+    "CohortWorkflowAudit",
+    "RegistrationWorkflowAudit",
+    "SemanticWorkflowAudit",
+    "ViewerWorkflowAudit",
+    "WorkflowAudit",
+    "audit_workflows",
     "build_alignment_review",
     "build_mask_review",
     "build_non_rigid_review",
@@ -72,4 +100,5 @@ __all__ = [
     "export_registration_qc_showcase",
     "export_static_showcase",
     "serve_viewer",
+    "write_workflow_audit",
 ]

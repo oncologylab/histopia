@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -45,6 +46,14 @@ def serve_viewer(root: Path, *, bind: str, port: int) -> None:
     from histopia.visualization._server import serve_viewer as serve
 
     serve(root, bind=bind, port=port)
+
+
+def audit_workflows(*args, **kwargs):
+    """Lazily dispatch workflow integrity auditing."""
+
+    from histopia.visualization._audit import audit_workflows as audit
+
+    return audit(*args, **kwargs)
 
 
 def _named_path(value: str) -> tuple[str, Path]:
@@ -150,6 +159,34 @@ def _main(argv: list[str] | None = None) -> int:
         required=True,
         help="Exact viewer mouse ID; repeat to export a cohort.",
     )
+    audit = commands.add_parser(
+        "audit",
+        help="Validate registration, semantic, and viewer workflow integrity.",
+    )
+    audit.add_argument(
+        "--run",
+        type=_named_path,
+        action="append",
+        required=True,
+        help="Named registration run as NAME=PATH; repeat for a cohort.",
+    )
+    audit.add_argument(
+        "--semantic-run",
+        type=_named_path,
+        action="append",
+        default=[],
+        help="Named semantic run as NAME=PATH; repeat for a cohort.",
+    )
+    audit.add_argument(
+        "--viewer-manifest",
+        type=Path,
+        help="Optional generated viewer manifest.json to verify.",
+    )
+    audit.add_argument(
+        "--output",
+        type=Path,
+        help="Optional path for the portable JSON audit.",
+    )
     args = parser.parse_args(argv)
 
     if args.command == "mask-review":
@@ -223,10 +260,34 @@ def _main(argv: list[str] | None = None) -> int:
         index = export_registration_qc_showcase(args.source, args.output, args.mouse)
         print(index)
         return 0
+    if args.command == "audit":
+        from histopia.visualization._audit import write_workflow_audit
+
+        report = audit_workflows(
+            _unique_named_paths(args.run, "registration"),
+            semantic_runs=_unique_named_paths(args.semantic_run, "semantic"),
+            viewer_manifest=args.viewer_manifest,
+        )
+        if args.output is not None:
+            write_workflow_audit(report, args.output)
+        print(json.dumps(report.to_json_dict(), sort_keys=True))
+        return report.exit_code
     if args.command == "serve":
         serve_viewer(args.root, bind=args.bind, port=args.port)
         return 0
     parser.error(f"unsupported command: {args.command}")
+
+
+def _unique_named_paths(
+    values: list[tuple[str, Path]],
+    kind: str,
+) -> dict[str, Path]:
+    result: dict[str, Path] = {}
+    for name, path in values:
+        if name in result:
+            raise ValueError(f"duplicate {kind} run name: {name}")
+        result[name] = path
+    return result
 
 
 if __name__ == "__main__":

@@ -16,6 +16,13 @@ python -m pip install \
 The base install keeps workflow namespaces lazy. Package imports and every
 command's `--help` remain available without NumPy or a workflow extra; executing
 scientific work still requires the matching profile below.
+Integrity auditing of existing registration, semantic, and viewer artifacts is
+also available from the base install because it uses JSON parsing and streamed
+SHA-256 validation rather than image or model runtimes:
+
+```bash
+histopia-visualize audit --run sample=/path/to/registration-run
+```
 
 Local development:
 

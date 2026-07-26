@@ -24,8 +24,10 @@ semantic results, and writes:
   digest of every inventoried file.
 
 The current public artifact contains 16 reviewed registration stacks spanning
-401 serial sections. Seven stacks also contain fingerprint-approved semantic
-atlases. The viewer permits specimen switching, slide-by-slide navigation,
+401 serial sections. Seven stacks also contain fingerprint-reviewed semantic
+atlases created before final registration-approval binding was introduced.
+They remain demonstration artifacts rather than current schema-3 production
+approvals. The viewer permits specimen switching, slide-by-slide navigation,
 select-all/deselect-all visibility, histology/semantic/blended rendering, K=5
 through K=15 exploration, and adjacent-section topology links.
 

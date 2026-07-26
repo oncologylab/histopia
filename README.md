@@ -84,6 +84,19 @@ runtime all match. Any change to reviewed masks, geometry, orientation,
 transforms, semantic labels, or encoding settings invalidates the affected
 cache.
 
+Audit a completed cohort before publishing or consuming it downstream:
+
+```bash
+histopia-visualize audit \
+  --run sample=/path/to/registration-run \
+  --semantic-run sample=/path/to/semantic-run \
+  --viewer-manifest /path/to/viewer/manifest.json
+```
+
+The path-free report distinguishes approved results, explicit review gates,
+missing stages, and integrity failures. Existing but stale approval claims fail
+closed instead of being displayed as ordinary unapproved results.
+
 ## Development
 
 ```bash

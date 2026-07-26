@@ -43,7 +43,7 @@ THREE_VENDOR_SHA256 = {
     "three.module.min.js": "08fd7545d13d2c7fb65ab691530a802dafefd638596501854f267d0fb13c39e7",
 }
 MAX_DISPLAY_LINKS = 500
-VIEWER_MOUSE_CACHE_VERSION = 3
+VIEWER_MOUSE_CACHE_VERSION = 4
 _LOSSY_WEBP_METHOD = 5
 _LOSSLESS_WEBP_METHOD = 6
 _VIEWER_QC_FIELDS = (
@@ -1041,6 +1041,8 @@ def _viewer_mouse_fingerprint(
     slides = []
     for slide in registration.get("slides", []):
         source = Path(str(slide["path"]))
+        thumbnail_path = run_dir / "processed" / f"{source.stem}.thumbnail.png"
+        mask_path = run_dir / "processed" / f"{source.stem}.mask.png"
         review = slide.get("mask_review")
         review_fingerprint = (
             review.get("thumbnail_sha256") if isinstance(review, dict) else None
@@ -1059,7 +1061,9 @@ def _viewer_mouse_fingerprint(
                 "is_reference": bool(slide.get("is_reference")),
                 "transform": slide.get("transform"),
                 "geometry": slide.get("geometry"),
-                "thumbnail_fingerprint": review_fingerprint,
+                "review_fingerprint": review_fingerprint,
+                "thumbnail_sha256": _file_sha256(thumbnail_path),
+                "mask_sha256": _file_sha256(mask_path),
             }
         )
     core = {
@@ -1087,8 +1091,8 @@ def _registration_approval_payload(run_dir: Path) -> dict[str, object] | None:
         return None
     try:
         approval = validate_registration_approval(run_dir)
-    except (OSError, ValueError):
-        return None
+    except (OSError, TypeError, ValueError) as exc:
+        raise ValueError("registration approval exists but is invalid") from exc
     return {
         "approved": True,
         "reviewer": approval.reviewer,
@@ -1320,17 +1324,21 @@ def _semantic_review_payload(
     review_path = semantic_dir / "semantic_review.json"
     try:
         review = json.loads(review_path.read_text())
-    except (OSError, json.JSONDecodeError):
-        review = {}
-    if not isinstance(review, dict):
-        review = {}
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("semantic review is missing or invalid") from exc
+    if (
+        not isinstance(review, dict)
+        or review.get("schema_version") != 3
+        or not isinstance(review.get("approved"), bool)
+    ):
+        raise ValueError("semantic review is invalid")
     matches = review.get("fingerprint") == semantic_payload.get("fingerprint")
-    try:
-        _validate_semantic_approval_for_result(semantic_dir, semantic_payload)
-    except (OSError, TypeError, ValueError):
-        approved = False
-    else:
-        approved = True
+    approved = bool(review["approved"])
+    if approved:
+        try:
+            _validate_semantic_approval_for_result(semantic_dir, semantic_payload)
+        except (OSError, TypeError, ValueError) as exc:
+            raise ValueError("semantic approval exists but is invalid") from exc
     return {
         "approved": approved,
         "fingerprint_matches": matches,
@@ -2307,7 +2315,7 @@ async function loadMouse(mouse) {
   const approval = mouse.registration_approval;
   document.querySelector('#order-status').textContent = approval
     ? `Approved registration · ${approval.reviewed_at.slice(0, 10)}`
-    : (mouse.provisional_order ? 'Provisional section order' : 'Confirmed section order');
+    : (mouse.provisional_order ? 'Provisional section order' : 'Registration approval required');
   const pairSelect = document.querySelector('#link-pair');
   pairSelect.replaceChildren();
   (mouse.semantic?.links || []).forEach((pair, index) => {

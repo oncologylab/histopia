@@ -81,6 +81,12 @@ def test_viewer_fits_desktop_and_ignores_stale_mouse_loads(tmp_path: Path) -> No
                     === 'false'"""
             )
             assert page.url.endswith("/histopia/?mouse=second")
+            assert page.locator("#order-status").inner_text() == (
+                "Registration approval required"
+            )
+            assert page.locator("#order-status").evaluate(
+                "element => element.scrollWidth <= element.clientWidth + 1"
+            )
             ready_screenshot = page.locator("canvas").screenshot()
             ready_pixels = np.asarray(
                 Image.open(io.BytesIO(ready_screenshot)).convert("RGB")

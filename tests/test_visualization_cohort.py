@@ -120,26 +120,19 @@ def test_viewer_rejects_semantics_from_changed_registration(tmp_path: Path) -> N
         )
 
 
-def test_viewer_requires_complete_semantic_approval_metadata(tmp_path: Path) -> None:
+def test_viewer_rejects_incomplete_semantic_approval_metadata(tmp_path: Path) -> None:
     run, semantic_run, _ = _write_mouse(tmp_path, "4000", with_topology=False)
     review_path = semantic_run / "semantic_review.json"
     review = json.loads(review_path.read_text())
     review.update({"approved": True, "reviewer": "Reviewer", "notes": ""})
     review_path.write_text(json.dumps(review))
 
-    index = build_section_viewer(
-        {"4000": run},
-        tmp_path / "viewer",
-        semantic_runs={"4000": semantic_run},
-    )
-
-    semantic = json.loads((index.parent / "manifest.json").read_text())["mice"][0][
-        "semantic"
-    ]
-    assert semantic["review"] == {
-        "approved": False,
-        "fingerprint_matches": True,
-    }
+    with pytest.raises(ValueError, match="semantic approval exists but is invalid"):
+        build_section_viewer(
+            {"4000": run},
+            tmp_path / "viewer",
+            semantic_runs={"4000": semantic_run},
+        )
 
 
 def test_viewer_reuses_checksum_verified_mouse(
@@ -176,6 +169,80 @@ def test_viewer_reuses_checksum_verified_mouse(
     assert "showLinks.disabled = !linksAvailable" in viewer_js
 
 
+def test_viewer_rebuilds_mouse_when_processed_thumbnail_changes(
+    tmp_path: Path,
+) -> None:
+    run, semantic_run, _ = _write_mouse(tmp_path, "4000", with_topology=False)
+    output = tmp_path / "viewer"
+    index = build_section_viewer(
+        {"4000": run},
+        output,
+        semantic_runs={"4000": semantic_run},
+    )
+    mouse = json.loads((index.parent / "manifest.json").read_text())["mice"][0]
+    texture = index.parent / mouse["slides"][0]["texture"]
+    original_texture_sha256 = hashlib.sha256(texture.read_bytes()).hexdigest()
+    source = Path(
+        json.loads((run / "registration_result.json").read_text())["slides"][0]["path"]
+    )
+    thumbnail = run / "processed" / f"{source.stem}.thumbnail.png"
+    changed = np.asarray(Image.open(thumbnail).convert("RGB")).copy()
+    changed[5:20, 5:20] = (20, 180, 30)
+    Image.fromarray(changed).save(thumbnail)
+
+    build_section_viewer(
+        {"4000": run},
+        output,
+        semantic_runs={"4000": semantic_run},
+    )
+
+    report = json.loads((output / "build-report.json").read_text())
+    assert report["mice_rendered"] == 1
+    assert report["mice_reused"] == 0
+    assert hashlib.sha256(texture.read_bytes()).hexdigest() != original_texture_sha256
+
+
+def test_viewer_rejects_invalid_existing_approval_claims(tmp_path: Path) -> None:
+    run, semantic_run, _ = _write_mouse(tmp_path, "4000", with_topology=False)
+    (run / "registration_approval.json").write_text("{}")
+
+    with pytest.raises(ValueError, match="registration approval exists but is invalid"):
+        build_section_viewer(
+            {"4000": run},
+            tmp_path / "invalid-registration",
+            semantic_runs={"4000": semantic_run},
+        )
+
+    (run / "registration_approval.json").unlink()
+    review_path = semantic_run / "semantic_review.json"
+    review = json.loads(review_path.read_text())
+    review.update({"approved": True, "reviewer": "", "notes": ""})
+    review_path.write_text(json.dumps(review))
+
+    with pytest.raises(ValueError, match="semantic approval exists but is invalid"):
+        build_section_viewer(
+            {"4000": run},
+            tmp_path / "invalid-semantic",
+            semantic_runs={"4000": semantic_run},
+        )
+
+
+def test_viewer_labels_unsealed_registration_truthfully(
+    tmp_path: Path,
+) -> None:
+    run, semantic_run, _ = _write_mouse(tmp_path, "4000", with_topology=False)
+
+    index = build_section_viewer(
+        {"4000": run},
+        tmp_path / "viewer",
+        semantic_runs={"4000": semantic_run},
+    )
+
+    viewer = (index.parent / "viewer.js").read_text()
+    assert "Registration approval required" in viewer
+    assert "Confirmed section order" not in viewer
+
+
 def test_viewer_rerenders_mouse_from_stale_encoder_cache_schema(
     tmp_path: Path,
 ) -> None:
@@ -198,7 +265,7 @@ def test_viewer_rerenders_mouse_from_stale_encoder_cache_schema(
     )
 
     report = json.loads((output / "build-report.json").read_text())
-    assert report["mouse_cache_version"] == 3
+    assert report["mouse_cache_version"] == 4
     assert report["mice_reused"] == 0
     assert report["mice_rendered"] == 1
 
@@ -306,7 +373,7 @@ def test_parallel_viewer_encoding_matches_serial_output(tmp_path: Path) -> None:
     report = json.loads((parallel / "build-report.json").read_text())
     assert report["workers"] == 4
     assert report["compute_backend"] == "cpu"
-    assert report["mouse_cache_version"] == 3
+    assert report["mouse_cache_version"] == 4
     assert report["lossy_webp_method"] == 5
     assert report["lossless_webp_method"] == 6
     assert report["peak_pending_assets"] == 8

@@ -367,6 +367,34 @@ histopia-visualize build /path/to/viewer-root \
   --workers 4
 ```
 
+Validate the exact registration seals, semantic bindings, mutable review
+records, and generated viewer manifest as one batch:
+
+```bash
+histopia-visualize audit \
+  --run sample-a=/path/to/registration-a \
+  --run sample-b=/path/to/registration-b \
+  --semantic-run sample-a=/path/to/semantic-a \
+  --semantic-run sample-b=/path/to/semantic-b \
+  --viewer-manifest /path/to/viewer-root/histopia/manifest.json \
+  --output /path/to/workflow-audit.json
+```
+
+`audit` emits the same portable JSON to standard output and, when requested,
+atomically writes it to `--output`. It never includes source or run-directory
+paths. Exit code `0` means every requested scientific stage is approved and
+the viewer is current. Exit code `2` means all inspected artifacts are valid
+but at least one human review or current registration-approval binding remains
+required. Exit code `1` means a requested artifact is missing, malformed,
+stale, mismatched, or otherwise unverifiable.
+
+The audit treats semantic preflight schemas 1 and 2 as `legacy_unsealed`, even
+when their semantic review record is approved. A production `approved` result
+requires schema 3, which binds the semantic features to the exact final
+registration approval. Viewer entries must match the current registration
+result digest, order fingerprint, semantic fingerprint, registration binding,
+review state, and section count.
+
 The canonical `histopia.visualization` viewer exposes Histology, Blend, and
 Semantic modes, selectable K, quantitative batch and K diagnostics, and one
 selected adjacent-pair topology overlay. Cohort builds also expose compact QC
@@ -384,7 +412,10 @@ Viewer builds checksum their generated WEBP assets and reuse exact matches.
 `build-report.json` records elapsed time and encoded/reused asset counts for
 each build. A changed image, transform, mask, label grid, palette, or encoder
 setting produces different rendered pixels and replaces only the affected
-asset. Viewer rasterization and WEBP encoding are CPU-backed. `--workers`
+asset. Mouse-level cache identity includes the current processed thumbnail and
+mask bytes, not only their review metadata, so post-run file replacement
+cannot reuse stale rendered textures. Viewer rasterization and WEBP encoding
+are CPU-backed. `--workers`
 bounds a persistent encoder pool and defaults to one, while a deterministic
 producer queue retains at most twice that many pending images. Worker counts
 do not change rendered bytes or cache ordering. `build-report.json` records
@@ -392,8 +423,8 @@ do not change rendered bytes or cache ordering. `build-report.json` records
 the lossless and lossy WEBP effort levels so execution, memory, and encoder
 controls are explicit. Registered and blended review textures use effort 5 at
 their existing quality settings. Semantic label textures remain lossless at
-effort 6. The mouse-cache schema is bumped whenever this encoding contract
-changes, preventing stale mouse-level reuse.
+effort 6. The mouse-cache schema is bumped whenever this encoding or
+source-identity contract changes, preventing stale mouse-level reuse.
 
 On a paired clean 134-section, five-sample build containing 1,742 WEBPs, the
 four-worker effort-5 build took 65.84 seconds internally and 66.13 seconds wall
