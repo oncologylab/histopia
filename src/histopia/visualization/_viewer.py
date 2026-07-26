@@ -30,7 +30,6 @@ from histopia.semantic._registration_binding import (
     SemanticRegistrationBinding,
     validate_semantic_registration_binding,
 )
-from histopia.semantic._result_validation import validate_semantic_result
 from histopia.visualization._registration_state import (
     current_registration_review_stages,
     registration_artifact_slide_names,
@@ -266,7 +265,9 @@ def build_section_viewer(
     semantic_runs = semantic_runs or {}
     cohort_rows = _load_cohort_rows(cohort_qc)
     mouse_payloads: list[dict[str, object]] = []
-    semantic_validations: list[tuple[Path, Path, str, SemanticRegistrationBinding]] = []
+    semantic_validations: list[
+        tuple[Path, Path, dict[str, object], SemanticRegistrationBinding]
+    ] = []
 
     for mouse_id, run_value in sorted(runs.items()):
         run_dir = Path(run_value)
@@ -275,7 +276,9 @@ def build_section_viewer(
             Path(semantic_runs[mouse_id]) if mouse_id in semantic_runs else None
         )
         semantic_payload = (
-            validate_semantic_result(semantic_dir) if semantic_dir is not None else None
+            _load_semantic_result_payload(semantic_dir)
+            if semantic_dir is not None
+            else None
         )
         semantic_binding = (
             validate_semantic_registration_binding(
@@ -292,7 +295,7 @@ def build_section_viewer(
                 (
                     run_dir,
                     semantic_dir,
-                    str(semantic_payload["fingerprint"]),
+                    semantic_payload,
                     semantic_binding,
                 )
             )
@@ -522,9 +525,14 @@ def build_section_viewer(
         }
 
     webp_batch.flush()
-    for run_dir, semantic_dir, fingerprint, expected_binding in semantic_validations:
-        current_semantic = validate_semantic_result(semantic_dir)
-        if current_semantic.get("fingerprint") != fingerprint:
+    for (
+        run_dir,
+        semantic_dir,
+        expected_semantic,
+        expected_binding,
+    ) in semantic_validations:
+        current_semantic = _load_semantic_result_payload(semantic_dir)
+        if current_semantic != expected_semantic:
             raise ValueError("semantic result changed during viewer generation")
         current_registration = json.loads(
             (run_dir / "registration_result.json").read_text()
@@ -580,6 +588,16 @@ def build_section_viewer(
         },
     )
     return output_dir / "index.html"
+
+
+def _load_semantic_result_payload(run_dir: Path) -> dict[str, object]:
+    try:
+        payload = json.loads((run_dir / "semantic_result.json").read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("semantic result is missing or invalid") from exc
+    if not isinstance(payload, dict):
+        raise ValueError("semantic result root must be an object")
+    return payload
 
 
 def _write_viewer_runtime(output_dir: Path) -> None:

@@ -449,8 +449,12 @@ each build. A changed image, transform, mask, label grid, palette, or encoder
 setting produces different rendered pixels and replaces only the affected
 asset. Mouse-level cache identity includes the current processed thumbnail and
 mask bytes, not only their review metadata, so post-run file replacement
-cannot reuse stale rendered textures. Viewer rasterization and WEBP encoding
-are CPU-backed. `--workers`
+cannot reuse stale rendered textures. Every semantic atlas and registration
+binding is fully validated before rendering and again before publication, so
+an artifact changed during generation fails the build. Each binding validation
+is the authoritative integrity pass; the builder does not redundantly hash the
+same atlas immediately before it. Viewer rasterization and WEBP encoding are
+CPU-backed. `--workers`
 bounds a persistent encoder pool and defaults to one, while a deterministic
 producer queue retains at most twice that many pending images. Worker counts
 do not change rendered bytes or cache ordering. `build-report.json` records
@@ -472,7 +476,8 @@ On a complete 16-cohort build with 401 sections, 11 K layers per section, and
 seconds. The builder created 401 patch rasters and reused them 4,010 times.
 All 5,213 image assets, the manifest, and browser runtime remained
 byte-identical to the corresponding current outputs. An unchanged warm build
-reused all 16 mice and 5,213 assets in 5.97 seconds.
+reused all 16 mice and 5,213 assets in a 2.99-second median while retaining
+both semantic integrity passes.
 
 On a paired clean 134-section, five-sample build containing 1,742 WEBPs, the
 four-worker effort-5 build took 65.84 seconds internally and 66.13 seconds wall

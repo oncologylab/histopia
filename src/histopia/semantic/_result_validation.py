@@ -53,6 +53,7 @@ def _referenced_artifacts(
     root: Path,
     payload: dict[str, object],
 ) -> dict[str, Path]:
+    root_resolved = root.resolve()
     raw_paths: list[object] = [payload.get("model")]
     for slide in payload.get("slides", []):
         raw_paths.extend(slide.get("labels", {}).values())
@@ -61,7 +62,7 @@ def _referenced_artifacts(
     for raw_path in raw_paths:
         if not isinstance(raw_path, str) or not raw_path:
             raise ValueError("semantic artifact paths must be non-empty relative paths")
-        relative, resolved = _safe_artifact_path(root, raw_path)
+        relative, resolved = _safe_artifact_path(root_resolved, raw_path)
         if relative in references:
             raise ValueError(
                 f"semantic artifact is referenced more than once: {relative}"
@@ -70,14 +71,13 @@ def _referenced_artifacts(
     return references
 
 
-def _safe_artifact_path(root: Path, value: str) -> tuple[str, Path]:
+def _safe_artifact_path(root_resolved: Path, value: str) -> tuple[str, Path]:
     relative = Path(value)
     if relative.is_absolute() or ".." in relative.parts:
         raise ValueError(
             "semantic artifact paths must be relative to the run directory"
         )
-    root_resolved = root.resolve()
-    resolved = (root / relative).resolve()
+    resolved = (root_resolved / relative).resolve()
     if not resolved.is_relative_to(root_resolved):
         raise ValueError(
             "semantic artifact paths must be relative to the run directory"

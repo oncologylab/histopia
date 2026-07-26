@@ -8,6 +8,8 @@ import numpy as np
 import pytest
 from PIL import Image, ImageDraw
 
+import histopia.semantic._registration_binding as registration_binding_module
+import histopia.visualization._viewer as viewer_module
 from histopia.semantic._result import _seal_semantic_result
 from histopia.visualization import build_section_viewer
 from histopia.visualization._viewer import (
@@ -170,6 +172,66 @@ def test_viewer_reuses_checksum_verified_mouse(
     assert asset.stat().st_mtime_ns == original_mtime
     viewer_js = (output / "viewer.js").read_text()
     assert "showLinks.disabled = !linksAvailable" in viewer_js
+
+
+def test_viewer_validates_semantic_artifacts_once_before_and_after_build(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run, semantic_run, _ = _write_mouse(tmp_path, "4000", with_topology=False)
+    validation_count = 0
+    validate = registration_binding_module.validate_semantic_result
+
+    def count_validations(*args, **kwargs):
+        nonlocal validation_count
+        validation_count += 1
+        return validate(*args, **kwargs)
+
+    monkeypatch.setattr(
+        registration_binding_module,
+        "validate_semantic_result",
+        count_validations,
+    )
+
+    build_section_viewer(
+        {"4000": run},
+        tmp_path / "viewer",
+        semantic_runs={"4000": semantic_run},
+    )
+
+    assert validation_count == 2
+
+
+def test_viewer_rejects_semantic_artifact_changed_during_build(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run, semantic_run, _ = _write_mouse(tmp_path, "4000", with_topology=False)
+    validation_count = 0
+    validate_binding = viewer_module.validate_semantic_registration_binding
+
+    def mutate_after_first_validation(*args, **kwargs):
+        nonlocal validation_count
+        validation_count += 1
+        binding = validate_binding(*args, **kwargs)
+        if validation_count == 1:
+            (semantic_run / "atlas_model.npz").write_bytes(b"changed-during-build")
+        return binding
+
+    monkeypatch.setattr(
+        viewer_module,
+        "validate_semantic_registration_binding",
+        mutate_after_first_validation,
+    )
+
+    with pytest.raises(ValueError, match="artifact digest mismatch"):
+        build_section_viewer(
+            {"4000": run},
+            tmp_path / "viewer",
+            semantic_runs={"4000": semantic_run},
+        )
+
+    assert validation_count == 2
 
 
 def test_viewer_rebuilds_mouse_when_processed_thumbnail_changes(

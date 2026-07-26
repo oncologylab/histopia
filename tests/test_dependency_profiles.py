@@ -5,6 +5,8 @@ from importlib.metadata import version as distribution_version
 from pathlib import Path
 
 import pytest
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
 
 try:
     import tomllib
@@ -15,12 +17,27 @@ except ModuleNotFoundError:
 ROOT = Path(__file__).parents[1]
 
 
-def _pins(requirements: list[str]) -> dict[str, str]:
+def _pins(
+    requirements: list[str],
+    *,
+    active_only: bool = False,
+) -> dict[str, str]:
     pins: dict[str, str] = {}
-    for requirement in requirements:
-        package, separator, version = requirement.partition("==")
-        if separator:
-            pins[package.lower().replace("_", "-")] = version.split(";", 1)[0].strip()
+    for raw_requirement in requirements:
+        requirement = Requirement(raw_requirement)
+        if (
+            active_only
+            and requirement.marker is not None
+            and not requirement.marker.evaluate()
+        ):
+            continue
+        exact_versions = [
+            specifier.version
+            for specifier in requirement.specifier
+            if specifier.operator == "=="
+        ]
+        if len(exact_versions) == 1:
+            pins[canonicalize_name(requirement.name)] = exact_versions[0]
     return pins
 
 
@@ -61,6 +78,9 @@ def test_reproducible_extras_match_constraint_versions() -> None:
 def test_installed_cpu_reproducible_profiles_match_exact_pins() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
     extras = project["optional-dependencies"]
-    expected = _pins(extras["registration-repro"] + extras["semantic-repro"])
+    expected = _pins(
+        extras["registration-repro"] + extras["semantic-repro"],
+        active_only=True,
+    )
 
     assert {package: distribution_version(package) for package in expected} == expected

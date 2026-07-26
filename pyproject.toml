@@ -106,6 +106,7 @@ browser-test = [
 ]
 dev = [
     "build>=1.2",
+    "packaging>=24",
     "pytest>=8",
     "ruff>=0.6",
     "twine>=5",

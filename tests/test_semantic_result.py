@@ -348,3 +348,28 @@ def test_result_fingerprint_rejects_unsafe_artifact_paths(
 
     with pytest.raises(ValueError, match="relative"):
         validate_semantic_result(tmp_path)
+
+
+def test_result_fingerprint_rejects_symlinked_artifact_escape(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "semantic"
+    run_dir.mkdir()
+    outside = tmp_path / "outside.npz"
+    outside.write_bytes(b"outside")
+    (run_dir / "model.npz").symlink_to(outside)
+    (run_dir / "semantic_result.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "fingerprint": "invalid",
+                "model": "model.npz",
+                "slides": [],
+                "topology_pairs": [],
+                "artifacts": {},
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="relative"):
+        validate_semantic_result(run_dir)

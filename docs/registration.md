@@ -667,9 +667,11 @@ mouse is reused only when its ordered transforms, geometry, reviewed thumbnail
 fingerprints, semantic fingerprint, and cohort QC all match and every
 referenced output still matches its saved checksum. The build report separates
 reused/rendered mice and reused/encoded assets so incremental performance is
-auditable. `--viewer-workers` bounds concurrent WebP encoders. The default of
-one is memory-conservative; four is a balanced server setting. Encoded bytes,
-manifest data, and cache order are deterministic across worker counts.
+auditable. Semantic artifacts and their registration binding are fully
+verified before generation and rechecked before publication, including on a
+warm cache hit. `--viewer-workers` bounds concurrent WebP encoders. The default
+of one is memory-conservative; four is a balanced server setting. Encoded
+bytes, manifest data, and cache order are deterministic across worker counts.
 Registered and blended review textures use libwebp effort 5; lossless semantic
 textures retain effort 6. `build-report.json` records both settings and the
 mouse-cache schema that invalidates outputs when this contract changes.
@@ -688,6 +690,11 @@ Semantic modes, K switching, and mobile, 1080p, and 4K layouts. An exact warm
 build reused all five mouse payloads and all 1,742 WebPs in 2.58 seconds
 internally. Four remains the balanced cold-build setting; exact cache reuse
 remains the preferred path for repeated review.
+
+On the complete 16-cohort, 401-section viewer, eliminating duplicate integrity
+work reduced a three-run warm median from 5.99 to 2.99 seconds. All 5,213
+assets were checksum-verified and reused, both semantic validation passes
+remained active, and the production manifest was byte-identical.
 
 ## Non-Rigid Refinement
 
