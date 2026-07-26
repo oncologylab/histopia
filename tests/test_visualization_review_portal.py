@@ -64,7 +64,16 @@ def test_registration_review_builds_path_free_fixed_viewport_portal(
     monkeypatch.setattr(_review_portal, "build_mask_review", build_mask)
     monkeypatch.setattr(_review_portal, "build_section_order_review", build_order)
     run.mkdir()
-    (run / "section_order_review.json").write_text("{}")
+    (run / "section_order_review.json").write_text(
+        json.dumps(
+            {
+                "slides": [
+                    {"slide": "HE.ndpi"},
+                    {"slide": "CK19.ndpi"},
+                ]
+            }
+        )
+    )
 
     index = _review_portal.build_registration_review(
         run,
@@ -128,6 +137,109 @@ def test_registration_review_supports_mask_only_preparation(
     assert "order" not in manifest
     script = (output / "registration-review.js").read_text()
     assert "button.hidden" in script
+
+
+def test_registration_review_hides_stale_downstream_stages_at_new_mask_gate(
+    tmp_path: Path, monkeypatch
+) -> None:
+    run = tmp_path / "registration"
+    output = tmp_path / "review"
+    run.mkdir()
+    current_names = ("HE.ndpi", "CK19.ndpi")
+    (run / "mask_review.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "slides": [{"slide": name} for name in current_names],
+            }
+        )
+    )
+    (run / "section_order_review.json").write_text("not current JSON")
+    (run / "registration_result.json").write_text("not current JSON")
+    (run / "registration_performance.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "workflow": "registration",
+                "observational_only": True,
+                "status": "review_required",
+                "review_stage": "masks",
+                "stages": {"mask_review": {"status": "review_required"}},
+            }
+        )
+    )
+
+    def build_mask(
+        registration_run: Path,
+        destination: Path,
+        *,
+        workers: int,
+    ) -> Path:
+        assert registration_run == run
+        destination.mkdir(parents=True)
+        (destination / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "approved": False,
+                    "fingerprint": "current-mask",
+                    "slides": [{}, {}],
+                }
+            )
+        )
+        return destination / "index.html"
+
+    def reject_stale(*args, **kwargs) -> Path:
+        raise AssertionError("stale downstream review must remain hidden")
+
+    monkeypatch.setattr(_review_portal, "build_mask_review", build_mask)
+    monkeypatch.setattr(_review_portal, "build_section_order_review", reject_stale)
+    monkeypatch.setattr(_review_portal, "build_alignment_review", reject_stale)
+
+    _review_portal.build_registration_review(run, output)
+
+    assert json.loads((output / "manifest.json").read_text()) == {
+        "schema_version": 1,
+        "mask": {
+            "approved": False,
+            "fingerprint": "current-mask",
+            "slide_count": 2,
+            "href": "mask/index.html",
+        },
+    }
+
+
+def test_registration_review_rejects_mask_from_unreached_latest_stage(
+    tmp_path: Path, monkeypatch
+) -> None:
+    run = tmp_path / "registration"
+    run.mkdir()
+    (run / "mask_review.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "slides": [{"slide": "stale.ndpi"}],
+            }
+        )
+    )
+    (run / "registration_performance.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "workflow": "registration",
+                "observational_only": True,
+                "status": "failed",
+                "stages": {"thumbnail_load": {"status": "failed"}},
+            }
+        )
+    )
+
+    def reject_stale(*args, **kwargs) -> Path:
+        raise AssertionError("stale mask review must not be built")
+
+    monkeypatch.setattr(_review_portal, "build_mask_review", reject_stale)
+
+    with pytest.raises(ValueError, match="has not prepared mask review"):
+        _review_portal.build_registration_review(run, tmp_path / "review")
 
 
 def test_registration_cohort_review_builds_one_path_free_entrypoint(

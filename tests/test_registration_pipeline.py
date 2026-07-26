@@ -86,6 +86,46 @@ def test_register_sections_writes_thumbnail_result(
     assert configured_vips_threads == [3]
 
 
+def test_reused_output_prunes_mask_reviews_for_removed_input_slides(
+    tmp_path: Path,
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    image = np.full((72, 72, 3), 255, dtype=np.uint8)
+    image[15:58, 18:55] = np.array([185, 100, 120], dtype=np.uint8)
+    slides = []
+    for index, shift in enumerate((0, 2, 4)):
+        path = input_dir / f"section-{index}.png"
+        Image.fromarray(np.roll(image, shift=(shift, 0), axis=(0, 1))).save(path)
+        slides.append(path)
+
+    def run(selected: tuple[Path, ...]) -> None:
+        register_sections(
+            RegistrationConfig(
+                input_dir=input_dir,
+                input_slides=selected,
+                output_dir=output_dir,
+                rigid_method="mask_moments",
+                max_processed_image_dim_px=72,
+                write_processed_images=False,
+            )
+        )
+
+    run(tuple(slides))
+    assert {
+        row["slide"]
+        for row in json.loads((output_dir / "mask_review.json").read_text())["slides"]
+    } == {path.name for path in slides}
+
+    run(tuple(slides[:2]))
+    current = json.loads((output_dir / "mask_review.json").read_text())
+
+    assert {row["slide"] for row in current["slides"]} == {
+        path.name for path in slides[:2]
+    }
+
+
 def test_strict_registration_advances_through_exact_review_stages(
     tmp_path: Path,
 ) -> None:

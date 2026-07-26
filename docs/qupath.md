@@ -91,6 +91,8 @@ The primary **Project workflow** tab supports:
   cancellation with bounded force escalation
 - one self-contained browser portal that opens at the mask-only preparation
   stage, then adds section order and registered-stack QC when available
+- stage-artifact cohort checks that hide downstream QC left by an earlier
+  workspace run and reject mismatched review or approval actions
 - separate fingerprint-bound mask and order approvals, followed by final
   sealing of the registered result
 - direct semantic execution from the approved registration workspace
@@ -110,6 +112,10 @@ from loading. Controls are locked while a child process is active. Semantic
 launch verifies the existing selection manifest and registration seal before
 atomically updating only the semantic runtime config, leaving reviewed
 registration provenance untouched.
+Reusing a workspace with a changed project selection prunes the current mask
+manifest to the selected cohort. Downstream order and alignment artifacts from
+an earlier run are not offered for review, approval, or semantic analysis
+unless their exact slide cohort matches the current staged workflow.
 
 The QuPath **Device** control selects the backend for UNI2-h feature extraction.
 The global semantic atlas then uses the validated CPU implementation;
@@ -133,8 +139,8 @@ The project workflow is deliberately staged:
    registration seal exists and its artifact checksums, order fingerprint,
    slide count, embedded mask statuses, reviewer, and timestamp still match.
    It also requires the current QuPath slide selection to equal the sealed
-   registration cohort. Every approval action is similarly bound to the
-   prepared selection manifest.
+   registration cohort. Every review and approval action is bound to both the
+   prepared selection manifest and the actual current stage artifacts.
 7. Choose **Open semantic QC** and review histology, blend, semantic K choices,
    batch diagnostics, and adjacent-section topology.
 8. Enter review metadata and choose **Approve semantic**. Approval revalidates

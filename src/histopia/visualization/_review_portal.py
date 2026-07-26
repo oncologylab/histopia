@@ -6,6 +6,10 @@ import json
 import re
 from pathlib import Path
 
+from histopia.visualization._registration_state import (
+    current_registration_review_stages,
+    registration_artifact_slide_names,
+)
 from histopia.visualization._viewer import (
     build_alignment_review,
     build_mask_review,
@@ -23,6 +27,9 @@ def build_registration_review(
 
     registration_run = Path(registration_run)
     output_dir = Path(output_dir)
+    available_stages = current_registration_review_stages(registration_run)
+    if "mask" not in available_stages:
+        raise ValueError("latest registration execution has not prepared mask review")
     mask_index = build_mask_review(
         registration_run,
         output_dir / "mask",
@@ -38,41 +45,57 @@ def build_registration_review(
             "href": "mask/index.html",
         },
     }
-    order_proposal = registration_run / "section_order_review.json"
-    if order_proposal.is_file():
-        order_index = build_section_order_review(
-            order_proposal,
-            registration_run / "processed",
-            output_dir / "order",
-            workers=workers,
+    mask_names = registration_artifact_slide_names(
+        registration_run / "mask_review.json",
+        field="slide",
+    )
+    order_is_current = mask_names is None
+    if "order" in available_stages:
+        order_proposal = registration_run / "section_order_review.json"
+        order_names = registration_artifact_slide_names(order_proposal, field="slide")
+        order_is_current = mask_names is None or order_names == mask_names
+        if order_names is not None and order_is_current:
+            order_index = build_section_order_review(
+                order_proposal,
+                registration_run / "processed",
+                output_dir / "order",
+                workers=workers,
+            )
+            order = json.loads((order_index.parent / "manifest.json").read_text())
+            area_continuity = order.get("physical_area_continuity")
+            area_review_recommended = bool(
+                isinstance(area_continuity, dict)
+                and area_continuity.get("review_recommended") is True
+            )
+            manifest["order"] = {
+                "approved": bool(order.get("approved")),
+                "fingerprint": str(order.get("fingerprint", "")),
+                "slide_count": len(order.get("slides", [])),
+                "review_recommended": area_review_recommended,
+                "href": "order/index.html",
+            }
+    if "alignment" in available_stages:
+        registration_result = registration_run / "registration_result.json"
+        result_names = registration_artifact_slide_names(
+            registration_result,
+            field="path",
         )
-        order = json.loads((order_index.parent / "manifest.json").read_text())
-        area_continuity = order.get("physical_area_continuity")
-        area_review_recommended = bool(
-            isinstance(area_continuity, dict)
-            and area_continuity.get("review_recommended") is True
-        )
-        manifest["order"] = {
-            "approved": bool(order.get("approved")),
-            "fingerprint": str(order.get("fingerprint", "")),
-            "slide_count": len(order.get("slides", [])),
-            "review_recommended": area_review_recommended,
-            "href": "order/index.html",
-        }
-    registration_result = registration_run / "registration_result.json"
-    if registration_result.is_file():
-        alignment_index = build_alignment_review(
-            registration_run,
-            output_dir / "alignment",
-            workers=workers,
-        )
-        alignment = json.loads((alignment_index.parent / "manifest.json").read_text())
-        manifest["alignment"] = {
-            "approved": bool(alignment.get("approved")),
-            "fingerprint": str(alignment.get("fingerprint", "")),
-            "slide_count": len(alignment.get("slides", [])),
-            "href": "alignment/index.html",
-        }
+        result_is_current = mask_names is None or result_names == mask_names
+        if result_names is not None and result_is_current and order_is_current:
+            alignment_index = build_alignment_review(
+                registration_run,
+                output_dir / "alignment",
+                workers=workers,
+            )
+            alignment = json.loads(
+                (alignment_index.parent / "manifest.json").read_text()
+            )
+            manifest["alignment"] = {
+                "approved": bool(alignment.get("approved")),
+                "fingerprint": str(alignment.get("fingerprint", "")),
+                "slide_count": len(alignment.get("slides", [])),
+                "href": "alignment/index.html",
+            }
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     encoded = json.dumps(manifest, separators=(",", ":"))

@@ -238,6 +238,70 @@ def test_mask_review_builds_at_pre_registration_approval_gate(
     assert changed_manifest["fingerprint"] != first_fingerprint
 
 
+def test_mask_review_ignores_stale_completed_result_at_new_mask_gate(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "run"
+    processed = run_dir / "processed"
+    processed.mkdir(parents=True)
+    current_names = ("HE.ndpi", "CK19.ndpi")
+    for index, name in enumerate(current_names):
+        image = np.full((24, 30, 3), 230, dtype=np.uint8)
+        image[5:20, 7 + index : 24 + index] = (130, 80, 60)
+        mask = np.zeros((24, 30), dtype=np.uint8)
+        mask[5:20, 7 + index : 24 + index] = 255
+        Image.fromarray(image).save(processed / f"{Path(name).stem}.thumbnail.png")
+        Image.fromarray(mask).save(processed / f"{Path(name).stem}.mask.png")
+    (run_dir / "mask_review.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "slides": [
+                    {
+                        "slide": name,
+                        "thumbnail_sha256": f"current-{index}",
+                        "status": "pending",
+                        "method": "group_consensus",
+                    }
+                    for index, name in enumerate(current_names)
+                ],
+            }
+        )
+    )
+    (run_dir / "registration_result.json").write_text(
+        json.dumps(
+            {
+                "slides": [
+                    {
+                        "path": str(tmp_path / name),
+                        "mask": {"method": "stale"},
+                        "mask_review": {"status": "auto_pass"},
+                    }
+                    for name in current_names
+                ]
+            }
+        )
+    )
+    (run_dir / "registration_performance.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "workflow": "registration",
+                "observational_only": True,
+                "status": "review_required",
+                "review_stage": "masks",
+                "stages": {"mask_review": {"status": "review_required"}},
+            }
+        )
+    )
+
+    index = build_mask_review(run_dir, tmp_path / "mask-review")
+    manifest = json.loads((index.parent / "manifest.json").read_text())
+
+    assert [row["slide"] for row in manifest["slides"]] == list(current_names)
+    assert all(row["method"] == "group_consensus" for row in manifest["slides"])
+
+
 def test_alignment_review_builds_direct_file_checkerboards(
     tmp_path: Path,
 ) -> None:
@@ -268,6 +332,7 @@ def test_alignment_review_builds_direct_file_checkerboards(
     (run_dir / "registration_result.json").write_text(
         json.dumps({"reference_slide": slides[0]["path"], "slides": slides})
     )
+    (run_dir / "registration_approval.json").write_text("{}")
 
     serial = tmp_path / "serial"
     parallel = tmp_path / "parallel"

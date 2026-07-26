@@ -276,7 +276,12 @@ def _register_sections(
     )
     masks: dict[Path, TissueMaskResult] = {}
     review_path = config.mask_review_path or config.output_dir / "mask_review.json"
-    review_entries = load_mask_review(review_path)
+    active_slide_names = {path.name for path in slide_paths}
+    review_entries = {
+        name: entry
+        for name, entry in load_mask_review(review_path).items()
+        if name in active_slide_names
+    }
     resolved_reviews: dict[Path, MaskReviewEntry] = {}
     warnings: list[str] = []
     artifact_manifest_path = (

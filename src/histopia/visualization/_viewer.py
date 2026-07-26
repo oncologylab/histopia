@@ -26,6 +26,10 @@ from histopia.registration._io import (
     warp_rgb_thumbnail,
 )
 from histopia.semantic._result import validate_semantic_result
+from histopia.visualization._registration_state import (
+    current_registration_review_stages,
+    registration_artifact_slide_names,
+)
 
 THREE_VERSION = "0.170.0"
 THREE_VENDOR_SHA256 = {
@@ -857,14 +861,22 @@ def build_alignment_review(
 
 
 def _mask_review_source_payload(registration_run: Path) -> dict[str, object]:
-    result_path = registration_run / "registration_result.json"
-    if result_path.is_file():
-        payload = json.loads(result_path.read_text())
-        if not isinstance(payload, dict):
-            raise ValueError("registration result must be a JSON object")
-        return payload
-
     review_path = registration_run / "mask_review.json"
+    result_path = registration_run / "registration_result.json"
+    available_stages = current_registration_review_stages(registration_run)
+    if "mask" not in available_stages:
+        raise ValueError("latest registration execution has not prepared mask review")
+    review_names = registration_artifact_slide_names(review_path, field="slide")
+    if "alignment" in available_stages:
+        result_names = registration_artifact_slide_names(result_path, field="path")
+        if result_names is not None and (
+            review_names is None or result_names == review_names
+        ):
+            payload = json.loads(result_path.read_text())
+            if not isinstance(payload, dict):
+                raise ValueError("registration result must be a JSON object")
+            return payload
+
     payload = json.loads(review_path.read_text())
     review_rows = payload.get("slides") if isinstance(payload, dict) else None
     if not isinstance(review_rows, list):
@@ -993,7 +1005,10 @@ def _viewer_mouse_fingerprint(
 def _registration_approval_payload(run_dir: Path) -> dict[str, object] | None:
     if not (run_dir / "registration_approval.json").is_file():
         return None
-    approval = validate_registration_approval(run_dir)
+    try:
+        approval = validate_registration_approval(run_dir)
+    except (OSError, ValueError):
+        return None
     return {
         "approved": True,
         "reviewer": approval.reviewer,
