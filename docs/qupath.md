@@ -76,8 +76,8 @@ The primary **Project workflow** tab supports:
 - QuPath project order, morphology-only sorting, or morphology sorting with a
   selected reference fixed at position 1
 - automatic or explicit registration reference selection
-- registration resolution and bounded thumbnail, mask, ordering, and QC
-  worker controls
+- registration resolution and bounded thumbnail, mask, ordering, rigid-pair,
+  and QC worker controls
 - registration QC detail with a production `review` tier, a minimal `none`
   tier, and a forensic `full` tier
 - semantic device including explicit `cuda:N`, K range, batch-size,

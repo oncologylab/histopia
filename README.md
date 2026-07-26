@@ -76,14 +76,14 @@ histopia-semantic fit --config atlas.toml --fit-threads 4
 histopia-semantic fit --config atlas.toml --fit-threads 4 --overwrite-fit
 ```
 
-Registration exposes bounded thumbnail, mask, ordering, QC, and native libvips
-worker controls; semantic extraction and fitting expose device and thread
-controls. Registration ordering and viewer assets use exact, checksummed
-caches. Semantic fitting reuses only a fully sealed result whose feature
-contents, slide order, scientific controls, algorithm revision, and numerical
-runtime all match. Any change to reviewed masks, geometry, orientation,
-transforms, semantic labels, or encoding settings invalidates the affected
-cache.
+Registration exposes bounded thumbnail, mask, ordering, rigid-pair, QC, and
+native libvips worker controls; semantic extraction and fitting expose device
+and thread controls. Registration ordering and viewer assets use exact,
+checksummed caches. Semantic fitting reuses only a fully sealed result whose
+feature contents, slide order, scientific controls, algorithm revision, and
+numerical runtime all match. Any change to reviewed masks, geometry,
+orientation, transforms, semantic labels, or encoding settings invalidates the
+affected cache.
 
 Audit a completed cohort before publishing or consuming it downstream:
 
