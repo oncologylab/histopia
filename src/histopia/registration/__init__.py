@@ -12,6 +12,10 @@ _PUBLIC_IMPORTS = {
         "histopia.registration._ordering",
         "CavityContinuitySummary",
     ),
+    "DuplicateSlideContent": (
+        "histopia.registration._slides",
+        "DuplicateSlideContent",
+    ),
     "PhysicalAreaContinuitySummary": (
         "histopia.registration._ordering",
         "PhysicalAreaContinuitySummary",
@@ -109,6 +113,10 @@ _PUBLIC_IMPORTS = {
         "histopia.registration._rigid",
         "estimate_rigid_transform",
     ),
+    "find_duplicate_slide_content": (
+        "histopia.registration._slides",
+        "find_duplicate_slide_content",
+    ),
     "geometry_thumbnail_to_native_matrix": (
         "histopia.registration._wsi",
         "geometry_thumbnail_to_native_matrix",
@@ -148,6 +156,10 @@ _PUBLIC_IMPORTS = {
     "validate_registration_approval": (
         "histopia.registration._approval",
         "validate_registration_approval",
+    ),
+    "validate_unique_slide_content": (
+        "histopia.registration._slides",
+        "validate_unique_slide_content",
     ),
     "warp_saved_registration": (
         "histopia.registration._wsi",
@@ -196,6 +208,7 @@ __all__ = [
     "SlideRecord",
     "SectionOrderProposal",
     "CavityContinuitySummary",
+    "DuplicateSlideContent",
     "PhysicalAreaContinuitySummary",
     "WsiWarpResult",
     "build_kpf_manifest",
@@ -211,6 +224,7 @@ __all__ = [
     "discover_slides",
     "estimate_rigid_transform",
     "estimate_non_rigid_transform",
+    "find_duplicate_slide_content",
     "geometry_thumbnail_to_native_matrix",
     "refine_rigid_transform",
     "normalize_slide_stem",
@@ -223,4 +237,5 @@ __all__ = [
     "warp_slide_to_reference",
     "warp_with_displacement",
     "validate_registration_approval",
+    "validate_unique_slide_content",
 ]

@@ -225,6 +225,32 @@ def test_registration_failure_is_observationally_recorded(tmp_path: Path) -> Non
     assert performance["stages"]["slide_discovery"]["status"] == "failed"
 
 
+def test_registration_rejects_discovered_duplicate_content_before_decode(
+    tmp_path: Path,
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    (input_dir / "section-a.png").write_bytes(b"byte-identical slide")
+    (input_dir / "section-b.png").write_bytes(b"byte-identical slide")
+
+    with pytest.raises(
+        ValueError,
+        match="exact duplicate registration slide content",
+    ):
+        register_sections(
+            RegistrationConfig(
+                input_dir=input_dir,
+                output_dir=output_dir,
+            )
+        )
+
+    performance = load_performance_report(output_dir / PERFORMANCE_FILENAME)
+    assert performance["status"] == "failed"
+    assert performance["stages"]["slide_discovery"]["status"] == "failed"
+    assert "thumbnail_load" not in performance["stages"]
+
+
 def test_mask_artifact_manifest_requires_exact_complete_bundle(
     tmp_path: Path,
 ) -> None:

@@ -1,6 +1,7 @@
 from copy import deepcopy
 
 import numpy as np
+import pytest
 from scipy import ndimage as ndi
 
 import histopia.registration._masking as masking
@@ -27,6 +28,7 @@ from histopia.registration._masking import (
     _mask_score,
     _mask_score_from_metrics,
     _mask_warnings_from_metrics,
+    _pale_recovery_reference,
     _pale_tissue_candidate,
     _polish_selected_mask,
     _recover_supported_pale_pixels,
@@ -35,6 +37,7 @@ from histopia.registration._masking import (
     _remove_hollow_detached_artifacts,
     _remove_image_frame_exterior,
     _remove_scanner_edges,
+    _restrict_far_detached_recovery,
     clean_external_tissue_mask,
 )
 
@@ -344,6 +347,124 @@ def test_group_pale_recovery_requires_severe_area_undercoverage() -> None:
 
     assert np.array_equal(recovered["target"].mask, target)
     assert recovered["target"].method == "synthetic"
+
+
+def test_pale_recovery_reference_uses_stable_upper_coverage_cluster() -> None:
+    reference, raised = _pale_recovery_reference(
+        [0.20] * 8 + [0.40, 0.41, 0.42, 0.43, 0.44, 0.45]
+    )
+
+    assert raised
+    assert reference > 0.40
+
+
+def test_group_pale_recovery_handles_widespread_undercoverage_and_scale_outlier() -> (
+    None
+):
+    complete = np.zeros((200, 200), dtype=bool)
+    complete[30:170, 30:170] = True
+    partial = complete.copy()
+    partial[30:100, 30:170] = False
+    image = np.ones((200, 200, 3), dtype=np.float32)
+    image[100:170, 30:170] = [0.72, 0.45, 0.40]
+    image[30:100, 30:170] = [0.91, 0.86, 0.82]
+    image[34:98:4, 34:168:4] = [0.80, 0.73, 0.68]
+
+    def result(mask: np.ndarray) -> TissueMaskResult:
+        return TissueMaskResult(mask, "synthetic", {}, True, [])
+
+    masks = {
+        **{f"partial-{index}": result(partial) for index in range(8)},
+        **{f"complete-{index}": result(complete) for index in range(6)},
+    }
+    pixel_areas = {key: 1.0 for key in masks}
+    pixel_areas["partial-0"] = 3.0
+
+    recovered = _recover_undercovered_pale_tissue(
+        masks,
+        {"partial-0": image},
+        physical_pixel_areas=pixel_areas,
+        normalized_shape=(200, 200),
+    )
+
+    target = recovered["partial-0"]
+    assert target.mask[40:90, 40:160].mean() > 0.85
+    assert target.method == "synthetic+group_pale_recovery"
+
+
+def test_widespread_pale_recovery_rejects_far_detached_additions() -> None:
+    trusted = np.zeros((200, 300), dtype=bool)
+    trusted[70:130, 45:105] = True
+    candidate = trusted.copy()
+    candidate[60:140, 108:170] = True
+    candidate[55:145, 235:285] = True
+
+    restricted = _restrict_far_detached_recovery(trusted, candidate)
+
+    assert restricted[80:120, 120:160].all()
+    assert not restricted[:, 235:285].any()
+
+
+def test_group_refinement_uses_counterfactual_consensus_for_recovery_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    shape = (200, 300)
+    complete = np.zeros(shape, dtype=bool)
+    complete[40:160, 40:170] = True
+    partial = complete.copy()
+    partial[40:100, 40:170] = False
+    far_artifact = np.zeros(shape, dtype=bool)
+    far_artifact[60:140, 235:285] = True
+
+    def result(mask: np.ndarray) -> TissueMaskResult:
+        return TissueMaskResult(mask, "synthetic", {}, True, [])
+
+    results = {
+        **{f"partial-{index}": result(partial.copy()) for index in range(8)},
+        **{f"complete-{index}": result(complete.copy()) for index in range(6)},
+    }
+
+    def recover_with_far_artifact(
+        selected: dict[str, TissueMaskResult],
+        images: dict[str, np.ndarray],
+        *,
+        physical_pixel_areas: dict[str, float | None] | None,
+        normalized_shape: tuple[int, int],
+        workers: int,
+    ) -> dict[str, TissueMaskResult]:
+        del images, physical_pixel_areas, normalized_shape, workers
+        recovered: dict[str, TissueMaskResult] = {}
+        for key, selected_result in selected.items():
+            if not key.startswith("partial-"):
+                recovered[key] = selected_result
+                continue
+            mask = complete | far_artifact
+            recovered[key] = TissueMaskResult(
+                mask=mask,
+                method=f"{selected_result.method}+group_pale_recovery",
+                metrics={},
+                accepted=True,
+                warnings=[],
+            )
+        return recovered
+
+    monkeypatch.setattr(
+        masking,
+        "_recover_undercovered_pale_tissue",
+        recover_with_far_artifact,
+    )
+    images = {key: np.full((*shape, 3), 0.95, dtype=np.float32) for key in results}
+
+    refined = refine_group_tissue_masks(
+        results,
+        images=images,
+        normalized_shape=shape,
+    )
+
+    target = refined["partial-0"]
+    assert target.mask[45:155, 45:165].all()
+    assert not target.mask[60:140, 235:285].any()
+    assert target.method.endswith("+group_proximity_cleanup")
 
 
 def test_group_component_gate_detects_missing_recurring_object() -> None:

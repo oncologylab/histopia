@@ -128,9 +128,12 @@ External workflow UIs such as the Histopia QuPath extension can supply
 `input_slides` as an exact ordered list of absolute paths. This supports a
 QuPath project cohort whose source slides are stored in different directories.
 Histopia validates every path and rejects duplicate files, unsupported formats,
-derived images, and duplicate filenames before reading slide pixels. The list
-order is the initial physical order; configured similarity ordering may then
-propose a reviewed replacement.
+derived images, duplicate filenames, and byte-identical slide content before
+reading slide pixels. Exact-content preflight groups files by size and compares
+small beginning/middle/end samples before full SHA-256 hashing, so files with
+unique sizes do not incur a full-file read. The list order is the initial
+physical order; configured similarity ordering may then propose a reviewed
+replacement.
 
 `mode = "full"` is available only for legacy reproduction and debugging. The
 default production path should use `auto_tissue`.

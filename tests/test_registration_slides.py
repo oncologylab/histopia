@@ -61,12 +61,32 @@ def test_slide_geometry_rejects_invalid_coordinate_metadata(
 def test_exact_slide_selection_preserves_external_ui_order(tmp_path: Path) -> None:
     first = tmp_path / "first.ndpi"
     second = tmp_path / "second.scn"
-    first.touch()
-    second.touch()
+    first.write_bytes(b"first")
+    second.write_bytes(b"second")
 
     selected = _slides.validate_slide_selection((second, first), wsi_only=True)
 
     assert selected == (second.resolve(), first.resolve())
+
+
+def test_exact_slide_selection_rejects_duplicate_file_content(
+    tmp_path: Path,
+) -> None:
+    first = tmp_path / "first.ndpi"
+    duplicate = tmp_path / "first_1.ndpi"
+    distinct = tmp_path / "distinct.ndpi"
+    first.write_bytes(b"same slide bytes")
+    duplicate.write_bytes(first.read_bytes())
+    distinct.write_bytes(b"same byte length")
+
+    groups = _slides.find_duplicate_slide_content((first, distinct, duplicate))
+
+    assert len(groups) == 1
+    assert groups[0].paths == (first, duplicate)
+    assert groups[0].size_bytes == first.stat().st_size
+    assert len(groups[0].sha256) == 64
+    with pytest.raises(ValueError, match="exact duplicate registration slide content"):
+        _slides.validate_slide_selection((first, distinct, duplicate), wsi_only=True)
 
 
 def test_exact_slide_selection_rejects_duplicate_filenames(tmp_path: Path) -> None:

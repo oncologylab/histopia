@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -16,6 +17,8 @@ from histopia.registration._errors import OptionalDependencyError
 
 STANDARD_IMAGE_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png"})
 WSI_EXTENSIONS = frozenset({".ndpi", ".scn", ".svs", ".tif", ".tiff"})
+_DUPLICATE_SAMPLE_BYTES = 1024 * 1024
+_HASH_READ_BYTES = 8 * 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -182,6 +185,15 @@ class SlideRecord:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class DuplicateSlideContent:
+    """A byte-identical registration-input group."""
+
+    sha256: str
+    size_bytes: int
+    paths: tuple[Path, ...]
+
+
 def _positive_integer_tuple(
     name: str,
     values: object,
@@ -233,6 +245,72 @@ def discover_slides(
     return tuple(sorted(paths, key=_natural_key))
 
 
+def find_duplicate_slide_content(
+    paths: tuple[Path | str, ...],
+) -> tuple[DuplicateSlideContent, ...]:
+    """Return byte-identical files without fully hashing unique-size slides."""
+
+    normalized = tuple(Path(path) for path in paths)
+    by_size: dict[int, list[Path]] = {}
+    for path in normalized:
+        if not path.is_file():
+            raise FileNotFoundError(f"registration slide not found: {path}")
+        by_size.setdefault(path.stat().st_size, []).append(path)
+
+    duplicates: list[DuplicateSlideContent] = []
+    for size_bytes, same_size_paths in by_size.items():
+        if len(same_size_paths) < 2:
+            continue
+        by_sample: dict[str, list[Path]] = {}
+        for path in same_size_paths:
+            sample = _sample_file_sha256(path, size_bytes)
+            by_sample.setdefault(sample, []).append(path)
+        for sample_paths in by_sample.values():
+            if len(sample_paths) < 2:
+                continue
+            by_digest: dict[str, list[Path]] = {}
+            for path in sample_paths:
+                digest = _file_sha256(path)
+                by_digest.setdefault(digest, []).append(path)
+            for digest, duplicate_paths in by_digest.items():
+                if len(duplicate_paths) >= 2:
+                    duplicates.append(
+                        DuplicateSlideContent(
+                            sha256=digest,
+                            size_bytes=size_bytes,
+                            paths=tuple(duplicate_paths),
+                        )
+                    )
+    input_order = {path: index for index, path in enumerate(normalized)}
+    return tuple(
+        sorted(
+            duplicates,
+            key=lambda group: min(input_order[path] for path in group.paths),
+        )
+    )
+
+
+def validate_unique_slide_content(
+    paths: tuple[Path | str, ...],
+) -> tuple[Path, ...]:
+    """Return paths after rejecting exact duplicate file content."""
+
+    normalized = tuple(Path(path) for path in paths)
+    duplicates = find_duplicate_slide_content(normalized)
+    if duplicates:
+        descriptions = []
+        for group in duplicates:
+            names = " == ".join(path.name for path in group.paths)
+            descriptions.append(
+                f"{names} ({group.size_bytes} bytes, sha256={group.sha256})"
+            )
+        raise ValueError(
+            "exact duplicate registration slide content detected: "
+            + "; ".join(descriptions)
+        )
+    return normalized
+
+
 def validate_slide_selection(
     paths: tuple[Path | str, ...],
     *,
@@ -263,7 +341,32 @@ def validate_slide_selection(
         selected.append(path)
         resolved_paths.add(path)
         names.add(path.name)
-    return tuple(selected)
+    return validate_unique_slide_content(tuple(selected))
+
+
+def _sample_file_sha256(path: Path, size_bytes: int) -> str:
+    digest = hashlib.sha256()
+    digest.update(size_bytes.to_bytes(16, byteorder="little", signed=False))
+    read_size = min(_DUPLICATE_SAMPLE_BYTES, size_bytes)
+    offsets = {
+        0,
+        max(0, size_bytes // 2 - read_size // 2),
+        max(0, size_bytes - read_size),
+    }
+    with path.open("rb") as stream:
+        for offset in sorted(offsets):
+            stream.seek(offset)
+            digest.update(offset.to_bytes(16, byteorder="little", signed=False))
+            digest.update(stream.read(read_size))
+    return digest.hexdigest()
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        while chunk := stream.read(_HASH_READ_BYTES):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def load_slide_thumbnail(

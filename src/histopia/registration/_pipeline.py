@@ -96,6 +96,7 @@ from histopia.registration._slides import (
     discover_slides,
     load_slide_thumbnail,
     validate_slide_selection,
+    validate_unique_slide_content,
 )
 from histopia.registration._wsi import (
     WsiWarpResult,
@@ -243,7 +244,9 @@ def _register_sections(
     slide_paths = (
         validate_slide_selection(config.input_slides, wsi_only=config.wsi_only)
         if config.input_slides
-        else discover_slides(config.input_dir, wsi_only=config.wsi_only)
+        else validate_unique_slide_content(
+            discover_slides(config.input_dir, wsi_only=config.wsi_only)
+        )
     )
     if not slide_paths:
         source = "input_slides" if config.input_slides else config.input_dir

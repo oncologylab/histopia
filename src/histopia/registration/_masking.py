@@ -308,6 +308,14 @@ def refine_group_tissue_masks(
         select_group_candidate,
         workers,
     )
+    selected_before_pale_recovery = selected
+    _, widespread_undercoverage = _pale_recovery_reference(
+        [
+            float(np.mean(_resize_binary(result.mask, normalized_shape)))
+            for result in selected.values()
+        ]
+    )
+    widespread_pale_recovery = images is not None and widespread_undercoverage
     if images is not None:
         selected = _recover_undercovered_pale_tissue(
             selected,
@@ -323,8 +331,13 @@ def refine_group_tissue_masks(
         np.median([np.mean(mask) for mask in normalized.values()])
     )
 
-    def refine_group_components(key: MaskKey) -> TissueMaskResult:
-        result = selected[key]
+    def refine_group_components(
+        key: MaskKey,
+        source_results: dict[MaskKey, TissueMaskResult],
+        source_normalized: dict[MaskKey, np.ndarray],
+        source_expected_fraction: float,
+    ) -> TissueMaskResult:
+        result = source_results[key]
         labels, count = ndi.label(result.mask)
         if count <= 1:
             return result
@@ -334,10 +347,10 @@ def refine_group_tissue_masks(
         )
         peer_keys = [peer for peer in keys if peer != key]
         aligned_peers = _align_group_peer_masks(
-            [normalized[peer] for peer in peer_keys],
-            normalized[key],
+            [source_normalized[peer] for peer in peer_keys],
+            source_normalized[key],
             align_translations=(
-                np.mean(normalized[key]) < expected_selected_fraction * 0.78
+                np.mean(source_normalized[key]) < source_expected_fraction * 0.78
             ),
         )
         aligned_by_key = dict(zip(peer_keys, aligned_peers, strict=True))
@@ -522,9 +535,42 @@ def refine_group_tissue_masks(
             candidate_masks=result.candidate_masks,
         )
 
+    if widespread_pale_recovery:
+        baseline_normalized = {
+            key: _resize_binary(result.mask, normalized_shape)
+            for key, result in selected_before_pale_recovery.items()
+        }
+        baseline_expected_fraction = float(
+            np.median([np.mean(mask) for mask in baseline_normalized.values()])
+        )
+
+        def refine_baseline_group_components(key: MaskKey) -> TissueMaskResult:
+            return refine_group_components(
+                key,
+                selected_before_pale_recovery,
+                baseline_normalized,
+                baseline_expected_fraction,
+            )
+
+        pale_recovery_trusted = _map_group_mask_results(
+            keys,
+            refine_baseline_group_components,
+            workers,
+        )
+    else:
+        pale_recovery_trusted = selected_before_pale_recovery
+
+    def refine_recovered_group_components(key: MaskKey) -> TissueMaskResult:
+        return refine_group_components(
+            key,
+            selected,
+            normalized,
+            expected_selected_fraction,
+        )
+
     refined = _map_group_mask_results(
         keys,
-        refine_group_components,
+        refine_recovered_group_components,
         workers,
     )
     if images is not None:
@@ -556,6 +602,39 @@ def refine_group_tissue_masks(
         refined = _map_group_mask_results(
             keys,
             clean_image_frame,
+            workers,
+        )
+    if widespread_pale_recovery:
+
+        def clean_far_pale_recovery(key: MaskKey) -> TissueMaskResult:
+            result = refined[key]
+            if "+group_pale_recovery" not in result.method:
+                return result
+            cleaned = _restrict_far_detached_recovery(
+                pale_recovery_trusted[key].mask,
+                result.mask,
+            )
+            if np.array_equal(cleaned, result.mask):
+                return result
+            metrics = _mask_metrics(cleaned)
+            warnings = _mask_warnings_from_metrics(
+                metrics,
+                BrightfieldMaskConfig(),
+            )
+            return TissueMaskResult(
+                mask=cleaned,
+                method=f"{result.method}+group_proximity_cleanup",
+                metrics=metrics,
+                accepted=not warnings,
+                warnings=warnings,
+                candidate_metrics=result.candidate_metrics,
+                candidate_warnings=result.candidate_warnings,
+                candidate_masks=result.candidate_masks,
+            )
+
+        refined = _map_group_mask_results(
+            keys,
+            clean_far_pale_recovery,
             workers,
         )
 
@@ -740,7 +819,9 @@ def _recover_undercovered_pale_tissue(
     normalized_fractions = {
         key: float(np.mean(mask)) for key, mask in normalized.items()
     }
-    expected_fraction = float(np.median(list(normalized_fractions.values())))
+    expected_fraction, upper_coverage_reference = _pale_recovery_reference(
+        list(normalized_fractions.values())
+    )
     physical_areas = {
         key: float(np.count_nonzero(result.mask) * pixel_area)
         for key, result in results.items()
@@ -748,7 +829,13 @@ def _recover_undercovered_pale_tissue(
         and pixel_area > 0
     }
     expected_physical_area = (
-        float(np.median(list(physical_areas.values()))) if physical_areas else None
+        float(
+            np.percentile(list(physical_areas.values()), 75)
+            if upper_coverage_reference
+            else np.median(list(physical_areas.values()))
+        )
+        if physical_areas
+        else None
     )
     keys = list(results)
 
@@ -774,7 +861,7 @@ def _recover_undercovered_pale_tissue(
             normalized[key],
             dilation_iterations=5,
         )
-        severe_undercoverage = area_ratio < 0.60
+        severe_undercoverage = area_ratio < (0.70 if upper_coverage_reference else 0.60)
         missing_group_support = _unrepresented_group_components(
             normalized[key],
             support,
@@ -792,6 +879,8 @@ def _recover_undercovered_pale_tissue(
                 else None
             ),
         )
+        if upper_coverage_reference:
+            candidate = _restrict_far_detached_recovery(result.mask, candidate)
         if np.count_nonzero(candidate) <= np.count_nonzero(result.mask) * 1.02:
             return result
         if expected_physical_area is not None and key in physical_areas:
@@ -800,7 +889,18 @@ def _recover_undercovered_pale_tissue(
                 return result
             candidate_area = float(np.count_nonzero(candidate) * pixel_area)
             maximum_area_ratio = 1.35 if missing_group_object else 1.25
-            if candidate_area > expected_physical_area * maximum_area_ratio:
+            candidate_area_ratio = candidate_area / expected_physical_area
+            if upper_coverage_reference and (
+                severe_undercoverage or missing_group_object
+            ):
+                candidate_fraction = float(
+                    np.mean(_resize_binary(candidate, normalized_shape))
+                )
+                candidate_area_ratio = min(
+                    candidate_area_ratio,
+                    candidate_fraction / expected_fraction,
+                )
+            if candidate_area_ratio > maximum_area_ratio:
                 return result
         metrics = _mask_metrics(candidate)
         warnings = _mask_warnings_from_metrics(metrics, BrightfieldMaskConfig())
@@ -818,6 +918,48 @@ def _recover_undercovered_pale_tissue(
         )
 
     return _map_group_mask_results(keys, recover, workers)
+
+
+def _pale_recovery_reference(values: list[float]) -> tuple[float, bool]:
+    """Use an upper peer cluster when widespread undercoverage biases the median."""
+
+    areas = np.asarray(values, dtype=float)
+    median = float(np.median(areas))
+    upper_quartile = float(np.percentile(areas, 75))
+    use_upper_reference = (
+        areas.size >= 8
+        and upper_quartile > 0
+        and median < upper_quartile * 0.80
+        and np.count_nonzero(areas >= upper_quartile * 0.90) >= 3
+    )
+    if use_upper_reference:
+        return upper_quartile, True
+    return median, False
+
+
+def _restrict_far_detached_recovery(
+    trusted: np.ndarray,
+    candidate: np.ndarray,
+    *,
+    maximum_gap_fraction: float = 0.08,
+) -> np.ndarray:
+    """Reject distant additions when a cohort-wide recovery is activated."""
+
+    trusted = np.asarray(trusted, dtype=bool)
+    candidate = np.asarray(candidate, dtype=bool)
+    labels, count = ndi.label(candidate)
+    if count == 0 or not trusted.any():
+        return candidate.copy()
+    maximum_gap = max(4.0, maximum_gap_fraction * float(np.hypot(*trusted.shape)))
+    distance = ndi.distance_transform_edt(~trusted)
+    keep = np.zeros(count + 1, dtype=bool)
+    for label in range(1, count + 1):
+        component = labels == label
+        if np.any(component & trusted) or float(np.min(distance[component])) <= (
+            maximum_gap
+        ):
+            keep[label] = True
+    return keep[labels]
 
 
 def _recover_supported_pale_pixels(
