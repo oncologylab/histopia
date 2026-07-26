@@ -10,6 +10,8 @@ thumbnail_workers = 1
 # Start with 2 or 4; use 8 only after measuring peak memory on the target host.
 mask_workers = 1
 ordering_workers = 1
+# Bound independent reference and adjacent rigid-pair estimates.
+rigid_workers = 1
 # Bound concurrent registration QC encoders; increase only with enough RAM.
 qc_workers = 1
 # Primary per-slide panels are the production default. Use "full" only when

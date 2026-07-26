@@ -81,6 +81,7 @@ def test_register_sections_writes_thumbnail_result(
     assert performance["registered_slide_count"] == 2
     assert performance["controls"]["compute_backend"] == "cpu"
     assert performance["controls"]["thumbnail_workers"] == 1
+    assert performance["controls"]["rigid_workers"] == 1
     assert performance["controls"]["vips_threads"] == 3
     assert performance["stages"]["result_write"]["status"] == "completed"
     assert configured_vips_threads == [3]
@@ -833,6 +834,105 @@ def test_registration_reuses_exact_rigid_pair_cache(
     assert second_performance["rigid_pair_cache_misses"] == 0
     assert second_performance["rigid_pairs_computed"] == 0
     assert len(tuple((output_dir / ".cache" / "rigid_pairs").glob("*.json"))) == 1
+
+
+def test_rigid_pair_workers_use_bounded_ordered_pool(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    barrier = threading.Barrier(3)
+    thread_names: set[str] = set()
+    lock = threading.Lock()
+    pairs = tuple((Path("fixed"), Path(f"moving-{index}")) for index in range(3))
+
+    def estimate(fixed_path, moving_path, crops, config, prepared_features):
+        del fixed_path, crops, config, prepared_features
+        with lock:
+            thread_names.add(threading.current_thread().name)
+        barrier.wait(timeout=5)
+        index = int(moving_path.name.rsplit("-", 1)[1])
+        result = _pipeline.RigidTransformResult(
+            matrix=np.eye(3) * (index + 1),
+            method="test",
+            match_count=index,
+            inlier_count=index,
+            warnings=[],
+        )
+        return result, result
+
+    monkeypatch.setattr(_pipeline, "_estimate_pair_transform", estimate)
+    config = RegistrationConfig(
+        tmp_path / "input",
+        tmp_path / "output",
+        rigid_workers=3,
+    )
+
+    results = _pipeline._estimate_pair_transforms(
+        pairs,
+        {},
+        config,
+        None,
+        None,
+    )
+
+    assert len(thread_names) == 3
+    assert all(name.startswith("histopia-rigid") for name in thread_names)
+    assert [result[0].match_count for result in results] == [0, 1, 2]
+
+
+def test_rigid_pair_workers_preserve_exact_registration_result(tmp_path: Path) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    rng = np.random.default_rng(91)
+    fixed = np.full((100, 110, 3), 255, dtype=np.uint8)
+    fixed[16:88, 20:96] = rng.integers(
+        35,
+        220,
+        size=(72, 76, 3),
+        dtype=np.uint8,
+    )
+    for index, shift in enumerate(((0, 0), (2, -2), (4, -4), (6, -6))):
+        Image.fromarray(np.roll(fixed, shift=shift, axis=(0, 1))).save(
+            input_dir / f"section-{index}.png"
+        )
+    config = RegistrationConfig(
+        input_dir=input_dir,
+        output_dir=output_dir,
+        reference_slide="section-0.png",
+        reference_policy="explicit",
+        rigid_method="feature",
+        align_strategy="hybrid",
+        max_processed_image_dim_px=110,
+        alignment_cache=False,
+        write_processed_images=False,
+        rigid_workers=1,
+    )
+    config.refinement.enabled = False
+
+    register_sections(config)
+    serial_result = (output_dir / "registration_result.json").read_bytes()
+    config.rigid_workers = 4
+    register_sections(config)
+    parallel_result = (output_dir / "registration_result.json").read_bytes()
+    performance = load_performance_report(output_dir / PERFORMANCE_FILENAME)
+
+    assert parallel_result == serial_result
+    assert performance["controls"]["rigid_workers"] == 4
+
+    config.output_dir = tmp_path / "cached-output"
+    config.alignment_cache = True
+    register_sections(config)
+    cached_performance = load_performance_report(
+        config.output_dir / PERFORMANCE_FILENAME
+    )
+
+    assert cached_performance["rigid_pair_cache_hits"] == 1
+    assert cached_performance["rigid_pair_cache_misses"] == 5
+    assert cached_performance["rigid_pairs_computed"] == 5
+    assert (
+        len(tuple((config.output_dir / ".cache" / "rigid_pairs").glob("*.json"))) == 5
+    )
 
 
 def test_complete_rigid_pair_cache_skips_feature_detection_with_safe_fallback(

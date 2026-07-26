@@ -82,6 +82,11 @@ crop_mode = "reference"
 rigid_method = "feature"
 align_strategy = "hybrid"
 non_rigid = false
+thumbnail_workers = 4
+mask_workers = 4
+ordering_workers = 4
+rigid_workers = 4
+qc_workers = 2
 write_processed_images = true
 alignment_qc_mode = "review"
 write_warped_images = false
@@ -278,6 +283,22 @@ parallel on CPU and to prepare per-slide rigid features concurrently. Results
 are assigned in deterministic order and the worker count does not change the
 scientific fingerprint. Start conservatively because each worker also invokes
 native OpenCV routines and holds image crops; `1` is the portable default.
+
+Set `rigid_workers` above one to estimate independent reference and adjacent
+slide transforms through a bounded ordered CPU pool. Serial transform
+composition remains deterministic after all pair estimates complete. Exact
+pair-cache reads, writes, hit counts, and result ordering are thread-safe.
+`1` remains the portable default; `4` is a balanced server setting, while
+larger values retain more crop and OpenCV working memory.
+
+On a 24-slide, 1200-pixel hybrid registration benchmark, four rigid workers
+reduced reusable feature preparation plus 45 unique pair estimates from 8.84
+to 2.84 seconds. In a disposable full pipeline run that forced every alignment
+to recompute, rigid alignment fell from 9.32 to 3.25 seconds and total runtime
+from 14.27 to 5.45 seconds. The complete `registration_result.json` remained
+byte-identical. A separate cold cache-enabled run produced exactly 45 cache
+entries, 45 misses, and one duplicate-pair hit with the same scientific
+digest.
 
 Set `mask_workers` above one to create per-slide mask candidate sets in
 parallel on CPU. Cohort-aware ranking, pale-tissue recovery, component

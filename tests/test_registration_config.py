@@ -30,6 +30,7 @@ def test_registration_config_normalizes_paths_and_defaults(tmp_path: Path) -> No
     assert config.thumbnail_workers == 1
     assert config.mask_workers == 1
     assert config.ordering_workers == 1
+    assert config.rigid_workers == 1
     assert config.qc_workers == 1
     assert config.alignment_qc_mode == "review"
     assert config.vips_threads is None
@@ -155,6 +156,7 @@ def test_refinement_configs_reject_invalid_acceptance_gates(
         ("thumbnail_workers", True, TypeError),
         ("mask_workers", 1.5, TypeError),
         ("ordering_workers", 0, ValueError),
+        ("rigid_workers", 0, ValueError),
         ("qc_workers", 0, ValueError),
         ("vips_threads", 0, ValueError),
         ("wsi_jpeg_quality", 101, ValueError),
@@ -201,6 +203,7 @@ def test_registration_mapping_parses_alignment_controls(tmp_path: Path) -> None:
             "output_dir": str(tmp_path / "output"),
             "alignment_cache": False,
             "qc_workers": 3,
+            "rigid_workers": 4,
             "alignment_qc_mode": "full",
             "vips_threads": 6,
         }
@@ -208,6 +211,7 @@ def test_registration_mapping_parses_alignment_controls(tmp_path: Path) -> None:
 
     assert config.alignment_cache is False
     assert config.qc_workers == 3
+    assert config.rigid_workers == 4
     assert config.alignment_qc_mode == "full"
     assert config.vips_threads == 6
 

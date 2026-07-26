@@ -207,6 +207,7 @@ class RegistrationConfig:
     thumbnail_workers: int = 1
     mask_workers: int = 1
     ordering_workers: int = 1
+    rigid_workers: int = 1
     qc_workers: int = 1
     alignment_qc_mode: AlignmentQcMode = "review"
     preprocessing_cache: bool = True
@@ -322,6 +323,7 @@ class RegistrationConfig:
             "ordering_workers",
             self.ordering_workers,
         )
+        self.rigid_workers = positive_int("rigid_workers", self.rigid_workers)
         self.thumbnail_workers = positive_int(
             "thumbnail_workers",
             self.thumbnail_workers,
@@ -423,6 +425,7 @@ def registration_config_from_mapping(
         thumbnail_workers=values.pop("thumbnail_workers", 1),
         mask_workers=values.pop("mask_workers", 1),
         ordering_workers=values.pop("ordering_workers", 1),
+        rigid_workers=values.pop("rigid_workers", 1),
         qc_workers=values.pop("qc_workers", 1),
         alignment_qc_mode=values.pop("alignment_qc_mode", "review"),
         vips_threads=values.pop("vips_threads", None),

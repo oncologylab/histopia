@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from functools import partial
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 import numpy as np
@@ -205,6 +206,7 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
             "thumbnail_workers": config.thumbnail_workers,
             "mask_workers": config.mask_workers,
             "ordering_workers": config.ordering_workers,
+            "rigid_workers": config.rigid_workers,
             "qc_workers": config.qc_workers,
             "alignment_qc_mode": config.alignment_qc_mode,
             "vips_threads": config.vips_threads,
@@ -503,10 +505,12 @@ def _register_sections(
 
     def prepare_crop_features(
         paths: tuple[Path, ...],
+        *,
+        workers: int,
     ) -> dict[Path, PreparedRigidFeatures] | None:
         nonlocal rigid_feature_seconds, rigid_feature_slides_prepared
         started = time.perf_counter()
-        features = _prepare_crop_features(paths, crops, config)
+        features = _prepare_crop_features(paths, crops, config, workers=workers)
         rigid_feature_seconds += time.perf_counter() - started
         if features is not None:
             rigid_feature_slides_prepared += len(features)
@@ -517,7 +521,10 @@ def _register_sections(
     ordering_proposal_seconds = 0.0
     prepared_features: dict[Path, PreparedRigidFeatures] | None = None
     if config.section_order_strategy == "similarity":
-        prepared_features = prepare_crop_features(slide_paths)
+        prepared_features = prepare_crop_features(
+            slide_paths,
+            workers=config.ordering_workers,
+        )
         slide_paths = _similarity_section_order(
             slide_paths,
             crops,
@@ -550,7 +557,10 @@ def _register_sections(
         )
         ordering_distance_cache_hit = distances is not None
         if distances is None:
-            prepared_features = prepare_crop_features(slide_paths)
+            prepared_features = prepare_crop_features(
+                slide_paths,
+                workers=config.ordering_workers,
+            )
             distances = _section_distance_matrix(
                 slide_paths,
                 crops,
@@ -671,7 +681,10 @@ def _register_sections(
         reference_path = _select_reference(slide_paths, config.reference_slide)
     else:
         if prepared_features is None:
-            prepared_features = prepare_crop_features(slide_paths)
+            prepared_features = prepare_crop_features(
+                slide_paths,
+                workers=config.rigid_workers,
+            )
         reference_path = _select_best_connected_reference(
             slide_paths,
             crops,
@@ -687,7 +700,10 @@ def _register_sections(
         )
         preloaded_count = rigid_pair_cache.preload_all(required_pairs)
         if preloaded_count is None:
-            prepared_features = prepare_crop_features(slide_paths)
+            prepared_features = prepare_crop_features(
+                slide_paths,
+                workers=config.rigid_workers,
+            )
         else:
             prepared_features = {}
             rigid_pair_cache_preloaded = preloaded_count
@@ -1213,7 +1229,12 @@ def _estimate_transforms_to_reference(
     qc_cache: RegistrationQcCache | None = None,
 ) -> tuple[dict[Path, RigidTransformResult], dict[Path, Path]]:
     if prepared_features is None:
-        prepared_features = _prepare_crop_features(slide_paths, crops, config)
+        prepared_features = _prepare_crop_features(
+            slide_paths,
+            crops,
+            config,
+            workers=config.rigid_workers,
+        )
     if config.align_strategy == "reference":
         return _estimate_reference_transforms(
             slide_paths,
@@ -1264,21 +1285,28 @@ def _estimate_reference_transforms(
     write_pair_qc: bool = True,
 ) -> tuple[dict[Path, RigidTransformResult], dict[Path, Path]]:
     if prepared_features is None:
-        prepared_features = _prepare_crop_features(slide_paths, crops, config)
+        prepared_features = _prepare_crop_features(
+            slide_paths,
+            crops,
+            config,
+            workers=config.rigid_workers,
+        )
     transforms: dict[Path, RigidTransformResult] = {}
     aligned_to: dict[Path, Path] = {}
     qc_jobs: list[Callable[[], None]] = []
-    for path in slide_paths:
-        if path == reference_path:
-            continue
-        transform, crop_transform = _estimate_pair_transform_cached(
-            reference_path,
-            path,
-            crops,
-            config,
-            prepared_features,
-            pair_cache,
-        )
+    moving_paths = tuple(path for path in slide_paths if path != reference_path)
+    pair_results = _estimate_pair_transforms(
+        tuple((reference_path, path) for path in moving_paths),
+        crops,
+        config,
+        prepared_features,
+        pair_cache,
+    )
+    for path, (transform, crop_transform) in zip(
+        moving_paths,
+        pair_results,
+        strict=True,
+    ):
         transforms[path] = transform
         aligned_to[path] = reference_path
         if (
@@ -1313,54 +1341,39 @@ def _estimate_serial_transforms(
     qc_cache: RegistrationQcCache | None = None,
 ) -> tuple[dict[Path, RigidTransformResult], dict[Path, Path]]:
     if prepared_features is None:
-        prepared_features = _prepare_crop_features(slide_paths, crops, config)
+        prepared_features = _prepare_crop_features(
+            slide_paths,
+            crops,
+            config,
+            workers=config.rigid_workers,
+        )
     reference_index = slide_paths.index(reference_path)
     transforms: dict[Path, RigidTransformResult] = {}
     aligned_to: dict[Path, Path] = {}
     cumulative: dict[Path, np.ndarray] = {reference_path: np.eye(3, dtype=float)}
     qc_jobs: list[Callable[[], None]] = []
-
-    for index in range(reference_index + 1, len(slide_paths)):
-        moving_path = slide_paths[index]
-        fixed_path = slide_paths[index - 1]
-        pair_transform, crop_transform = _estimate_pair_transform_cached(
-            fixed_path,
-            moving_path,
-            crops,
-            config,
-            prepared_features,
-            pair_cache,
-        )
-        cumulative[moving_path] = cumulative[fixed_path] @ pair_transform.matrix
-        transforms[moving_path] = _composed_transform_result(
-            cumulative[moving_path],
-            pair_transform,
-        )
-        aligned_to[moving_path] = fixed_path
-        if config.write_processed_images and config.alignment_qc_mode == "full":
-            qc_jobs.append(
-                partial(
-                    _write_alignment_qc,
-                    alignment_dir / "pair_crops",
-                    moving_path,
-                    crops[fixed_path].image,
-                    crops[moving_path].image,
-                    crop_transform,
-                    cache=qc_cache,
-                )
-            )
-
-    for index in range(reference_index - 1, -1, -1):
-        moving_path = slide_paths[index]
-        fixed_path = slide_paths[index + 1]
-        pair_transform, crop_transform = _estimate_pair_transform_cached(
-            fixed_path,
-            moving_path,
-            crops,
-            config,
-            prepared_features,
-            pair_cache,
-        )
+    steps = tuple(
+        [
+            (slide_paths[index - 1], slide_paths[index])
+            for index in range(reference_index + 1, len(slide_paths))
+        ]
+        + [
+            (slide_paths[index + 1], slide_paths[index])
+            for index in range(reference_index - 1, -1, -1)
+        ]
+    )
+    pair_results = _estimate_pair_transforms(
+        steps,
+        crops,
+        config,
+        prepared_features,
+        pair_cache,
+    )
+    for (fixed_path, moving_path), (pair_transform, crop_transform) in zip(
+        steps,
+        pair_results,
+        strict=True,
+    ):
         cumulative[moving_path] = cumulative[fixed_path] @ pair_transform.matrix
         transforms[moving_path] = _composed_transform_result(
             cumulative[moving_path],
@@ -1396,7 +1409,12 @@ def _estimate_hybrid_transforms(
     qc_cache: RegistrationQcCache | None = None,
 ) -> tuple[dict[Path, RigidTransformResult], dict[Path, Path]]:
     if prepared_features is None:
-        prepared_features = _prepare_crop_features(slide_paths, crops, config)
+        prepared_features = _prepare_crop_features(
+            slide_paths,
+            crops,
+            config,
+            workers=config.rigid_workers,
+        )
     reference_transforms, reference_aligned_to = _estimate_reference_transforms(
         slide_paths,
         reference_path,
@@ -1524,6 +1542,37 @@ def _estimate_pair_transform_cached(
     )
 
 
+def _estimate_pair_transforms(
+    pairs: tuple[tuple[Path, Path], ...],
+    crops: dict[Path, _Crop],
+    config: RegistrationConfig,
+    prepared_features: dict[Path, PreparedRigidFeatures] | None,
+    pair_cache: _RigidPairCache | None,
+) -> tuple[tuple[RigidTransformResult, RigidTransformResult], ...]:
+    """Estimate independent rigid pairs through one bounded ordered map."""
+
+    def estimate(
+        pair: tuple[Path, Path],
+    ) -> tuple[RigidTransformResult, RigidTransformResult]:
+        fixed_path, moving_path = pair
+        return _estimate_pair_transform_cached(
+            fixed_path,
+            moving_path,
+            crops,
+            config,
+            prepared_features,
+            pair_cache,
+        )
+
+    if config.rigid_workers == 1:
+        return tuple(map(estimate, pairs))
+    with ThreadPoolExecutor(
+        max_workers=config.rigid_workers,
+        thread_name_prefix="histopia-rigid",
+    ) as executor:
+        return tuple(executor.map(estimate, pairs))
+
+
 def _composed_transform_result(
     matrix: np.ndarray,
     pair_transform: RigidTransformResult,
@@ -1558,6 +1607,7 @@ class _RigidPairCache:
         tuple[Path, Path],
         tuple[RigidTransformResult, RigidTransformResult],
     ] = field(default_factory=dict, repr=False)
+    lock: Lock = field(default_factory=Lock, repr=False)
 
     @classmethod
     def create(
@@ -1619,7 +1669,7 @@ class _RigidPairCache:
     ) -> tuple[RigidTransformResult, RigidTransformResult]:
         preloaded = self.preloaded.get((fixed_path, moving_path))
         if preloaded is not None:
-            self.hits += 1
+            self._increment("hits")
             return preloaded
         fingerprint = None
         if self.directory is not None:
@@ -1630,10 +1680,10 @@ class _RigidPairCache:
             )
             cached = load_rigid_pair_cache(self.directory, fingerprint)
             if cached is not None:
-                self.hits += 1
+                self._increment("hits")
                 return cached
-            self.misses += 1
-        self.computations += 1
+            self._increment("misses")
+        self._increment("computations")
         full, crop = _estimate_pair_transform(
             fixed_path,
             moving_path,
@@ -1652,6 +1702,10 @@ class _RigidPairCache:
             except OSError:
                 pass
         return full, crop
+
+    def _increment(self, name: str) -> None:
+        with self.lock:
+            setattr(self, name, getattr(self, name) + 1)
 
 
 def _rigid_pair_cache_settings(config: RegistrationConfig) -> dict[str, object]:
@@ -2228,7 +2282,12 @@ def _select_best_connected_reference(
     if len(slide_paths) == 1:
         return slide_paths[0]
     if prepared_features is None:
-        prepared_features = _prepare_crop_features(slide_paths, crops, config)
+        prepared_features = _prepare_crop_features(
+            slide_paths,
+            crops,
+            config,
+            workers=config.rigid_workers,
+        )
     midpoint = (len(slide_paths) - 1) / 2
     scored: list[tuple[float, Path]] = []
     for index, candidate in enumerate(slide_paths):
@@ -2290,6 +2349,8 @@ def _prepare_crop_features(
     slide_paths: tuple[Path, ...],
     crops: dict[Path, _Crop],
     config: RegistrationConfig,
+    *,
+    workers: int | None = None,
 ) -> dict[Path, PreparedRigidFeatures] | None:
     """Detect each crop's features once for ordering and affine alignment."""
 
@@ -2300,11 +2361,12 @@ def _prepare_crop_features(
         crop = crops[path]
         return prepare_rigid_features(crop.image, crop.mask)
 
-    if config.ordering_workers == 1:
+    effective_workers = config.ordering_workers if workers is None else workers
+    if effective_workers == 1:
         rows = map(prepare, slide_paths)
         return dict(zip(slide_paths, rows, strict=True))
     with ThreadPoolExecutor(
-        max_workers=config.ordering_workers,
+        max_workers=effective_workers,
         thread_name_prefix="rigid-features",
     ) as executor:
         return dict(
