@@ -591,6 +591,29 @@ configured tolerance, Jacobian percentiles stay bounded, and independently
 estimated forward/reverse flows are consistent. Rejected fields are identity
 and are not applied to WSI output.
 
+Each candidate is also evaluated against mutual ORB correspondences detected
+after affine alignment. DIS does not consume these sparse features, so their
+before/after median and p95 residuals provide a held-out algorithmic check on
+the dense field. They are diagnostics rather than an acceptance gate and must
+not be described as anatomical landmarks or cell-level ground truth. A
+rejected candidate remains available in memory long enough to render labeled
+QC, while the serialized and applied displacement remains identity.
+
+Build a fixed-viewport provisional review from either a non-rigid registration
+run or a standalone validation bundle:
+
+```bash
+histopia-visualize non-rigid-review \
+    /path/to/non-rigid-run \
+    /path/to/non-rigid-review \
+    --workers 4
+```
+
+The browser compares the reference, affine baseline, dense candidate,
+checkerboard, displacement magnitude, acceptance checks, and sparse
+correspondence diagnostics. Its output is a review artifact only; generation
+does not approve or promote a dense field.
+
 Export only accepted fields to a separate native validation tree with
 `--accepted-non-rigid-only`. This avoids replacing the validated affine
 baseline while non-rigid landmark validation is still pending.
@@ -598,6 +621,15 @@ baseline while non-rigid landmark validation is still pending.
 The original OncoSpatial manual-sorted IHC workflow explicitly configured
 VALIS with `non_rigid_registrar_cls=None`. Use Histopia's affine workflow when
 reproducing that analysis; enabling dense refinement changes the method.
+
+Approved section-order artifacts are immutable during registration. If a new
+proposal conflicts with an approved fingerprint, Histopia preserves the
+approved file byte-for-byte and writes the candidate to
+`section_order_review.pending.json` when working in the same run directory. If
+the approved review was supplied from another directory, the candidate is
+written to the new run's canonical `section_order_review.json`. Explicit
+section-order approval promotes a same-run pending proposal to the canonical
+path.
 
 Compare a completed KPF run to existing historical registered outputs:
 

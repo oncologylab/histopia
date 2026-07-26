@@ -123,7 +123,16 @@ def approve_section_order(
             "section order requires approved masks: " + ", ".join(sorted(unapproved))
         )
 
-    order_path = root / "section_order_review.json"
+    canonical_order_path = root / "section_order_review.json"
+    pending_order_path = root / "section_order_review.pending.json"
+    order_path = canonical_order_path
+    if pending_order_path.is_file():
+        canonical_payload = _load_object(canonical_order_path)
+        if canonical_payload.get("approved") is not True:
+            raise ValueError(
+                "pending section order requires an approved canonical order"
+            )
+        order_path = pending_order_path
     payload = _load_object(order_path)
     if payload.get("schema_version") != 3:
         raise ValueError("section order review must use schema version 3")
@@ -152,7 +161,9 @@ def approve_section_order(
     payload["reviewer"] = reviewer
     payload["reviewed_at"] = timestamp
     payload["notes"] = notes
-    _write_json_atomic(order_path, payload)
+    _write_json_atomic(canonical_order_path, payload)
+    if order_path == pending_order_path:
+        pending_order_path.unlink()
     return SectionOrderApproval(
         run_dir=root,
         slide_count=len(rows),

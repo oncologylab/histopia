@@ -12,6 +12,10 @@ _PUBLIC_IMPORTS = {
         "histopia.visualization._viewer",
         "build_mask_review",
     ),
+    "build_non_rigid_review": (
+        "histopia.visualization._nonrigid_review",
+        "build_non_rigid_review",
+    ),
     "build_registration_cohort_review": (
         "histopia.visualization._review_portal",
         "build_registration_cohort_review",
@@ -59,6 +63,7 @@ __all__ = [
     "MAX_DISPLAY_LINKS",
     "build_alignment_review",
     "build_mask_review",
+    "build_non_rigid_review",
     "build_registration_cohort_review",
     "build_registration_review",
     "build_section_order_review",

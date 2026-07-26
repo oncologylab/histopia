@@ -79,6 +79,17 @@ def main(argv: list[str] | None = None) -> int:
     mask_review.add_argument("registration_run", type=Path)
     mask_review.add_argument("output", type=Path)
     mask_review.add_argument("--workers", type=int, default=1)
+    non_rigid_review = commands.add_parser(
+        "non-rigid-review",
+        help="Build a fixed-viewport provisional dense-field audit.",
+    )
+    non_rigid_review.add_argument(
+        "source_run",
+        type=Path,
+        help="Validation bundle or non-rigid registration run.",
+    )
+    non_rigid_review.add_argument("output", type=Path)
+    non_rigid_review.add_argument("--workers", type=int, default=1)
     registration_review = commands.add_parser(
         "registration-review",
         help="Build one local portal for mask and section-order review.",
@@ -137,6 +148,16 @@ def main(argv: list[str] | None = None) -> int:
 
         index = build_mask_review(
             args.registration_run,
+            args.output,
+            workers=args.workers,
+        )
+        print(index)
+        return 0
+    if args.command == "non-rigid-review":
+        from histopia.visualization._nonrigid_review import build_non_rigid_review
+
+        index = build_non_rigid_review(
+            args.source_run,
             args.output,
             workers=args.workers,
         )

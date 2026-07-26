@@ -167,6 +167,16 @@ Non-rigid output remains opt-in. These metrics demonstrate numerical safety
 and reproducibility, but they do not replace independent landmarks or
 cell-level ground truth.
 
+A subsequent diagnostic pass on the approved affine-only `4352` cohort tested
+14 non-reference slides. Twelve dense candidates passed the existing
+similarity, tissue-Dice, Jacobian, and inverse-consistency gates; two remained
+affine-only. Mutual sparse correspondences were available for all 14 slides,
+including both rejected candidates, and every candidate reduced the held-out
+median feature residual. The sparse check is algorithmically separate from
+DIS, but it still derives from the same images and is not a substitute for
+curated anatomical landmarks. The approved affine registration artifacts were
+not modified or promoted by this experiment.
+
 Audit saved decisions and flow files with:
 
 ```bash

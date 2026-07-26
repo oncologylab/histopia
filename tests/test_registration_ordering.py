@@ -182,9 +182,12 @@ def test_order_proposal_preserves_review_metadata_only_for_same_fingerprint(
         }
     )
     path.write_text(json.dumps(payload))
+    approved_bytes = path.read_bytes()
 
-    write_order_proposal(path, first)
+    written = write_order_proposal(path, first)
     preserved = json.loads(path.read_text())
+    assert written == path
+    assert path.read_bytes() == approved_bytes
     assert preserved["approved"] is True
     assert preserved["reviewer"] == "Reviewer"
 
@@ -193,10 +196,13 @@ def test_order_proposal_preserves_review_metadata_only_for_same_fingerprint(
         np.array([[0.0, 0.3], [0.3, 0.0]]),
         {"HE.ndpi": 1},
     )
-    write_order_proposal(path, changed)
-    invalidated = json.loads(path.read_text())
-    assert invalidated["approved"] is False
-    assert "reviewer" not in invalidated
+    written = write_order_proposal(path, changed)
+    pending = json.loads(written.read_text())
+    assert written == tmp_path / "order.pending.json"
+    assert path.read_bytes() == approved_bytes
+    assert pending["approved"] is False
+    assert pending["fingerprint"] == changed.fingerprint
+    assert "reviewer" not in pending
 
 
 def test_anchored_order_optimizes_across_fixed_middle_slot() -> None:

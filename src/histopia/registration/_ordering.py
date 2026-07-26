@@ -506,26 +506,37 @@ def _isotonic_non_decreasing(values: np.ndarray) -> np.ndarray:
     return fitted
 
 
-def write_order_proposal(path: Path, proposal: SectionOrderProposal) -> None:
-    """Write a proposal while retaining approval only for the same fingerprint."""
+def write_order_proposal(
+    path: Path,
+    proposal: SectionOrderProposal,
+    *,
+    conflict_path: Path | None = None,
+) -> Path:
+    """Write a proposal without mutating a conflicting approved artifact."""
 
-    approved = False
-    review_metadata: dict[str, object] = {}
     if path.exists():
         previous = json.loads(path.read_text())
-        approved = bool(previous.get("approved")) and (
-            previous.get("fingerprint") == proposal.fingerprint
-        )
-        if approved:
-            review_metadata = {
-                key: previous[key]
-                for key in ("reviewer", "reviewed_at", "notes")
-                if key in previous
-            }
+        if bool(previous.get("approved")):
+            if previous.get("fingerprint") == proposal.fingerprint:
+                return path
+            target = conflict_path or path.with_name(
+                f"{path.stem}.pending{path.suffix}"
+            )
+            if target.resolve() == path.resolve():
+                raise ValueError("conflict_path must differ from an approved artifact")
+            if target.exists():
+                pending = json.loads(target.read_text())
+                if bool(pending.get("approved")):
+                    if pending.get("fingerprint") == proposal.fingerprint:
+                        return target
+                    raise ValueError(
+                        "pending section-order path contains a different "
+                        "approved proposal"
+                    )
+            path = target
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = proposal.to_json_dict(approved=approved)
-    payload.update(review_metadata)
-    write_json_atomic(path, payload)
+    write_json_atomic(path, proposal.to_json_dict(approved=False))
+    return path
 
 
 def order_is_approved(path: Path, fingerprint: str) -> bool:

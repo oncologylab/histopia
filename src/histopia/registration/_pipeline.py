@@ -620,16 +620,26 @@ def _register_sections(
             config.section_order_review_path
             or config.output_dir / "section_order_review.json"
         )
-        write_order_proposal(order_review_path, proposal)
+        canonical_order_review_path = config.output_dir / "section_order_review.json"
+        conflict_path = (
+            config.output_dir / "section_order_review.pending.json"
+            if order_review_path.resolve() == canonical_order_review_path.resolve()
+            else canonical_order_review_path
+        )
+        written_order_review_path = write_order_proposal(
+            order_review_path,
+            proposal,
+            conflict_path=conflict_path,
+        )
         performance.update(
             ordering_distance_cache_hit=ordering_distance_cache_hit,
             ordering_proposal_cache_hit=ordering_proposal_cache_hit,
             ordering_proposal_seconds=round(ordering_proposal_seconds, 6),
         )
         if config.require_approved_order and not order_is_approved(
-            order_review_path, proposal.fingerprint
+            written_order_review_path, proposal.fingerprint
         ):
-            raise RegistrationApprovalRequired("order", order_review_path)
+            raise RegistrationApprovalRequired("order", written_order_review_path)
         path_by_name = {path.name: path for path in slide_paths}
         slide_paths = tuple(path_by_name[name] for name in proposal.slides)
     rigid_pair_cache = _RigidPairCache.create(
@@ -1065,9 +1075,10 @@ def _write_non_rigid_qc(
     cache: RegistrationQcCache | None = None,
 ) -> None:
     output_path = output_dir / f"{path.stem}.contact.png"
+    diagnostic_displacement = result.diagnostic_displacement
     fingerprint = qc_artifact_fingerprint(
-        "non-rigid-contact-v1",
-        arrays=(reference_image, rigid_moving, result.displacement),
+        "non-rigid-contact-v2",
+        arrays=(reference_image, rigid_moving, diagnostic_displacement),
         metadata={
             "slide": path.name,
             "result": result.to_json_dict(),
@@ -1077,28 +1088,65 @@ def _write_non_rigid_qc(
         return
     refined = warp_with_displacement(
         rigid_moving,
-        result.displacement,
+        diagnostic_displacement,
         border_value=(255, 255, 255),
     )
-    magnitude = np.linalg.norm(result.displacement, axis=2)
+    magnitude = np.linalg.norm(diagnostic_displacement, axis=2)
     maximum = max(float(magnitude.max()), 1e-6)
     magnitude_rgb = np.repeat(
         ((magnitude / maximum) * 255).astype(np.uint8)[:, :, np.newaxis],
         3,
         axis=2,
     )
-    save_rgb(
+    sparse = result.sparse_feature_validation
+    sparse_line = "sparse_holdout=not_run"
+    if sparse is not None and sparse.status == "available":
+        sparse_line = (
+            f"sparse_holdout={sparse.detector} n={sparse.coherent_matches} "
+            f"median={sparse.initial_median_residual_px:.2f}->"
+            f"{sparse.final_median_residual_px:.2f}px "
+            f"improved={sparse.improved_fraction:.1%}"
+        )
+    elif sparse is not None:
+        sparse_line = (
+            f"sparse_holdout={sparse.status} "
+            f"n={sparse.coherent_matches}/{sparse.mutual_matches}"
+        )
+    status = "accepted and applied" if result.accepted else "rejected; affine retained"
+    write_labeled_review_panel(
         output_path,
-        side_by_side(
-            [
-                reference_image,
-                rigid_moving,
-                refined,
-                blend_rgb(reference_image, refined),
+        panes=[
+            ("Reference", reference_image),
+            ("Affine moving", rigid_moving),
+            ("Dense candidate", refined),
+            ("Reference / candidate blend", blend_rgb(reference_image, refined)),
+            (
+                "Reference / candidate checkerboard",
                 checkerboard_rgb(reference_image, refined),
-                magnitude_rgb,
-            ]
-        ),
+            ),
+            ("Candidate displacement magnitude", magnitude_rgb),
+        ],
+        title=f"{path.name} - non-rigid candidate {status}",
+        metadata=[
+            (
+                f"similarity={result.initial_similarity:.4f}->"
+                f"{result.final_similarity:.4f} "
+                f"mask_dice={result.initial_mask_dice:.4f}->"
+                f"{result.final_mask_dice:.4f}"
+            ),
+            (
+                f"jacobian_p01/p99={result.jacobian_p01:.3f}/"
+                f"{result.jacobian_p99:.3f} "
+                f"displacement_p95={result.displacement_p95:.2f}px "
+                f"inverse_p95={result.inverse_consistency_p95:.2f}px"
+            ),
+            sparse_line,
+            "acceptance_warnings=" + ("; ".join(result.warnings) or "none"),
+            (
+                "Sparse holdout is an algorithmic diagnostic, "
+                "not anatomical ground truth."
+            ),
+        ],
     )
     if cache is not None:
         cache.record(fingerprint, (output_path,))

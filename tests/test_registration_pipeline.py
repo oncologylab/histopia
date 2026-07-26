@@ -206,6 +206,50 @@ def test_strict_registration_advances_through_exact_review_stages(
     assert validate_registration_approval(output_dir) == approval
 
 
+def test_registration_never_rewrites_conflicting_approved_order(
+    tmp_path: Path,
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    image = np.full((80, 80, 3), 255, dtype=np.uint8)
+    image[18:64, 20:60] = np.array([185, 100, 120], dtype=np.uint8)
+    Image.fromarray(image).save(input_dir / "section-a.png")
+    Image.fromarray(np.roll(image, 3, axis=0)).save(input_dir / "section-b.png")
+    sealed_order = tmp_path / "sealed-order.json"
+    sealed_order.write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "approved": True,
+                "fingerprint": "sealed-fingerprint",
+                "reviewer": "Test Reviewer",
+            }
+        )
+    )
+    sealed_bytes = sealed_order.read_bytes()
+
+    with pytest.raises(RegistrationApprovalRequired) as order_gate:
+        register_sections(
+            RegistrationConfig(
+                input_dir=input_dir,
+                output_dir=output_dir,
+                rigid_method="phase_correlation",
+                section_order_strategy="anchored_similarity",
+                section_order_review_path=sealed_order,
+                require_approved_order=True,
+                max_processed_image_dim_px=80,
+                write_processed_images=False,
+            )
+        )
+
+    pending = output_dir / "section_order_review.json"
+    assert order_gate.value.stage == "order"
+    assert order_gate.value.review_path == pending
+    assert sealed_order.read_bytes() == sealed_bytes
+    assert json.loads(pending.read_text())["approved"] is False
+
+
 def test_registration_failure_is_observationally_recorded(tmp_path: Path) -> None:
     input_dir = tmp_path / "input"
     output_dir = tmp_path / "output"

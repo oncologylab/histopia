@@ -133,6 +133,62 @@ def test_approve_prepared_masks_and_order_in_sequence(tmp_path: Path) -> None:
     assert order_payload["reviewed_at"] == "2026-07-24T10:05:00+00:00"
 
 
+def test_approve_section_order_promotes_pending_proposal(tmp_path: Path) -> None:
+    _write_run(tmp_path)
+    approve_mask_review(
+        tmp_path,
+        reviewer="Test Reviewer",
+        notes="All tissue masks reviewed.",
+    )
+    canonical = tmp_path / "section_order_review.json"
+    sealed = json.loads(canonical.read_text())
+    sealed["approved"] = True
+    sealed["fingerprint"] = "previous-fingerprint"
+    canonical.write_text(json.dumps(sealed))
+    pending = dict(sealed)
+    pending["approved"] = False
+    pending["fingerprint"] = "replacement-fingerprint"
+    pending_path = tmp_path / "section_order_review.pending.json"
+    pending_path.write_text(json.dumps(pending))
+
+    result = approve_section_order(
+        tmp_path,
+        reviewer="Test Reviewer",
+        notes="Replacement order reviewed.",
+    )
+
+    promoted = json.loads(canonical.read_text())
+    assert result.order_fingerprint == "replacement-fingerprint"
+    assert promoted["approved"] is True
+    assert promoted["fingerprint"] == "replacement-fingerprint"
+    assert not pending_path.exists()
+
+
+def test_approve_section_order_rejects_ambiguous_orphan_pending(
+    tmp_path: Path,
+) -> None:
+    _write_run(tmp_path)
+    approve_mask_review(
+        tmp_path,
+        reviewer="Test Reviewer",
+        notes="All tissue masks reviewed.",
+    )
+    canonical = tmp_path / "section_order_review.json"
+    canonical_bytes = canonical.read_bytes()
+    pending = json.loads(canonical.read_text())
+    pending["fingerprint"] = "orphaned-fingerprint"
+    (tmp_path / "section_order_review.pending.json").write_text(json.dumps(pending))
+
+    with pytest.raises(ValueError, match="approved canonical order"):
+        approve_section_order(
+            tmp_path,
+            reviewer="Test Reviewer",
+            notes="Ambiguous order must not be approved.",
+        )
+
+    assert canonical.read_bytes() == canonical_bytes
+
+
 def test_mask_stage_approval_rejects_rejected_mask(tmp_path: Path) -> None:
     _write_run(tmp_path)
     payload = json.loads((tmp_path / "mask_review.json").read_text())

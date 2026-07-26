@@ -120,6 +120,29 @@ def test_registration_review_command_passes_worker_count(
     assert calls == [(run, output, 4)]
 
 
+def test_non_rigid_review_command_passes_worker_count(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    calls: list[tuple[Path, Path, int]] = []
+
+    def capture(run: Path, output: Path, *, workers: int) -> Path:
+        calls.append((run, output, workers))
+        return output / "index.html"
+
+    monkeypatch.setattr(
+        "histopia.visualization._nonrigid_review.build_non_rigid_review",
+        capture,
+    )
+    run = tmp_path / "validation"
+    output = tmp_path / "review"
+
+    result = _cli.main(["non-rigid-review", str(run), str(output), "--workers", "3"])
+
+    assert result == 0
+    assert calls == [(run, output, 3)]
+
+
 def test_registration_cohort_review_command_passes_named_runs(
     tmp_path: Path, monkeypatch
 ) -> None:

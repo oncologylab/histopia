@@ -42,6 +42,10 @@ _PUBLIC_IMPORTS = {
         "histopia.registration._nonrigid",
         "NonRigidTransformResult",
     ),
+    "SparseFeatureValidation": (
+        "histopia.registration._nonrigid",
+        "SparseFeatureValidation",
+    ),
     "OrientationDecision": (
         "histopia.registration._orientation",
         "OrientationDecision",
@@ -108,6 +112,10 @@ _PUBLIC_IMPORTS = {
     "estimate_non_rigid_transform": (
         "histopia.registration._nonrigid",
         "estimate_non_rigid_transform",
+    ),
+    "evaluate_non_rigid_feature_holdout": (
+        "histopia.registration._nonrigid",
+        "evaluate_non_rigid_feature_holdout",
     ),
     "estimate_rigid_transform": (
         "histopia.registration._rigid",
@@ -197,6 +205,7 @@ __all__ = [
     "MaskReviewEntry",
     "NonRigidRefinementConfig",
     "NonRigidTransformResult",
+    "SparseFeatureValidation",
     "GroupOrientation",
     "OrientationDecision",
     "KpfManifest",
@@ -224,6 +233,7 @@ __all__ = [
     "discover_slides",
     "estimate_rigid_transform",
     "estimate_non_rigid_transform",
+    "evaluate_non_rigid_feature_holdout",
     "find_duplicate_slide_content",
     "geometry_thumbnail_to_native_matrix",
     "refine_rigid_transform",
