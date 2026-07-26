@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import json
+import sys
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from histopia._validation import (
     finite_float,
@@ -341,3 +344,112 @@ class RegistrationConfig:
             msg = "wsi_jpeg_quality must be between 1 and 100"
             raise ValueError(msg)
         self.wsi_tile_size = positive_int("wsi_tile_size", self.wsi_tile_size)
+
+
+def load_registration_config(path: Path | str) -> RegistrationConfig:
+    """Load a typed JSON or TOML registration config without heavy imports."""
+
+    path = Path(path)
+    if path.suffix.lower() == ".json":
+        data = json.loads(path.read_text())
+    elif path.suffix.lower() in {".toml", ".tml"}:
+        if sys.version_info >= (3, 11):
+            import tomllib
+        else:
+            import tomli as tomllib
+
+        data = tomllib.loads(path.read_text())
+    else:
+        raise ValueError("config must be JSON or TOML")
+    if not isinstance(data, dict):
+        raise TypeError("registration config must contain a mapping")
+    return registration_config_from_mapping(data)
+
+
+def registration_config_from_mapping(
+    data: Mapping[str, Any],
+) -> RegistrationConfig:
+    """Build a typed registration config without mutating the source mapping."""
+
+    values = dict(data)
+    mask = BrightfieldMaskConfig(**dict(values.pop("mask", {})))
+    refinement = MaskRefinementConfig(**dict(values.pop("refinement", {})))
+    non_rigid_refinement = NonRigidRefinementConfig(
+        **dict(values.pop("non_rigid_refinement", {}))
+    )
+    registered_reference_dir_value = values.pop("registered_reference_dir", None)
+    registered_reference_dir = (
+        Path(registered_reference_dir_value)
+        if registered_reference_dir_value is not None
+        else None
+    )
+    registered_output_dir_value = values.pop("registered_output_dir", None)
+    registered_output_dir = (
+        Path(registered_output_dir_value)
+        if registered_output_dir_value is not None
+        else None
+    )
+    section_order_value = values.pop("section_order_path", None)
+    section_order_review_value = values.pop("section_order_review_path", None)
+    section_orientation_value = values.pop("section_orientation_path", None)
+    mask_review_value = values.pop("mask_review_path", None)
+    mask_override_value = values.pop("mask_override_dir", None)
+    automatic_mask_snapshot_value = values.pop(
+        "automatic_mask_snapshot_path",
+        None,
+    )
+    affine_override_value = values.pop("affine_override_path", None)
+    config = RegistrationConfig(
+        input_dir=Path(values.pop("input_dir")),
+        output_dir=Path(values.pop("output_dir")),
+        input_slides=tuple(Path(path) for path in values.pop("input_slides", ())),
+        reference_slide=values.pop("reference_slide", None),
+        reference_policy=values.pop("reference_policy", "best_connected"),
+        section_order_path=Path(section_order_value) if section_order_value else None,
+        section_order_strategy=values.pop("section_order_strategy", "natural"),
+        section_order_review_path=(
+            Path(section_order_review_value) if section_order_review_value else None
+        ),
+        section_orientation_path=(
+            Path(section_orientation_value) if section_orientation_value else None
+        ),
+        thumbnail_workers=values.pop("thumbnail_workers", 1),
+        mask_workers=values.pop("mask_workers", 1),
+        ordering_workers=values.pop("ordering_workers", 1),
+        qc_workers=values.pop("qc_workers", 1),
+        vips_threads=values.pop("vips_threads", None),
+        preprocessing_cache=values.pop("preprocessing_cache", True),
+        alignment_cache=values.pop("alignment_cache", True),
+        require_approved_order=values.pop("require_approved_order", False),
+        mask_review_path=Path(mask_review_value) if mask_review_value else None,
+        mask_override_dir=Path(mask_override_value) if mask_override_value else None,
+        automatic_mask_snapshot_path=(
+            Path(automatic_mask_snapshot_value)
+            if automatic_mask_snapshot_value
+            else None
+        ),
+        affine_override_path=(
+            Path(affine_override_value) if affine_override_value else None
+        ),
+        require_approved_masks=values.pop("require_approved_masks", False),
+        wsi_only=values.pop("wsi_only", False),
+        registered_reference_dir=registered_reference_dir,
+        max_processed_image_dim_px=values.pop("max_processed_image_dim_px", 1200),
+        crop_mode=values.pop("crop_mode", "reference"),
+        rigid_method=values.pop("rigid_method", "feature"),
+        align_strategy=values.pop("align_strategy", "hybrid"),
+        non_rigid=values.pop("non_rigid", False),
+        mask=mask,
+        refinement=refinement,
+        non_rigid_refinement=non_rigid_refinement,
+        write_processed_images=values.pop("write_processed_images", True),
+        write_warped_images=values.pop("write_warped_images", False),
+        registered_output_dir=registered_output_dir,
+        wsi_compression=values.pop("wsi_compression", "jpeg"),
+        wsi_jpeg_quality=values.pop("wsi_jpeg_quality", 95),
+        wsi_tile_size=values.pop("wsi_tile_size", 512),
+    )
+    if values:
+        unknown = ", ".join(sorted(values))
+        raise ValueError(f"unknown registration config keys: {unknown}")
+    return config

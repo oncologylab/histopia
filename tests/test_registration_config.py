@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import json
 from copy import deepcopy
 from pathlib import Path
 
 import pytest
 
-from histopia.registration._cli import _config_from_mapping
+from histopia.registration import (
+    load_registration_config,
+    registration_config_from_mapping,
+)
 from histopia.registration._config import (
     BrightfieldMaskConfig,
     MaskRefinementConfig,
@@ -182,14 +186,14 @@ def test_registration_mapping_parser_does_not_mutate_input(tmp_path: Path) -> No
     }
     original = deepcopy(payload)
 
-    config = _config_from_mapping(payload)
+    config = registration_config_from_mapping(payload)
 
     assert config.mask.mode == "auto_tissue"
     assert payload == original
 
 
 def test_registration_mapping_parses_alignment_controls(tmp_path: Path) -> None:
-    config = _config_from_mapping(
+    config = registration_config_from_mapping(
         {
             "input_dir": str(tmp_path / "input"),
             "output_dir": str(tmp_path / "output"),
@@ -202,3 +206,45 @@ def test_registration_mapping_parses_alignment_controls(tmp_path: Path) -> None:
     assert config.alignment_cache is False
     assert config.qc_workers == 3
     assert config.vips_threads == 6
+
+
+@pytest.mark.parametrize("suffix", (".json", ".toml"))
+def test_load_registration_config_supports_public_formats(
+    tmp_path: Path,
+    suffix: str,
+) -> None:
+    path = tmp_path / f"registration{suffix}"
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    if suffix == ".json":
+        path.write_text(
+            json.dumps(
+                {
+                    "input_dir": str(input_dir),
+                    "output_dir": str(output_dir),
+                    "mask_workers": 3,
+                }
+            )
+        )
+    else:
+        path.write_text(
+            f'input_dir = "{input_dir}"\n'
+            f'output_dir = "{output_dir}"\n'
+            "mask_workers = 3\n"
+        )
+
+    config = load_registration_config(path)
+
+    assert config.input_dir == input_dir
+    assert config.output_dir == output_dir
+    assert config.mask_workers == 3
+
+
+def test_load_registration_config_rejects_non_mapping_json(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "registration.json"
+    path.write_text("[]")
+
+    with pytest.raises(TypeError, match="must contain a mapping"):
+        load_registration_config(path)

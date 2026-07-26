@@ -47,6 +47,10 @@ def build_kpf_manifest(mouse_dir: Path | str) -> KpfManifest:
 
     raw_by_key = _paths_by_key(_iter_raw_paths(raw_dir))
     reference_by_key = _paths_by_key(_iter_registered_paths(registered_dir))
+    raw_by_key, reference_by_key = _disambiguate_marker_collisions(
+        raw_by_key,
+        reference_by_key,
+    )
     raw_keys = set(raw_by_key)
     reference_keys = set(reference_by_key)
 
@@ -77,12 +81,7 @@ def build_kpf_manifest(mouse_dir: Path | str) -> KpfManifest:
 def normalize_slide_stem(path: Path | str) -> str:
     """Normalize a slide filename for raw/reference matching."""
 
-    name = Path(path).name.lower()
-    for suffix in (".ome.tiff", ".ome.tif", ".ndpi", ".scn", ".tiff", ".tif"):
-        if name.endswith(suffix):
-            name = name[: -len(suffix)]
-            break
-
+    name = _slide_name_without_suffix(path)
     marker_key = _marker_key(name)
     if marker_key == "marker-he":
         return marker_key
@@ -95,6 +94,14 @@ def normalize_slide_stem(path: Path | str) -> str:
 
     compact = re.sub(r"[^a-z0-9]+", "-", name).strip("-")
     return compact
+
+
+def _slide_name_without_suffix(path: Path | str) -> str:
+    name = Path(path).name.lower()
+    for suffix in (".ome.tiff", ".ome.tif", ".ndpi", ".scn", ".tiff", ".tif"):
+        if name.endswith(suffix):
+            return name[: -len(suffix)]
+    return name
 
 
 def _iter_raw_paths(raw_dir: Path) -> tuple[Path, ...]:
@@ -121,6 +128,12 @@ def _iter_registered_paths(registered_dir: Path) -> tuple[Path, ...]:
                 path
                 for path in registered_dir.iterdir()
                 if path.name.lower().endswith(REGISTERED_SUFFIXES)
+                and re.search(
+                    r"(?:[._-]mask)\.(?:tif|tiff)$",
+                    path.name,
+                    flags=re.IGNORECASE,
+                )
+                is None
             ),
             key=lambda path: _natural_key(path.name),
         )
@@ -132,6 +145,53 @@ def _paths_by_key(paths: tuple[Path, ...]) -> dict[str, tuple[Path, ...]]:
     for path in paths:
         grouped.setdefault(normalize_slide_stem(path), []).append(path)
     return {key: tuple(value) for key, value in grouped.items()}
+
+
+def _disambiguate_marker_collisions(
+    raw_by_key: dict[str, tuple[Path, ...]],
+    reference_by_key: dict[str, tuple[Path, ...]],
+) -> tuple[dict[str, tuple[Path, ...]], dict[str, tuple[Path, ...]]]:
+    raw_result: dict[str, tuple[Path, ...]] = {}
+    reference_result: dict[str, tuple[Path, ...]] = {}
+    for key in sorted(set(raw_by_key) | set(reference_by_key), key=_natural_key):
+        raw_paths = raw_by_key.get(key, ())
+        reference_paths = reference_by_key.get(key, ())
+        if len(raw_paths) <= 1 and len(reference_paths) <= 1:
+            if raw_paths:
+                raw_result[key] = raw_paths
+            if reference_paths:
+                reference_result[key] = reference_paths
+            continue
+
+        raw_markers = _unique_marker_paths(raw_paths)
+        reference_markers = _unique_marker_paths(reference_paths)
+        if raw_markers is None or reference_markers is None:
+            if raw_paths:
+                raw_result[key] = raw_paths
+            if reference_paths:
+                reference_result[key] = reference_paths
+            continue
+
+        for marker in sorted(
+            set(raw_markers) | set(reference_markers),
+            key=_natural_key,
+        ):
+            expanded_key = f"{key}-{marker}"
+            if marker in raw_markers:
+                raw_result[expanded_key] = (raw_markers[marker],)
+            if marker in reference_markers:
+                reference_result[expanded_key] = (reference_markers[marker],)
+    return raw_result, reference_result
+
+
+def _unique_marker_paths(paths: tuple[Path, ...]) -> dict[str, Path] | None:
+    markers: dict[str, Path] = {}
+    for path in paths:
+        marker = _marker_key(_slide_name_without_suffix(path))
+        if marker is None or marker in markers:
+            return None
+        markers[marker] = path
+    return markers
 
 
 def _marker_key(name: str) -> str | None:

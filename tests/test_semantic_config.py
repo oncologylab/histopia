@@ -4,7 +4,8 @@ import json
 
 import pytest
 
-from histopia.semantic._config import SemanticAtlasConfig, load_semantic_config
+from histopia.semantic import load_semantic_config
+from histopia.semantic._config import SemanticAtlasConfig
 
 
 def test_semantic_config_defaults_to_automatic_k_range(tmp_path) -> None:

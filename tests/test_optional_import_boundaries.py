@@ -50,3 +50,30 @@ def test_cli_help_does_not_import_optional_numpy(
     )
 
     assert result.returncode == 0, result.stderr
+
+
+def test_public_config_loaders_do_not_import_optional_dependencies() -> None:
+    script = textwrap.dedent(
+        """
+        import sys
+
+        from histopia.registration import load_registration_config
+        from histopia.semantic import load_semantic_config
+
+        assert callable(load_registration_config)
+        assert callable(load_semantic_config)
+        assert "numpy" not in sys.modules
+        assert "cv2" not in sys.modules
+        assert "torch" not in sys.modules
+        assert "pyvips" not in sys.modules
+        """
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr

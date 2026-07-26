@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from histopia.registration._cli import _config_from_mapping
+from histopia.registration import registration_config_from_mapping
 
 try:
     import tomllib
@@ -62,7 +62,7 @@ def test_readme_links_to_interactive_pages_showcase() -> None:
 
 def test_registration_config_rejects_unknown_keys(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="unknown registration config keys: typo"):
-        _config_from_mapping(
+        registration_config_from_mapping(
             {
                 "input_dir": str(tmp_path / "input"),
                 "output_dir": str(tmp_path / "output"),
@@ -76,7 +76,7 @@ def test_registration_config_accepts_exact_external_slide_selection(
 ) -> None:
     slides = (tmp_path / "second.ndpi", tmp_path / "first.scn")
 
-    config = _config_from_mapping(
+    config = registration_config_from_mapping(
         {
             "input_dir": str(tmp_path),
             "input_slides": [str(path) for path in slides],

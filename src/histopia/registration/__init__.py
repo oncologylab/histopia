@@ -29,6 +29,10 @@ _PUBLIC_IMPORTS = {
         "histopia.registration._config",
         "MaskRefinementConfig",
     ),
+    "load_registration_config": (
+        "histopia.registration._config",
+        "load_registration_config",
+    ),
     "MaskReviewApproval": (
         "histopia.registration._approval",
         "MaskReviewApproval",
@@ -141,6 +145,10 @@ _PUBLIC_IMPORTS = {
         "histopia.registration._masking",
         "refine_group_tissue_masks",
     ),
+    "registration_config_from_mapping": (
+        "histopia.registration._config",
+        "registration_config_from_mapping",
+    ),
     "refine_rigid_transform": (
         "histopia.registration._rigid",
         "refine_rigid_transform",
@@ -226,10 +234,12 @@ __all__ = [
     "approve_section_order",
     "build_section_viewer",
     "build_section_order_review",
+    "load_registration_config",
     "apply_quarter_turn",
     "calculate_thumbnail_overlap_bbox",
     "create_tissue_mask",
     "refine_group_tissue_masks",
+    "registration_config_from_mapping",
     "discover_slides",
     "estimate_rigid_transform",
     "estimate_non_rigid_transform",

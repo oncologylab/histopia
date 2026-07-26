@@ -120,6 +120,22 @@ manifest to the selected cohort. Downstream order and alignment artifacts from
 an earlier run are not offered for review, approval, or semantic analysis
 unless their exact slide cohort matches the current staged workflow.
 
+The generated JSON/TOML contracts can also be validated without loading
+OpenCV, libvips, PyTorch, or other workflow dependencies:
+
+```python
+from histopia.registration import load_registration_config
+from histopia.semantic import load_semantic_config
+
+registration = load_registration_config("registration-config.json")
+semantic = load_semantic_config("semantic-config.json")
+```
+
+The extension's build executes these public loaders against its generated
+configs using a pinned Histopia revision. This cross-project check catches
+configuration drift independently of the Java command-construction tests and
+the Python workflow tests.
+
 The QuPath **Device** control selects the backend for UNI2-h feature extraction.
 The global semantic atlas then uses the validated CPU implementation;
 **Fit threads** bounds its native BLAS and OpenMP pools. An idle GPU during the

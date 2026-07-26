@@ -6,13 +6,10 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any
 
 from histopia.registration._config import (
-    BrightfieldMaskConfig,
-    MaskRefinementConfig,
-    NonRigidRefinementConfig,
-    RegistrationConfig,
+    load_registration_config,
+    registration_config_from_mapping,
 )
 from histopia.registration._manifest import build_kpf_manifest
 
@@ -318,7 +315,7 @@ def main(argv: list[str] | None = None) -> int:
     from histopia.registration._errors import RegistrationApprovalRequired
     from histopia.registration._pipeline import register_sections
 
-    config = _load_config(args.config)
+    config = load_registration_config(args.config)
     try:
         result = register_sections(config)
     except RegistrationApprovalRequired as error:
@@ -330,103 +327,8 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _load_config(path: Path) -> RegistrationConfig:
-    if path.suffix.lower() == ".json":
-        data = json.loads(path.read_text())
-    elif path.suffix.lower() in {".toml", ".tml"}:
-        if sys.version_info >= (3, 11):
-            import tomllib
-        else:
-            import tomli as tomllib
-
-        data = tomllib.loads(path.read_text())
-    else:
-        msg = "config must be JSON or TOML"
-        raise ValueError(msg)
-    return _config_from_mapping(data)
-
-
-def _config_from_mapping(data: dict[str, Any]) -> RegistrationConfig:
-    data = dict(data)
-    mask_data = dict(data.pop("mask", {}))
-    mask = BrightfieldMaskConfig(**mask_data)
-    refinement_data = dict(data.pop("refinement", {}))
-    refinement = MaskRefinementConfig(**refinement_data)
-    non_rigid_data = dict(data.pop("non_rigid_refinement", {}))
-    non_rigid_refinement = NonRigidRefinementConfig(**non_rigid_data)
-    registered_reference_dir_value = data.pop("registered_reference_dir", None)
-    registered_reference_dir = (
-        Path(registered_reference_dir_value)
-        if registered_reference_dir_value is not None
-        else None
-    )
-    registered_output_dir_value = data.pop("registered_output_dir", None)
-    registered_output_dir = (
-        Path(registered_output_dir_value)
-        if registered_output_dir_value is not None
-        else None
-    )
-    section_order_value = data.pop("section_order_path", None)
-    section_order_review_value = data.pop("section_order_review_path", None)
-    section_orientation_value = data.pop("section_orientation_path", None)
-    mask_review_value = data.pop("mask_review_path", None)
-    mask_override_value = data.pop("mask_override_dir", None)
-    automatic_mask_snapshot_value = data.pop("automatic_mask_snapshot_path", None)
-    affine_override_value = data.pop("affine_override_path", None)
-    config = RegistrationConfig(
-        input_dir=Path(data.pop("input_dir")),
-        output_dir=Path(data.pop("output_dir")),
-        input_slides=tuple(Path(path) for path in data.pop("input_slides", ())),
-        reference_slide=data.pop("reference_slide", None),
-        reference_policy=data.pop("reference_policy", "best_connected"),
-        section_order_path=Path(section_order_value) if section_order_value else None,
-        section_order_strategy=data.pop("section_order_strategy", "natural"),
-        section_order_review_path=(
-            Path(section_order_review_value) if section_order_review_value else None
-        ),
-        section_orientation_path=(
-            Path(section_orientation_value) if section_orientation_value else None
-        ),
-        thumbnail_workers=data.pop("thumbnail_workers", 1),
-        mask_workers=data.pop("mask_workers", 1),
-        ordering_workers=data.pop("ordering_workers", 1),
-        qc_workers=data.pop("qc_workers", 1),
-        vips_threads=data.pop("vips_threads", None),
-        preprocessing_cache=data.pop("preprocessing_cache", True),
-        alignment_cache=data.pop("alignment_cache", True),
-        require_approved_order=data.pop("require_approved_order", False),
-        mask_review_path=Path(mask_review_value) if mask_review_value else None,
-        mask_override_dir=Path(mask_override_value) if mask_override_value else None,
-        automatic_mask_snapshot_path=(
-            Path(automatic_mask_snapshot_value)
-            if automatic_mask_snapshot_value
-            else None
-        ),
-        affine_override_path=(
-            Path(affine_override_value) if affine_override_value else None
-        ),
-        require_approved_masks=data.pop("require_approved_masks", False),
-        wsi_only=data.pop("wsi_only", False),
-        registered_reference_dir=registered_reference_dir,
-        max_processed_image_dim_px=data.pop("max_processed_image_dim_px", 1200),
-        crop_mode=data.pop("crop_mode", "reference"),
-        rigid_method=data.pop("rigid_method", "feature"),
-        align_strategy=data.pop("align_strategy", "hybrid"),
-        non_rigid=data.pop("non_rigid", False),
-        mask=mask,
-        refinement=refinement,
-        non_rigid_refinement=non_rigid_refinement,
-        write_processed_images=data.pop("write_processed_images", True),
-        write_warped_images=data.pop("write_warped_images", False),
-        registered_output_dir=registered_output_dir,
-        wsi_compression=data.pop("wsi_compression", "jpeg"),
-        wsi_jpeg_quality=data.pop("wsi_jpeg_quality", 95),
-        wsi_tile_size=data.pop("wsi_tile_size", 512),
-    )
-    if data:
-        unknown = ", ".join(sorted(data))
-        raise ValueError(f"unknown registration config keys: {unknown}")
-    return config
+_load_config = load_registration_config
+_config_from_mapping = registration_config_from_mapping
 
 
 if __name__ == "__main__":
