@@ -31,6 +31,7 @@ def test_registration_config_normalizes_paths_and_defaults(tmp_path: Path) -> No
     assert config.mask_workers == 1
     assert config.ordering_workers == 1
     assert config.qc_workers == 1
+    assert config.alignment_qc_mode == "review"
     assert config.vips_threads is None
     assert config.preprocessing_cache is True
     assert config.alignment_cache is True
@@ -44,6 +45,7 @@ def test_registration_config_normalizes_paths_and_defaults(tmp_path: Path) -> No
         ("crop_mode", "none", "crop_mode"),
         ("rigid_method", "sift", "rigid_method"),
         ("align_strategy", "pairwise", "align_strategy"),
+        ("alignment_qc_mode", "debug", "alignment_qc_mode"),
         ("wsi_compression", "zstd", "wsi_compression"),
     ),
 )
@@ -199,12 +201,14 @@ def test_registration_mapping_parses_alignment_controls(tmp_path: Path) -> None:
             "output_dir": str(tmp_path / "output"),
             "alignment_cache": False,
             "qc_workers": 3,
+            "alignment_qc_mode": "full",
             "vips_threads": 6,
         }
     )
 
     assert config.alignment_cache is False
     assert config.qc_workers == 3
+    assert config.alignment_qc_mode == "full"
     assert config.vips_threads == 6
 
 

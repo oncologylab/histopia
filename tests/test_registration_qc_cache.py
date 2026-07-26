@@ -130,3 +130,28 @@ def test_qc_cache_records_parallel_bundles_without_losing_entries(
         for index, path in enumerate(artifacts)
     )
     assert cache.hits == 12
+
+
+def test_qc_cache_prunes_only_tracked_generated_prefixes(tmp_path: Path) -> None:
+    cache = RegistrationQcCache(tmp_path, tmp_path / ".cache" / "qc.json")
+    alignment = tmp_path / "qc" / "alignment" / "slide.warped.png"
+    review = tmp_path / "qc" / "review" / "slide.review.png"
+    untracked = tmp_path / "qc" / "alignment" / "notes.txt"
+    alignment.parent.mkdir(parents=True)
+    review.parent.mkdir(parents=True)
+    alignment.write_bytes(b"alignment")
+    review.write_bytes(b"review")
+    untracked.write_bytes(b"keep")
+    cache.record("a" * 64, (alignment,))
+    cache.record("b" * 64, (review,))
+
+    removed = cache.prune_prefixes(("qc/alignment",))
+
+    assert removed == (1, len(b"alignment"))
+    assert not alignment.exists()
+    assert review.read_bytes() == b"review"
+    assert untracked.read_bytes() == b"keep"
+    payload = json.loads(cache.manifest_path.read_text())
+    assert sorted(payload["entries"]) == ["qc/review/slide.review.png"]
+    with pytest.raises(ValueError, match="safe relative"):
+        cache.prune_prefixes(("../outside",))

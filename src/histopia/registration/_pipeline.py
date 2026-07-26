@@ -206,6 +206,7 @@ def register_sections(config: RegistrationConfig) -> RegistrationResult:
             "mask_workers": config.mask_workers,
             "ordering_workers": config.ordering_workers,
             "qc_workers": config.qc_workers,
+            "alignment_qc_mode": config.alignment_qc_mode,
             "vips_threads": config.vips_threads,
             "preprocessing_cache": config.preprocessing_cache,
             "alignment_cache": config.alignment_cache,
@@ -294,14 +295,24 @@ def _register_sections(
         if preprocessing_cache_dir is not None and config.write_processed_images
         else None
     )
-    registration_qc_cache = (
-        RegistrationQcCache(
+    registration_qc_cache = None
+    qc_artifacts_pruned = 0
+    qc_artifact_bytes_pruned = 0
+    if config.write_processed_images:
+        candidate_qc_cache = RegistrationQcCache(
             config.output_dir,
             config.output_dir / ".cache" / "registration-qc-artifacts.json",
         )
-        if config.alignment_cache and config.write_processed_images
-        else None
-    )
+        prune_prefixes = (
+            ("qc/alignment", "qc/review", "qc/non_rigid")
+            if config.alignment_qc_mode == "none"
+            else (("qc/alignment",) if config.alignment_qc_mode == "review" else ())
+        )
+        qc_artifacts_pruned, qc_artifact_bytes_pruned = (
+            candidate_qc_cache.prune_prefixes(prune_prefixes)
+        )
+        if config.alignment_cache:
+            registration_qc_cache = candidate_qc_cache
     artifact_manifest = _load_mask_artifact_manifest(artifact_manifest_path)
 
     performance.start_stage("mask_preparation")
@@ -725,7 +736,7 @@ def _register_sections(
             warnings.extend(
                 f"{path.name}: {warning}" for warning in working_transform.warnings
             )
-            if config.write_processed_images:
+            if config.write_processed_images and config.alignment_qc_mode == "full":
                 refinement_qc_jobs.append(
                     partial(
                         _write_alignment_qc,
@@ -791,7 +802,7 @@ def _register_sections(
                 non_rigid_transform.displacement_path = str(
                     displacement_path.relative_to(config.output_dir)
                 )
-            if config.write_processed_images:
+            if config.write_processed_images and config.alignment_qc_mode != "none":
                 refinement_qc_jobs.append(
                     partial(
                         _write_non_rigid_qc,
@@ -840,7 +851,7 @@ def _register_sections(
         warnings=tuple(warnings),
     )
     performance.start_stage("review_rendering")
-    if config.write_processed_images:
+    if config.write_processed_images and config.alignment_qc_mode != "none":
         _write_primary_review_panels(
             result,
             thumbnails,
@@ -871,6 +882,8 @@ def _register_sections(
         qc_artifact_bundles_rendered=(
             registration_qc_cache.rendered if registration_qc_cache is not None else 0
         ),
+        qc_artifacts_pruned=qc_artifacts_pruned,
+        qc_artifact_bytes_pruned=qc_artifact_bytes_pruned,
     )
     return result
 
@@ -1268,7 +1281,11 @@ def _estimate_reference_transforms(
         )
         transforms[path] = transform
         aligned_to[path] = reference_path
-        if config.write_processed_images and write_pair_qc:
+        if (
+            config.write_processed_images
+            and config.alignment_qc_mode == "full"
+            and write_pair_qc
+        ):
             qc_jobs.append(
                 partial(
                     _write_alignment_qc,
@@ -1320,7 +1337,7 @@ def _estimate_serial_transforms(
             pair_transform,
         )
         aligned_to[moving_path] = fixed_path
-        if config.write_processed_images:
+        if config.write_processed_images and config.alignment_qc_mode == "full":
             qc_jobs.append(
                 partial(
                     _write_alignment_qc,
@@ -1350,7 +1367,7 @@ def _estimate_serial_transforms(
             pair_transform,
         )
         aligned_to[moving_path] = fixed_path
-        if config.write_processed_images:
+        if config.write_processed_images and config.alignment_qc_mode == "full":
             qc_jobs.append(
                 partial(
                     _write_alignment_qc,

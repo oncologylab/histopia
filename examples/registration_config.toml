@@ -12,6 +12,9 @@ mask_workers = 1
 ordering_workers = 1
 # Bound concurrent registration QC encoders; increase only with enough RAM.
 qc_workers = 1
+# Primary per-slide panels are the production default. Use "full" only when
+# pair-level forensic diagnostics are needed, or "none" for headless batches.
+alignment_qc_mode = "review"
 # Reuse source/config-bound thumbnails, masks, and mask-review artifacts.
 preprocessing_cache = true
 # Reuse exact directed rigid pairs and checksum-validated registration QC.

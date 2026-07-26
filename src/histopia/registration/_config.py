@@ -21,6 +21,7 @@ MaskMode = Literal["auto_tissue", "full"]
 CropMode = Literal["overlap", "reference"]
 RigidMethod = Literal["feature", "mask_moments", "phase_correlation"]
 AlignStrategy = Literal["hybrid", "serial", "reference"]
+AlignmentQcMode = Literal["none", "review", "full"]
 SectionOrderStrategy = Literal[
     "natural", "manifest", "similarity", "anchored_similarity"
 ]
@@ -207,6 +208,7 @@ class RegistrationConfig:
     mask_workers: int = 1
     ordering_workers: int = 1
     qc_workers: int = 1
+    alignment_qc_mode: AlignmentQcMode = "review"
     preprocessing_cache: bool = True
     alignment_cache: bool = True
     require_approved_order: bool = False
@@ -285,6 +287,11 @@ class RegistrationConfig:
             "align_strategy",
             self.align_strategy,
             ("hybrid", "serial", "reference"),
+        )
+        require_choice(
+            "alignment_qc_mode",
+            self.alignment_qc_mode,
+            ("none", "review", "full"),
         )
         require_choice(
             "wsi_compression",
@@ -417,6 +424,7 @@ def registration_config_from_mapping(
         mask_workers=values.pop("mask_workers", 1),
         ordering_workers=values.pop("ordering_workers", 1),
         qc_workers=values.pop("qc_workers", 1),
+        alignment_qc_mode=values.pop("alignment_qc_mode", "review"),
         vips_threads=values.pop("vips_threads", None),
         preprocessing_cache=values.pop("preprocessing_cache", True),
         alignment_cache=values.pop("alignment_cache", True),

@@ -83,6 +83,7 @@ rigid_method = "feature"
 align_strategy = "hybrid"
 non_rigid = false
 write_processed_images = true
+alignment_qc_mode = "review"
 write_warped_images = false
 registered_output_dir = "/tmp/histopia-registration-runs/4577/registered"
 wsi_compression = "jpeg"
@@ -330,6 +331,26 @@ memory-conservative default; measure peak RSS before using `2` or `4` for
 removed, four workers reduced total wall time from 269.78 to 77.49 seconds
 (3.48x) while peak RSS rose from 1.36 to 1.58 GB. All 300 retained PNGs, the
 QC manifest, and the canonical registration result were byte-identical.
+
+`alignment_qc_mode` separates scientific registration from optional diagnostic
+image volume. The production default, `review`, writes one primary panel per
+slide and any non-rigid acceptance panel, which is sufficient for the
+interactive registration viewer and routine review. `full` additionally writes
+pair-crop, full-thumbnail, and crop-frame warped, blend, checkerboard, and
+contact diagnostics for algorithm debugging. `none` skips post-mask alignment
+images while retaining processed thumbnails, masks, transforms, metrics, and
+full-resolution export support. The mode is recorded in performance telemetry
+but excluded from registration results and approval fingerprints. When an
+existing run is reduced from `full` to `review` or `none`, Histopia removes
+only diagnostic files recorded in its checksum manifest, retains untracked
+files, and reports the pruned file and byte counts in performance telemetry.
+On a representative 24-slide brightfield run, `review` reduced cold
+registration-plus-QC time from 69.83 to 10.97 seconds (84.3%) and retained
+artifact volume from 1.278 GB to 437 MB (65.8%). The canonical registration
+result and all 24 primary review panels were byte-identical. Reducing the
+existing `full` run in place took 5.15 seconds and removed 276
+manifest-tracked diagnostics totaling 840.5 MB without changing untracked
+reviewer files.
 
 `preprocessing_cache = true` is the default. Histopia reuses decoded
 thumbnails, independent mask candidates, group-refined masks, and rendered

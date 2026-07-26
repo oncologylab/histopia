@@ -928,6 +928,7 @@ def test_registration_reuses_checksum_validated_qc_artifacts(
         align_strategy="reference",
         max_processed_image_dim_px=90,
         qc_workers=3,
+        alignment_qc_mode="full",
         write_processed_images=True,
     )
 
@@ -988,6 +989,7 @@ def test_parallel_qc_rendering_is_byte_identical_to_serial(
         align_strategy="hybrid",
         max_processed_image_dim_px=85,
         qc_workers=1,
+        alignment_qc_mode="full",
         alignment_cache=False,
         write_processed_images=True,
     )
@@ -1030,6 +1032,7 @@ def test_hybrid_renders_only_final_serial_pair_diagnostics(tmp_path: Path) -> No
             rigid_method="phase_correlation",
             align_strategy="hybrid",
             max_processed_image_dim_px=80,
+            alignment_qc_mode="full",
             write_processed_images=True,
         )
     )
@@ -1038,6 +1041,101 @@ def test_hybrid_renders_only_final_serial_pair_diagnostics(tmp_path: Path) -> No
     assert len(tuple((output_dir / "qc" / "alignment" / "pair_crops").glob("*"))) == 8
     assert performance["qc_artifact_cache_misses"] == 9
     assert performance["qc_artifact_bundles_rendered"] == 9
+
+
+def test_alignment_qc_modes_preserve_registration_results(tmp_path: Path) -> None:
+    input_dir = tmp_path / "input"
+    input_dir.mkdir()
+    image = np.full((70, 80, 3), 255, dtype=np.uint8)
+    image[14:56, 18:62] = np.array([185, 100, 120], dtype=np.uint8)
+    Image.fromarray(image).save(input_dir / "fixed.png")
+    Image.fromarray(np.roll(image, shift=(2, -3), axis=(0, 1))).save(
+        input_dir / "moving.png"
+    )
+
+    results: dict[str, dict[str, object]] = {}
+    for mode in ("none", "review", "full"):
+        output_dir = tmp_path / mode
+        register_sections(
+            RegistrationConfig(
+                input_dir=input_dir,
+                output_dir=output_dir,
+                reference_slide="fixed.png",
+                reference_policy="explicit",
+                rigid_method="phase_correlation",
+                align_strategy="reference",
+                max_processed_image_dim_px=80,
+                alignment_qc_mode=mode,
+                write_processed_images=True,
+            )
+        )
+        result = json.loads((output_dir / "registration_result.json").read_text())
+        result.pop("output_dir")
+        results[mode] = result
+        performance = load_performance_report(output_dir / PERFORMANCE_FILENAME)
+        assert performance["controls"]["alignment_qc_mode"] == mode
+        assert len(tuple((output_dir / "processed").glob("*.thumbnail.png"))) == 2
+
+        alignment_files = tuple((output_dir / "qc" / "alignment").rglob("*.png"))
+        review_files = tuple((output_dir / "qc" / "review").glob("*.png"))
+        if mode == "none":
+            assert not alignment_files
+            assert not review_files
+            assert performance["qc_artifact_cache_misses"] == 0
+        elif mode == "review":
+            assert not alignment_files
+            assert len(review_files) == 2
+            assert performance["qc_artifact_cache_misses"] == 2
+        else:
+            assert len(alignment_files) == 12
+            assert len(review_files) == 2
+            assert performance["qc_artifact_cache_misses"] == 5
+
+    assert results["none"] == results["review"] == results["full"]
+
+
+def test_reducing_alignment_qc_mode_prunes_only_tracked_artifacts(
+    tmp_path: Path,
+) -> None:
+    input_dir = tmp_path / "input"
+    output_dir = tmp_path / "output"
+    input_dir.mkdir()
+    image = np.full((70, 80, 3), 255, dtype=np.uint8)
+    image[14:56, 18:62] = np.array([185, 100, 120], dtype=np.uint8)
+    Image.fromarray(image).save(input_dir / "fixed.png")
+    Image.fromarray(np.roll(image, shift=(2, -3), axis=(0, 1))).save(
+        input_dir / "moving.png"
+    )
+    config = RegistrationConfig(
+        input_dir=input_dir,
+        output_dir=output_dir,
+        reference_slide="fixed.png",
+        reference_policy="explicit",
+        rigid_method="phase_correlation",
+        align_strategy="reference",
+        max_processed_image_dim_px=80,
+        alignment_qc_mode="full",
+        write_processed_images=True,
+    )
+    register_sections(config)
+    result_bytes = (output_dir / "registration_result.json").read_bytes()
+    alignment_files = tuple((output_dir / "qc" / "alignment").rglob("*.png"))
+    removed_bytes = sum(path.stat().st_size for path in alignment_files)
+    untracked = output_dir / "qc" / "alignment" / "reviewer-notes.txt"
+    untracked.write_text("keep")
+
+    config.alignment_qc_mode = "review"
+    register_sections(config)
+    performance = load_performance_report(output_dir / PERFORMANCE_FILENAME)
+
+    assert not tuple((output_dir / "qc" / "alignment").rglob("*.png"))
+    assert untracked.read_text() == "keep"
+    assert len(tuple((output_dir / "qc" / "review").glob("*.png"))) == 2
+    assert performance["qc_artifacts_pruned"] == len(alignment_files)
+    assert performance["qc_artifact_bytes_pruned"] == removed_bytes
+    assert performance["qc_artifact_cache_hits"] == 2
+    assert performance["qc_artifact_cache_misses"] == 0
+    assert (output_dir / "registration_result.json").read_bytes() == result_bytes
 
 
 def test_hybrid_registration_reuses_features_without_changing_results(

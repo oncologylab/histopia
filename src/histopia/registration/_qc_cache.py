@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 from threading import Lock
 from typing import Any
@@ -97,6 +98,63 @@ class RegistrationQcCache:
                 # Cache metadata must not determine scientific execution.
                 pass
 
+    def prune_prefixes(
+        self,
+        relative_prefixes: tuple[str, ...],
+    ) -> tuple[int, int]:
+        """Remove only manifest-tracked bundles below generated QC prefixes."""
+
+        prefixes = tuple(
+            _normalize_relative_prefix(value) for value in relative_prefixes
+        )
+        if not prefixes:
+            return 0, 0
+        artifact_count = 0
+        byte_count = 0
+        with self._lock:
+            selected: list[tuple[str, dict[str, Any]]] = []
+            for key, entry in self._entries.items():
+                rows = entry.get("artifacts")
+                relative_paths = (
+                    [row.get("path") for row in rows if isinstance(row, dict)]
+                    if isinstance(rows, list)
+                    else []
+                )
+                if _matches_prefix(key, prefixes) or any(
+                    isinstance(path, str) and _matches_prefix(path, prefixes)
+                    for path in relative_paths
+                ):
+                    selected.append((key, entry))
+            for key, entry in selected:
+                rows = entry.get("artifacts")
+                if isinstance(rows, list):
+                    for row in rows:
+                        relative = row.get("path") if isinstance(row, dict) else None
+                        if not isinstance(relative, str):
+                            continue
+                        removed_bytes = _unlink_generated_artifact(
+                            self.run_dir,
+                            relative,
+                        )
+                        if removed_bytes is not None:
+                            artifact_count += 1
+                            byte_count += removed_bytes
+                self._entries.pop(key, None)
+            if selected:
+                try:
+                    write_json_atomic(
+                        self.manifest_path,
+                        {
+                            "schema": _SCHEMA,
+                            "entries": self._entries,
+                        },
+                        sort_keys=True,
+                    )
+                except OSError:
+                    # Cleanup metadata must not determine scientific execution.
+                    pass
+        return artifact_count, byte_count
+
     def _relative_paths(self, paths: tuple[Path, ...]) -> list[str]:
         if not paths:
             raise ValueError("registration QC artifact bundle must not be empty")
@@ -178,6 +236,45 @@ def _artifact_matches(run_dir: Path, row: dict[str, object]) -> bool:
     ):
         return False
     return _sha256_file(path) == expected_sha256
+
+
+def _normalize_relative_prefix(value: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("registration QC prune prefix must not be blank")
+    normalized = Path(value).as_posix().strip("/")
+    parts = Path(normalized).parts
+    if (
+        not normalized
+        or normalized == "."
+        or ".." in parts
+        or Path(value).is_absolute()
+    ):
+        raise ValueError("registration QC prune prefix must be a safe relative path")
+    return f"{normalized}/"
+
+
+def _matches_prefix(relative: str, prefixes: tuple[str, ...]) -> bool:
+    normalized = Path(relative).as_posix().lstrip("/")
+    return any(normalized.startswith(prefix) for prefix in prefixes)
+
+
+def _unlink_generated_artifact(run_dir: Path, relative: str) -> int | None:
+    root = run_dir.resolve()
+    candidate = Path(os.path.abspath(root / relative))
+    if not candidate.is_relative_to(root):
+        return None
+    try:
+        parent = candidate.parent.resolve()
+        if not parent.is_relative_to(root):
+            return None
+        path = parent / candidate.name
+        if not path.is_symlink() and not path.is_file():
+            return None
+        size = path.lstat().st_size
+        path.unlink()
+        return size
+    except OSError:
+        return None
 
 
 def _sha256_file(path: Path) -> str:
