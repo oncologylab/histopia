@@ -40,12 +40,25 @@ def export_registration_qc_showcase(
     return export(source, output, mice)
 
 
-def serve_viewer(root: Path, *, bind: str, port: int) -> None:
+def serve_viewer(
+    root: Path,
+    *,
+    bind: str,
+    port: int,
+    required_routes: tuple[str, ...],
+    review_config: Path | None,
+) -> None:
     """Lazily dispatch the static viewer server."""
 
     from histopia.visualization._server import serve_viewer as serve
 
-    serve(root, bind=bind, port=port)
+    serve(
+        root,
+        bind=bind,
+        port=port,
+        required_routes=required_routes,
+        review_config=review_config,
+    )
 
 
 def audit_workflows(*args, **kwargs):
@@ -79,6 +92,17 @@ def _main(argv: list[str] | None = None) -> int:
     serve.add_argument("root", type=Path)
     serve.add_argument("--bind", default="0.0.0.0")
     serve.add_argument("--port", type=int, default=8765)
+    serve.add_argument(
+        "--require-route",
+        action="append",
+        default=[],
+        help="Route directory that must contain index.html; repeat as needed.",
+    )
+    serve.add_argument(
+        "--review-config",
+        type=Path,
+        help="Local path registry enabling authenticated web approvals.",
+    )
     build = commands.add_parser("build", help="Build the stable viewer endpoint.")
     build.add_argument("root", type=Path, help="Viewer root containing histopia/.")
     build.add_argument("--run", type=_named_path, action="append", required=True)
@@ -245,6 +269,12 @@ def _main(argv: list[str] | None = None) -> int:
         type=Path,
         help="Optional path for the portable JSON audit.",
     )
+    feedback_export = commands.add_parser(
+        "feedback-export",
+        help="Export latest registration feedback as flat learning rows.",
+    )
+    feedback_export.add_argument("feedback_root", type=Path)
+    feedback_export.add_argument("output", type=Path)
     args = parser.parse_args(argv)
 
     if args.command == "mask-review":
@@ -361,8 +391,29 @@ def _main(argv: list[str] | None = None) -> int:
             write_workflow_audit(report, args.output)
         print(json.dumps(report.to_json_dict(), sort_keys=True))
         return report.exit_code
+    if args.command == "feedback-export":
+        from histopia._atomic import write_json_atomic
+        from histopia.visualization._feedback import (
+            registration_feedback_rows,
+            summarize_registration_feedback,
+        )
+
+        payload = {
+            "schema_version": 1,
+            "summary": summarize_registration_feedback(args.feedback_root),
+            "rows": registration_feedback_rows(args.feedback_root),
+        }
+        write_json_atomic(args.output, payload)
+        print(args.output)
+        return 0
     if args.command == "serve":
-        serve_viewer(args.root, bind=args.bind, port=args.port)
+        serve_viewer(
+            args.root,
+            bind=args.bind,
+            port=args.port,
+            required_routes=tuple(args.require_route or ["histopia"]),
+            review_config=args.review_config,
+        )
         return 0
     parser.error(f"unsupported command: {args.command}")
 

@@ -273,6 +273,14 @@ def build_workflow_review(
                     "href": stain_index.relative_to(output_dir).as_posix(),
                 }
             )
+    decisions_index = _write_decisions_page(output_dir / "decisions")
+    tabs.append(
+        {
+            "id": "decisions",
+            "label": "Decisions",
+            "href": decisions_index.relative_to(output_dir).as_posix(),
+        }
+    )
     manifest = {"schema_version": 1, "tabs": tabs}
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
@@ -283,6 +291,14 @@ def build_workflow_review(
     (output_dir / "index.html").write_text(_WORKFLOW_HTML)
     (output_dir / "workflow-review.css").write_text(_WORKFLOW_CSS)
     (output_dir / "workflow-review.js").write_text(_WORKFLOW_JS)
+    return output_dir / "index.html"
+
+
+def _write_decisions_page(output_dir: Path) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "index.html").write_text(_DECISIONS_HTML)
+    (output_dir / "review-decisions.css").write_text(_DECISIONS_CSS)
+    (output_dir / "review-decisions.js").write_text(_DECISIONS_JS)
     return output_dir / "index.html"
 
 
@@ -519,4 +535,233 @@ function select(id){
   history.replaceState(null,"",url);
 }
 select(new URL(location.href).searchParams.get("view"));
+"""
+
+_DECISIONS_HTML = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Histopia review decisions</title>
+  <link rel="stylesheet" href="review-decisions.css">
+</head>
+<body>
+  <header>
+    <strong>Review decisions</strong>
+    <label for="access-key">Access key</label>
+    <input id="access-key" type="password" autocomplete="current-password">
+    <button id="connect" type="button">Connect</button>
+    <span id="connection" role="status">Locked</span>
+  </header>
+  <main>
+    <aside>
+      <label for="cohort">Cohort</label>
+      <select id="cohort" disabled></select>
+      <nav id="stages" aria-label="Approval stage"></nav>
+    </aside>
+    <form id="decision">
+      <div class="heading">
+        <h1 id="title">Select a review</h1>
+        <span id="state"></span>
+      </div>
+      <fieldset id="families" hidden>
+        <legend>Stain families</legend>
+      </fieldset>
+      <label for="reviewer">Reviewer</label>
+      <input id="reviewer" autocomplete="name" required>
+      <label for="notes">Decision notes</label>
+      <textarea id="notes" required></textarea>
+      <div class="actions">
+        <span id="message" role="status"></span>
+        <button id="approve" class="primary" type="submit" disabled>
+          Approve exact result
+        </button>
+      </div>
+    </form>
+  </main>
+  <script src="review-decisions.js"></script>
+</body>
+</html>
+"""
+
+_DECISIONS_CSS = """
+:root{font-family:Inter,system-ui,sans-serif;color:#17202a;background:#f4f6f7}
+*{box-sizing:border-box}
+html,body{width:100%;height:100%;margin:0;overflow:hidden}
+body{display:grid;grid-template-rows:52px minmax(0,1fr)}
+header{display:flex;align-items:center;gap:10px;padding:0 16px;background:#fff;
+border-bottom:1px solid #ccd1d1}
+header strong{margin-right:auto}
+header label{font-size:12px;color:#566573}
+input,textarea,select,button{font:inherit}
+input,textarea,select{border:1px solid #aeb6bf;background:#fff;padding:7px 9px}
+#access-key{width:min(260px,30vw)}
+button{border:1px solid #aeb6bf;background:#fff;padding:7px 12px;cursor:pointer}
+button:disabled{cursor:not-allowed;opacity:.5}
+#connection{width:72px;font-size:12px;color:#7b241c}
+main{display:grid;grid-template-columns:230px minmax(0,1fr);min-height:0}
+aside{padding:16px;border-right:1px solid #ccd1d1;background:#fff;overflow:auto}
+aside label{display:block;margin-bottom:5px;font-size:12px;color:#566573}
+select{width:100%;margin-bottom:18px}
+nav{display:grid;gap:6px}
+nav button{text-align:left;border:0;border-left:3px solid transparent}
+nav button[aria-pressed="true"]{border-left-color:#117864;background:#e8f6f3;
+color:#0b5345;font-weight:600}
+nav button.approved::after{content:"Approved";float:right;font-size:10px;color:#117864}
+form{display:grid;grid-template-columns:130px minmax(0,680px);
+grid-template-rows:auto auto auto minmax(100px,1fr) auto;align-content:start;
+gap:12px 16px;padding:24px 32px;overflow:auto}
+.heading{grid-column:1/3;display:flex;align-items:center;gap:14px}
+h1{font-size:22px;margin:0;letter-spacing:0}
+#state{font-size:12px;color:#566573}
+form>label{font-size:13px;color:#566573;padding-top:8px}
+textarea{min-height:120px;resize:vertical}
+fieldset{grid-column:1/3;border:1px solid #ccd1d1;padding:12px}
+fieldset label{display:inline-flex;align-items:center;gap:6px;margin:0 18px 4px 0}
+.actions{grid-column:1/3;display:flex;align-items:center;justify-content:flex-end;
+gap:14px}
+#message{margin-right:auto;font-size:12px;color:#7b241c}
+.primary{border-color:#0e6655;background:#117864;color:#fff}
+@media(max-width:700px){
+  body{grid-template-rows:92px minmax(0,1fr)}
+  header{display:grid;grid-template-columns:minmax(0,1fr) auto;
+    grid-template-rows:28px 40px;padding:8px}
+  header strong{grid-column:1/3}
+  header label{display:none}
+  #access-key{width:100%}
+  #connection{display:none}
+  main{grid-template-columns:130px minmax(0,1fr)}
+  aside{padding:10px}
+  form{grid-template-columns:1fr;padding:16px;gap:8px}
+  .heading,fieldset,.actions{grid-column:1}
+  form>label{padding-top:4px}
+  h1{font-size:17px}
+}
+"""
+
+_DECISIONS_JS = """
+const keyInput=document.querySelector("#access-key");
+const connect=document.querySelector("#connect");
+const connection=document.querySelector("#connection");
+const cohortSelect=document.querySelector("#cohort");
+const stages=document.querySelector("#stages");
+const form=document.querySelector("#decision");
+const title=document.querySelector("#title");
+const state=document.querySelector("#state");
+const families=document.querySelector("#families");
+const reviewer=document.querySelector("#reviewer");
+const notes=document.querySelector("#notes");
+const message=document.querySelector("#message");
+const approve=document.querySelector("#approve");
+const labels={mask:"Tissue masks",order:"Section order",
+  registration:"Registered stack",semantic:"Semantic atlas",stain:"Stain"};
+let registry=null;
+let selectedStage=null;
+keyInput.value=sessionStorage.getItem("histopiaReviewKey")||"";
+reviewer.value=sessionStorage.getItem("histopiaReviewer")||"";
+function headers(){
+  return {"Authorization":`Bearer ${keyInput.value}`,"Content-Type":"application/json"};
+}
+async function load(){
+  message.textContent="";
+  const response=await fetch("/api/reviews",{headers:headers(),cache:"no-store"});
+  if(!response.ok)throw new Error((await response.json()).error||"Unable to connect");
+  registry=await response.json();
+  sessionStorage.setItem("histopiaReviewKey",keyInput.value);
+  connection.textContent="Connected";
+  connection.style.color="#117864";
+  cohortSelect.disabled=false;
+  const previous=cohortSelect.value;
+  cohortSelect.replaceChildren();
+  for(const row of registry.cohorts){
+    const option=document.createElement("option");
+    option.value=row.id;
+    option.textContent=row.id;
+    cohortSelect.append(option);
+  }
+  const requested=new URL(location.href).searchParams.get("cohort");
+  cohortSelect.value=registry.cohorts.some(row=>row.id===(requested||previous))
+    ?(requested||previous):registry.cohorts[0].id;
+  renderStages();
+}
+function current(){
+  return registry?.cohorts.find(row=>row.id===cohortSelect.value);
+}
+function renderStages(){
+  const row=current();
+  stages.replaceChildren();
+  if(!row)return;
+  const available=registry.stages.filter(id=>row.stages[id]?.available);
+  if(!available.includes(selectedStage))selectedStage=available[0]||null;
+  for(const id of available){
+    const button=document.createElement("button");
+    button.type="button";
+    button.textContent=labels[id]||id;
+    button.classList.toggle("approved",Boolean(row.stages[id].approved));
+    button.setAttribute("aria-pressed",String(id===selectedStage));
+    button.addEventListener("click",()=>{selectedStage=id;renderStages();});
+    stages.append(button);
+  }
+  renderDecision();
+  const url=new URL(location.href);
+  url.searchParams.set("cohort",row.id);
+  history.replaceState(null,"",url);
+}
+function renderDecision(){
+  const stage=current()?.stages[selectedStage];
+  title.textContent=selectedStage?labels[selectedStage]:"No prepared review";
+  state.textContent=stage?.approved?"Approved":"Review required";
+  approve.disabled=!stage||stage.approved;
+  families.hidden=selectedStage!=="stain";
+  families.querySelectorAll("label").forEach(element=>element.remove());
+  if(selectedStage==="stain"){
+    for(const family of stage.families||[]){
+      const label=document.createElement("label");
+      const input=document.createElement("input");
+      input.type="checkbox";
+      input.value=family.id;
+      input.checked=!family.approved;
+      input.disabled=family.approved;
+      label.append(input,document.createTextNode(family.id));
+      families.append(label);
+    }
+  }
+}
+connect.addEventListener("click",()=>load().catch(error=>{
+  connection.textContent="Locked";
+  connection.style.color="#7b241c";
+  message.textContent=error.message;
+}));
+keyInput.addEventListener("keydown",event=>{
+  if(event.key==="Enter"){event.preventDefault();connect.click();}
+});
+cohortSelect.addEventListener("change",renderStages);
+form.addEventListener("submit",async event=>{
+  event.preventDefault();
+  message.textContent="";
+  sessionStorage.setItem("histopiaReviewer",reviewer.value);
+  const payload={cohort:cohortSelect.value,stage:selectedStage,
+    reviewer:reviewer.value,notes:notes.value};
+  if(selectedStage==="stain"){
+    payload.families=[...families.querySelectorAll("input:checked")]
+      .map(input=>input.value);
+  }
+  if(!confirm(`Approve ${labels[selectedStage]} for ${payload.cohort}?`))return;
+  approve.disabled=true;
+  try{
+    const response=await fetch("/api/reviews/approve",
+      {method:"POST",headers:headers(),body:JSON.stringify(payload)});
+    const result=await response.json();
+    if(!response.ok)throw new Error(result.error||"Approval failed");
+    notes.value="";
+    await load();
+    message.style.color="#117864";
+    message.textContent="Approval recorded";
+  }catch(error){
+    message.style.color="#7b241c";
+    message.textContent=error.message;
+    renderDecision();
+  }
+});
+if(keyInput.value)load().catch(()=>{});
 """

@@ -1039,6 +1039,7 @@ def build_mask_review(
         "fingerprint_algorithm": "mask-review-v2",
         "fingerprint": digest.hexdigest(),
         "approved": all(row["approved"] for row in rows),
+        "feedback": {"cohort": registration_run.name, "stage": "mask"},
         "slides": rows,
     }
     (output_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
@@ -1046,6 +1047,7 @@ def build_mask_review(
     (output_dir / "index.html").write_text(_MASK_REVIEW_HTML)
     (output_dir / "mask-review.js").write_text(_MASK_REVIEW_JS)
     (output_dir / "mask-review.css").write_text(_ORDER_REVIEW_CSS)
+    _write_registration_feedback_assets(output_dir)
     _write_json_atomic(
         output_dir / "build-report.json",
         {
@@ -1221,6 +1223,7 @@ def build_alignment_review(
         "schema_version": 1,
         "approved": approval is not None,
         "fingerprint": digest,
+        "feedback": {"cohort": registration_run.name, "stage": "alignment"},
         "slides": review_slides,
     }
     (output_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
@@ -1228,6 +1231,7 @@ def build_alignment_review(
     (output_dir / "index.html").write_text(_ALIGNMENT_REVIEW_HTML)
     (output_dir / "alignment-review.js").write_text(_ALIGNMENT_REVIEW_JS)
     (output_dir / "alignment-review.css").write_text(_ORDER_REVIEW_CSS)
+    _write_registration_feedback_assets(output_dir)
     _write_json_atomic(
         output_dir / "build-report.json",
         {
@@ -2000,6 +2004,7 @@ def build_section_order_review(
         "confidence_margin": payload.get("confidence_margin"),
         "physically_calibrated": bool(payload.get("physically_calibrated")),
         "physical_area_continuity": payload.get("physical_area_continuity"),
+        "feedback": {"cohort": proposal_path.parent.name, "stage": "order"},
         "slides": review_slides,
     }
     (output_dir / "manifest.json").write_text(
@@ -2009,7 +2014,16 @@ def build_section_order_review(
     (output_dir / "index.html").write_text(_ORDER_REVIEW_HTML)
     (output_dir / "order-review.js").write_text(_ORDER_REVIEW_JS)
     (output_dir / "order-review.css").write_text(_ORDER_REVIEW_CSS)
+    _write_registration_feedback_assets(output_dir)
     return output_dir / "index.html"
+
+
+def _write_registration_feedback_assets(output_dir: Path) -> None:
+    packaged = resources.files("histopia.visualization").joinpath(
+        "_registration_feedback_assets"
+    )
+    for name in ("registration-feedback.js", "registration-feedback.css"):
+        (output_dir / name).write_text(packaged.joinpath(name).read_text())
 
 
 def _write_review_manifest_script(
@@ -2146,6 +2160,7 @@ _ORDER_REVIEW_HTML = """<!doctype html>
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Histopia Section Order Review</title>
   <link rel="stylesheet" href="order-review.css">
+  <link rel="stylesheet" href="registration-feedback.css">
 </head>
 <body>
   <header>
@@ -2155,8 +2170,10 @@ _ORDER_REVIEW_HTML = """<!doctype html>
     <code id="fingerprint"></code>
   </header>
   <main id="slides"></main>
+  <aside id="registration-feedback"></aside>
   <script src="manifest-data.js"></script>
   <script src="order-review.js"></script>
+  <script src="registration-feedback.js"></script>
 </body>
 </html>
 """
@@ -2168,6 +2185,7 @@ _MASK_REVIEW_HTML = """<!doctype html>
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Histopia Tissue Mask Review</title>
   <link rel="stylesheet" href="mask-review.css">
+  <link rel="stylesheet" href="registration-feedback.css">
 </head>
 <body>
   <header>
@@ -2177,8 +2195,10 @@ _MASK_REVIEW_HTML = """<!doctype html>
     <code id="fingerprint"></code>
   </header>
   <main id="slides"></main>
+  <aside id="registration-feedback"></aside>
   <script src="manifest-data.js"></script>
   <script src="mask-review.js"></script>
+  <script src="registration-feedback.js"></script>
 </body>
 </html>
 """
@@ -2190,6 +2210,7 @@ _ALIGNMENT_REVIEW_HTML = """<!doctype html>
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Histopia Registration Alignment Review</title>
   <link rel="stylesheet" href="alignment-review.css">
+  <link rel="stylesheet" href="registration-feedback.css">
 </head>
 <body>
   <header>
@@ -2199,8 +2220,10 @@ _ALIGNMENT_REVIEW_HTML = """<!doctype html>
     <code id="fingerprint"></code>
   </header>
   <main id="slides"></main>
+  <aside id="registration-feedback"></aside>
   <script src="manifest-data.js"></script>
   <script src="alignment-review.js"></script>
+  <script src="registration-feedback.js"></script>
 </body>
 </html>
 """

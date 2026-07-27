@@ -485,6 +485,79 @@ build took 50.84 seconds at 541 MiB peak RSS. The exact warm build took 2.53
 seconds at 177 MiB, reused all 131 mask assets, and preserved all 387
 non-observational files byte-for-byte.
 
+The persistent viewer can require canonical routes at startup and expose
+fingerprint-bound review decisions through the website:
+
+```bash
+export HISTOPIA_REVIEW_TOKEN="<a private random access key>"
+histopia-visualize serve viewer-root/ \
+  --require-route histopia \
+  --require-route review \
+  --review-config review-server.json
+```
+
+`review-server.json` is a local, untracked path registry:
+
+```json
+{
+  "schema_version": 1,
+  "feedback_dir": "/path/to/private-feedback",
+  "cohorts": {
+    "example": {
+      "registration": "/path/to/registration-run",
+      "semantic": "/path/to/semantic-run",
+      "stain": "/path/to/stain-run"
+    }
+  }
+}
+```
+
+The review access key is entered in the review hub's **Decisions** tab and is
+kept in browser session storage. It is never written into generated viewer
+assets. The server denies unauthenticated and cross-origin decision requests,
+and each accepted decision delegates to the package's existing artifact-bound
+approval validation.
+
+Mask, section-order, and registered-stack pages provide per-slide
+Accept/Hold/Reject decisions, structured issue labels, reviewer comments, and
+navigation through unresolved slides. Order feedback can additionally record a
+suggested position and quarter-turn orientation. Records are appended under
+the private feedback directory and bound to the exact mask, order, or
+registration fingerprint, so regenerated evidence cannot silently inherit
+stale labels.
+
+When feedback storage is configured, website approval of masks, order, or the
+registered stack requires a current Accept decision for every displayed slide.
+Any unreviewed, Hold, or Reject record keeps that stage open. This requirement
+applies to the authenticated website workflow; it does not rewrite historical
+approval files or silently change the standalone command-line approval API.
+
+Feedback is reusable without depending on the website:
+
+```python
+from histopia.visualization import (
+    registration_feedback_rows,
+    summarize_registration_feedback,
+)
+
+rows = registration_feedback_rows("/path/to/private-feedback")
+summary = summarize_registration_feedback("/path/to/private-feedback")
+```
+
+Or export the latest decision for each reviewed slide as a portable JSON
+dataset:
+
+```bash
+histopia-visualize feedback-export private-feedback/ feedback-dataset.json
+```
+
+The summary reports issue frequencies by stage and cohort. The flat rows retain
+the cohort, slide, artifact fingerprint, decision, labels, comment, reviewer,
+and order corrections. These records are intended as supervised targets for
+future mask-selection, orientation, ordering, and registration-QC updates.
+They do not automatically retrain or replace a model; a candidate update still
+requires held-out validation before adoption.
+
 For a strict production run, keep the review manifests in the registration
 run directory and advance the workflow explicitly:
 

@@ -11,10 +11,17 @@ from histopia.visualization import _cli
 def test_serve_command_dispatches_explicit_network_settings(
     tmp_path: Path, monkeypatch
 ) -> None:
-    calls: list[tuple[Path, str, int]] = []
+    calls: list[tuple[Path, str, int, tuple[str, ...], Path | None]] = []
 
-    def capture(root: Path, *, bind: str, port: int) -> None:
-        calls.append((root, bind, port))
+    def capture(
+        root: Path,
+        *,
+        bind: str,
+        port: int,
+        required_routes: tuple[str, ...],
+        review_config: Path | None,
+    ) -> None:
+        calls.append((root, bind, port, required_routes, review_config))
 
     monkeypatch.setattr(_cli, "serve_viewer", capture)
 
@@ -23,7 +30,27 @@ def test_serve_command_dispatches_explicit_network_settings(
     )
 
     assert result == 0
-    assert calls == [(tmp_path, "127.0.0.1", 9876)]
+    assert calls == [(tmp_path, "127.0.0.1", 9876, ("histopia",), None)]
+
+
+def test_feedback_export_writes_flat_dataset(tmp_path: Path) -> None:
+    output = tmp_path / "feedback.json"
+
+    result = _cli.main(["feedback-export", str(tmp_path / "empty"), str(output)])
+
+    assert result == 0
+    assert json.loads(output.read_text()) == {
+        "schema_version": 1,
+        "summary": {
+            "schema_version": 1,
+            "reviewed_slides": 0,
+            "by_stage": {},
+            "by_decision": {},
+            "by_issue": {},
+            "by_cohort": {},
+        },
+        "rows": [],
+    }
 
 
 def test_build_command_targets_stable_histopia_directory(

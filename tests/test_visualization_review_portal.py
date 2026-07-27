@@ -413,7 +413,13 @@ def test_workflow_review_builds_one_fixed_stage_hub(
         "registration",
         "atlas",
         "stain",
+        "decisions",
     ]
+    assert (output / "decisions" / "index.html").is_file()
+    assert (
+        "/api/reviews/approve"
+        in (output / "decisions" / "review-decisions.js").read_text()
+    )
     assert calls[1][1][2]["require_approvals"] is False
     assert "overflow:hidden" in (output / "workflow-review.css").read_text()
     assert str(tmp_path) not in (output / "manifest-data.js").read_text()

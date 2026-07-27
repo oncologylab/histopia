@@ -3,6 +3,7 @@ from __future__ import annotations
 import gzip
 import http.client
 import io
+import json
 import threading
 from pathlib import Path
 
@@ -51,6 +52,128 @@ def test_server_redirects_root_to_stable_endpoint(tmp_path: Path) -> None:
         )
         assert response.getheader("X-Content-Type-Options") == "nosniff"
         assert response.read() == b"stable viewer"
+        connection.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_server_requires_and_reports_all_stable_routes(tmp_path: Path) -> None:
+    for route in ("histopia", "review"):
+        directory = tmp_path / route
+        directory.mkdir()
+        (directory / "index.html").write_text(route)
+    server = create_viewer_server(
+        tmp_path,
+        bind="127.0.0.1",
+        port=0,
+        required_routes=("histopia", "review"),
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = http.client.HTTPConnection("127.0.0.1", server.server_port)
+        connection.request("GET", "/review")
+        redirect = connection.getresponse()
+        assert redirect.status == 302
+        assert redirect.getheader("Location") == "/review/"
+        redirect.read()
+
+        connection.request("GET", "/healthz")
+        health = connection.getresponse()
+        assert health.status == 200
+        assert health.getheader("Cache-Control") == "no-store"
+        assert json.loads(health.read()) == {
+            "status": "ok",
+            "routes": {"/histopia/": True, "/review/": True},
+            "review_api": False,
+        }
+        connection.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_server_rejects_missing_required_review_route(tmp_path: Path) -> None:
+    stable = tmp_path / "histopia"
+    stable.mkdir()
+    (stable / "index.html").write_text("stable viewer")
+
+    with pytest.raises(FileNotFoundError, match="review/index.html"):
+        create_viewer_server(
+            tmp_path,
+            bind="127.0.0.1",
+            port=0,
+            required_routes=("histopia", "review"),
+        )
+
+
+def test_review_api_requires_key_and_same_origin(tmp_path: Path) -> None:
+    for route in ("histopia", "review"):
+        directory = tmp_path / route
+        directory.mkdir()
+        (directory / "index.html").write_text(route)
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "mask_review.json").write_text(
+        json.dumps({"slides": [{"status": "pending"}]})
+    )
+    config = tmp_path / "review-config.json"
+    config.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "cohorts": {"mouse": {"registration": str(run)}},
+            }
+        )
+    )
+    token = "a-secure-test-review-token"
+    server = create_viewer_server(
+        tmp_path,
+        bind="127.0.0.1",
+        port=0,
+        required_routes=("histopia", "review"),
+        review_config=config,
+        review_token=token,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = http.client.HTTPConnection("127.0.0.1", server.server_port)
+        connection.request("GET", "/api/reviews")
+        denied = connection.getresponse()
+        assert denied.status == 401
+        denied.read()
+
+        connection.request(
+            "GET",
+            "/api/reviews",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Origin": "https://example.invalid",
+            },
+        )
+        cross_origin = connection.getresponse()
+        assert cross_origin.status == 403
+        cross_origin.read()
+
+        connection.request(
+            "GET",
+            "/api/reviews",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        response = connection.getresponse()
+        assert response.status == 200
+        payload = json.loads(response.read())
+        assert payload["feedback_configured"] is False
+        assert payload["cohorts"][0]["id"] == "mouse"
+        assert payload["cohorts"][0]["stages"]["mask"] == {
+            "available": True,
+            "approved": False,
+        }
+        assert str(tmp_path) not in json.dumps(payload)
         connection.close()
     finally:
         server.shutdown()

@@ -23,6 +23,18 @@ _PUBLIC_IMPORTS = {
         "histopia.visualization._audit",
         "ViewerWorkflowAudit",
     ),
+    "load_registration_feedback": (
+        "histopia.visualization._feedback",
+        "load_registration_feedback",
+    ),
+    "registration_feedback_rows": (
+        "histopia.visualization._feedback",
+        "registration_feedback_rows",
+    ),
+    "summarize_registration_feedback": (
+        "histopia.visualization._feedback",
+        "summarize_registration_feedback",
+    ),
     "WorkflowAudit": ("histopia.visualization._audit", "WorkflowAudit"),
     "audit_workflows": ("histopia.visualization._audit", "audit_workflows"),
     "build_alignment_review": (
