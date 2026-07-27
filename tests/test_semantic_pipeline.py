@@ -184,7 +184,7 @@ def test_fit_uses_preflight_order_and_ignores_stale_extra_features(
     assert performance["fit"]["feature_storage_dtypes"] == ["float16"]
     assert performance["fit"]["feature_working_dtype"] == "float32"
     assert performance["fit"]["feature_working_copy_policy"] == (
-        "direct-concatenate-in-place-normalize-v1"
+        "direct-concatenate-bounded-in-place-normalize-v2"
     )
     assert performance["fit"]["atlas_fit_phase_seconds"] == {"cluster_selection": 1.25}
 

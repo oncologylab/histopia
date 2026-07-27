@@ -92,7 +92,7 @@ def _fit_saved_features(
         )
         performance["feature_working_dtype"] = "float32"
         performance["feature_working_copy_policy"] = (
-            "direct-concatenate-in-place-normalize-v1"
+            "direct-concatenate-bounded-in-place-normalize-v2"
         )
         provenance = sections[0].provenance or {}
         if isinstance(provenance.get("preflight_fingerprint"), str):

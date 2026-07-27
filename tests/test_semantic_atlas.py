@@ -99,6 +99,32 @@ def test_in_place_normalization_reuses_writeable_float32_matrix() -> None:
     np.testing.assert_array_equal(observed, expected)
 
 
+def test_feature_normalization_blocks_rows_without_changing_arithmetic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rng = np.random.default_rng(77)
+    source = rng.normal(size=(7, 5)).astype(np.float32)
+    source[3] = 0
+    expected = source / np.maximum(
+        np.linalg.norm(source, axis=1, keepdims=True),
+        np.finfo(np.float32).eps,
+    )
+    observed_shapes: list[tuple[int, ...]] = []
+    original_norm = np.linalg.norm
+
+    def capture_norm(values: np.ndarray, *args: object, **kwargs: object) -> np.ndarray:
+        observed_shapes.append(values.shape)
+        return original_norm(values, *args, **kwargs)
+
+    monkeypatch.setattr(atlas_module, "_FEATURE_NORMALIZATION_BLOCK_ROWS", 3)
+    monkeypatch.setattr(atlas_module.np.linalg, "norm", capture_norm)
+
+    observed = _normalize_section_features(source.copy(), (7,), in_place=True)
+
+    np.testing.assert_array_equal(observed, expected)
+    assert observed_shapes == [(3, 5), (3, 5), (1, 5)]
+
+
 def test_joint_atlas_is_deterministic_and_returns_each_sensitivity() -> None:
     sections = (_section("a", 0), _section("b", 2))
 

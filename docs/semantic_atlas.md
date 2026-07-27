@@ -146,8 +146,9 @@ are prepared in consecutive windows and retained for at most the active pair
 workers plus their shared boundary section. Each section descriptor is still
 computed exactly once, but a large cohort no longer materializes descriptors
 for every section simultaneously. Stored section vectors are cast directly
-into one private float32 matrix, normalized in place, and released immediately
-after PCA projection; the source feature artifacts are never mutated.
+into one private float32 matrix, normalized in place through bounded 4,096-row
+blocks, and released immediately after PCA projection; the source feature
+artifacts are never mutated.
 Independent topology regularization jobs use at most `fit_threads` workers and
 are additionally capped at eight to bound simultaneous probability matrices.
 It defaults to four and is recorded in sealed result runtime provenance.
@@ -213,6 +214,16 @@ reduce peak RSS from 7,769,896 KiB to 5,143,108 KiB (33.8 percent). On the
 76,499-patch atlas, the same working-copy change reduced peak RSS from
 2,301,876 KiB to 1,842,836 KiB (19.9 percent) with all 302 non-observational
 files unchanged.
+
+Bounding the row-norm operation then removed a full feature-matrix temporary.
+On the 333,739-patch replay, peak RSS fell again from 5,143,108 KiB to
+4,010,956 KiB (22.0 percent), feature preparation fell from 1.532 to 1.370
+seconds, and wall time remained flat at 176.54 versus 175.48 seconds. All 198
+non-observational files remained byte-identical. Together, the three
+exact-output changes reduce peak RSS from 7,769,896 KiB to 4,010,956 KiB
+(48.4 percent). The smaller 76,499-patch replay remained at approximately
+1.84 GiB because a later phase already set its peak; all 302 non-observational
+files again remained byte-identical.
 
 Because guarded batch correction applies one additive vector to every patch in
 a section, its within-section KNN preservation is exactly one and does not

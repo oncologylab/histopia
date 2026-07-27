@@ -29,6 +29,7 @@ from histopia.semantic._selection import ClusterSelectionResult, select_cluster_
 
 FitPhaseCallback = Callable[[str, float], None]
 _MAX_REGULARIZATION_WORKERS = 8
+_FEATURE_NORMALIZATION_BLOCK_ROWS = 4_096
 
 
 @dataclass(frozen=True, slots=True)
@@ -375,12 +376,14 @@ def _normalize_section_features(
         features = features.copy()
     elif not features.flags.writeable:
         raise ValueError("in-place normalization requires a writeable feature matrix")
-    norms = np.linalg.norm(features, axis=1, keepdims=True)
-    np.divide(
-        features,
-        np.maximum(norms, np.finfo(np.float32).eps),
-        out=features,
-    )
+    for start in range(0, len(features), _FEATURE_NORMALIZATION_BLOCK_ROWS):
+        block = features[start : start + _FEATURE_NORMALIZATION_BLOCK_ROWS]
+        norms = np.linalg.norm(block, axis=1, keepdims=True)
+        np.divide(
+            block,
+            np.maximum(norms, np.finfo(np.float32).eps),
+            out=block,
+        )
     return features
 
 
