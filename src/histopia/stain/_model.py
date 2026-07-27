@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import warnings
 from dataclasses import asdict, dataclass
 from itertools import permutations
 from typing import Any
@@ -45,6 +46,9 @@ class CandidateFit:
     prior_angle_degrees: float
     bootstrap_angle_degrees: float
     target_q95: float
+    converged: bool = True
+    optimization_iterations: int = 0
+    target_rank_correlation: float = 1.0
 
     def __post_init__(self) -> None:
         vectors = _validated_vectors(self.vectors)
@@ -55,9 +59,23 @@ class CandidateFit:
             "prior_angle_degrees",
             "bootstrap_angle_degrees",
             "target_q95",
+            "target_rank_correlation",
         ):
             if not math.isfinite(float(getattr(self, name))):
                 raise ValueError(f"{name} must be finite")
+        if not isinstance(self.converged, bool):
+            raise TypeError("converged must be a bool")
+        if (
+            isinstance(self.optimization_iterations, bool)
+            or not isinstance(self.optimization_iterations, (int, np.integer))
+            or self.optimization_iterations < 0
+        ):
+            raise ValueError("optimization_iterations must be a nonnegative integer")
+        object.__setattr__(
+            self,
+            "optimization_iterations",
+            int(self.optimization_iterations),
+        )
 
     def to_json_dict(self) -> dict[str, object]:
         payload = asdict(self)
@@ -74,6 +92,9 @@ class CandidateFit:
             prior_angle_degrees=float(payload["prior_angle_degrees"]),
             bootstrap_angle_degrees=float(payload["bootstrap_angle_degrees"]),
             target_q95=float(payload["target_q95"]),
+            converged=bool(payload.get("converged", True)),
+            optimization_iterations=int(payload.get("optimization_iterations", 0)),
+            target_rank_correlation=float(payload.get("target_rank_correlation", 1.0)),
         )
 
 
@@ -335,6 +356,8 @@ def fit_candidate(
     tissue = _valid_od_rows(tissue_od)
     glass = _valid_od_rows(glass_od, minimum_norm=0.0)
     prior = canonical_vectors(family)
+    converged = True
+    optimization_iterations = 0
     if method == "legacy":
         vectors = legacy_vectors(family)
     elif method == "fixed":
@@ -342,13 +365,18 @@ def fit_candidate(
     elif method == "macenko":
         vectors = estimate_macenko_vectors(tissue, prior)
     elif method == "nmf":
-        vectors = estimate_nmf_vectors(tissue, prior, seed=seed)
+        vectors, converged, optimization_iterations = _fit_nmf_vectors(
+            tissue,
+            prior,
+            seed=seed,
+        )
     else:
         raise ValueError(f"unsupported stain method: {method}")
     concentrations, residual = unmix_od(tissue, vectors)
+    reference_concentrations, _ = unmix_od(tissue, prior)
     glass_concentrations, _ = unmix_od(glass, vectors)
     denominator = max(float(np.sqrt(np.mean(tissue**2))), 1e-8)
-    bootstrap = _bootstrap_angle(
+    bootstrap, bootstrap_converged = _bootstrap_angle(
         tissue,
         prior,
         method,
@@ -363,6 +391,12 @@ def fit_candidate(
         prior_angle_degrees=float(np.mean(_row_angles(vectors, prior))),
         bootstrap_angle_degrees=bootstrap,
         target_q95=float(np.quantile(concentrations[:, 1], 0.95)),
+        converged=converged and bootstrap_converged,
+        optimization_iterations=optimization_iterations,
+        target_rank_correlation=_rank_correlation(
+            reference_concentrations[:, 1],
+            concentrations[:, 1],
+        ),
     )
 
 
@@ -399,11 +433,22 @@ def estimate_nmf_vectors(
 ) -> np.ndarray:
     """Estimate nonnegative components initialized by family priors."""
 
+    vectors, _, _ = _fit_nmf_vectors(optical_density, priors, seed=seed)
+    return vectors
+
+
+def _fit_nmf_vectors(
+    optical_density: np.ndarray,
+    priors: np.ndarray,
+    *,
+    seed: int,
+) -> tuple[np.ndarray, bool, int]:
     values = _valid_od_rows(optical_density)
     if len(values) < 64:
-        return _validated_vectors(priors)
+        return _validated_vectors(priors), True, 0
     try:
         from sklearn.decomposition import NMF
+        from sklearn.exceptions import ConvergenceWarning
     except ImportError as exc:
         raise RuntimeError("NMF stain fitting requires the 'stain' extra") from exc
     initial = _validated_vectors(priors).astype(values.dtype, copy=False)
@@ -417,12 +462,19 @@ def estimate_nmf_vectors(
         tol=1e-4,
         random_state=seed,
     )
-    estimator.fit_transform(
-        np.maximum(values, 0),
-        W=np.maximum(weights, 1e-6),
-        H=np.maximum(initial, 1e-6),
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", ConvergenceWarning)
+        estimator.fit_transform(
+            np.maximum(values, 0),
+            W=np.maximum(weights, 1e-6),
+            H=np.maximum(initial, 1e-6),
+        )
+    iterations = int(estimator.n_iter_)
+    return (
+        _match_vectors(estimator.components_, priors),
+        iterations < estimator.max_iter,
+        iterations,
     )
-    return _match_vectors(estimator.components_, priors)
 
 
 def shrink_vectors(
@@ -447,11 +499,18 @@ def cohort_vector_template(vectors: list[np.ndarray]) -> np.ndarray:
 
 def select_family_method(
     candidates: list[list[CandidateFit]],
+    *,
+    minimum_target_rank: float = 0.98,
+    minimum_rank_guard_fraction: float = 0.90,
 ) -> tuple[str, dict[str, dict[str, float]]]:
-    """Select the lowest median-rank method across nuisance diagnostics."""
+    """Select a converged, rank-preserving method across nuisance diagnostics."""
 
     if not candidates:
         raise ValueError("method selection requires candidate fits")
+    if not 0 <= minimum_target_rank <= 1:
+        raise ValueError("minimum_target_rank must be between zero and one")
+    if not 0 <= minimum_rank_guard_fraction <= 1:
+        raise ValueError("minimum_rank_guard_fraction must be between zero and one")
     methods = sorted(
         set.intersection(*(set(row.method for row in slide) for slide in candidates))
     )
@@ -472,6 +531,17 @@ def select_family_method(
             metric: float(np.median([getattr(row, metric) for row in rows]))
             for metric in metrics
         }
+        summary[method]["convergence_fraction"] = float(
+            np.mean([row.converged for row in rows])
+        )
+        summary[method]["target_rank_correlation"] = float(
+            np.median([row.target_rank_correlation for row in rows])
+        )
+        summary[method]["rank_guard_fraction"] = float(
+            np.mean(
+                [row.target_rank_correlation >= minimum_target_rank for row in rows]
+            )
+        )
     rank_totals = {method: 0.0 for method in methods}
     for metric in metrics:
         ordered = sorted(methods, key=lambda method: (summary[method][metric], method))
@@ -479,8 +549,18 @@ def select_family_method(
             rank_totals[method] += rank
     for method in methods:
         summary[method]["rank_total"] = rank_totals[method]
+    eligible = [
+        method
+        for method in methods
+        if summary[method]["convergence_fraction"] == 1.0
+        and summary[method]["rank_guard_fraction"] >= minimum_rank_guard_fraction
+    ]
+    if not eligible:
+        raise ValueError(
+            "stain methods contain no converged, rank-preserving candidate"
+        )
     selected = min(
-        methods,
+        eligible,
         key=lambda method: (
             rank_totals[method],
             summary[method]["glass_leakage"],
@@ -498,21 +578,26 @@ def _bootstrap_angle(
     vectors: np.ndarray,
     *,
     seed: int,
-) -> float:
+) -> tuple[float, bool]:
     if method in {"fixed", "legacy"} or len(tissue) < 256:
-        return 0.0
+        return 0.0, True
     rng = np.random.default_rng(seed)
     angles = []
+    converged = True
     count = min(len(tissue), 5_000)
     for index in range(2):
         sample = tissue[rng.choice(len(tissue), size=count, replace=True)]
-        estimated = (
-            estimate_macenko_vectors(sample, priors)
-            if method == "macenko"
-            else estimate_nmf_vectors(sample, priors, seed=seed + index + 1)
-        )
+        if method == "macenko":
+            estimated = estimate_macenko_vectors(sample, priors)
+        else:
+            estimated, stable, _ = _fit_nmf_vectors(
+                sample,
+                priors,
+                seed=seed + index + 1,
+            )
+            converged = converged and stable
         angles.extend(_row_angles(estimated, vectors))
-    return float(np.quantile(angles, 0.95))
+    return float(np.quantile(angles, 0.95)), converged
 
 
 def _valid_od_rows(
@@ -563,3 +648,32 @@ def _row_angles(left: np.ndarray, right: np.ndarray) -> list[float]:
     second = _validated_vectors(right)
     cosine = np.clip(np.sum(first * second, axis=1), -1, 1)
     return [float(value) for value in np.degrees(np.arccos(cosine))]
+
+
+def _rank_correlation(left: np.ndarray, right: np.ndarray) -> float:
+    first = np.asarray(left, dtype=float)
+    second = np.asarray(right, dtype=float)
+    if len(first) != len(second) or len(first) < 2:
+        return 0.0
+    first_ranks = _average_ranks(first)
+    second_ranks = _average_ranks(second)
+    if np.ptp(first_ranks) == 0 or np.ptp(second_ranks) == 0:
+        return 0.0
+    correlation = np.corrcoef(first_ranks, second_ranks)[0, 1]
+    return float(correlation) if math.isfinite(float(correlation)) else 0.0
+
+
+def _average_ranks(values: np.ndarray) -> np.ndarray:
+    order = np.argsort(values, kind="mergesort")
+    sorted_values = values[order]
+    boundaries = np.concatenate(
+        (
+            np.array([0]),
+            np.flatnonzero(sorted_values[1:] != sorted_values[:-1]) + 1,
+            np.array([len(values)]),
+        )
+    )
+    ranks = np.empty(len(values), dtype=float)
+    for start, stop in zip(boundaries[:-1], boundaries[1:], strict=True):
+        ranks[order[start:stop]] = (start + stop - 1) / 2
+    return ranks

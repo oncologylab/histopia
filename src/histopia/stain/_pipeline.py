@@ -24,6 +24,7 @@ from histopia.stain._io import AnalysisSlide, read_analysis_slide
 from histopia.stain._model import (
     CandidateFit,
     StainModel,
+    _rank_correlation,
     canonical_vectors,
     cohort_vector_template,
     fit_candidate,
@@ -45,8 +46,8 @@ from histopia.stain._preflight import (
 )
 from histopia.stain._result import write_stain_result
 
-_FIT_ALGORITHM_VERSION = 1
-_MAP_ALGORITHM_VERSION = 2
+_FIT_ALGORITHM_VERSION = 4
+_MAP_ALGORITHM_VERSION = 4
 _NUMERIC_THREAD_LIMITER: object | None = None
 
 
@@ -120,7 +121,10 @@ def benchmark_stain_methods(
             [CandidateFit.from_json_dict(candidate) for candidate in row["candidates"]]
             for row in family_rows
         ]
-        selected, metrics = select_family_method(candidates)
+        selected, metrics = select_family_method(
+            candidates,
+            minimum_target_rank=config.correction_rank_guard,
+        )
         selected_vectors = [
             next(
                 candidate.vectors
@@ -789,17 +793,7 @@ def _glass_mask(rgb: np.ndarray, tissue: np.ndarray) -> np.ndarray:
 
 
 def _spearman(left: np.ndarray, right: np.ndarray) -> float:
-    first = np.asarray(left, dtype=float)
-    second = np.asarray(right, dtype=float)
-    if len(first) != len(second) or len(first) < 2:
-        return 0.0
-    first_ranks = np.argsort(np.argsort(first, kind="mergesort"), kind="mergesort")
-    second_ranks = np.argsort(
-        np.argsort(second, kind="mergesort"),
-        kind="mergesort",
-    )
-    correlation = np.corrcoef(first_ranks, second_ranks)[0, 1]
-    return float(correlation) if math.isfinite(float(correlation)) else 0.0
+    return _rank_correlation(left, right)
 
 
 def _mask_float(values: np.ndarray, mask: np.ndarray) -> np.ndarray:

@@ -34,7 +34,10 @@ At the configured physical resolution, Histopia:
 3. Benchmarks fixed, legacy, Macenko, and nonnegative matrix-factorization
    stain vectors within each assay family.
 4. Selects one family method from reconstruction error, glass leakage, prior
-   drift, and bootstrap stability, then shrinks slide vectors toward a robust
+   drift, and bootstrap stability. Adaptive candidates are eligible only when
+   their main and bootstrap optimizations converge for every family slide and
+   their target signal preserves the fixed-baseline pixel ranking on at least
+   90% of family slides. Selected slide vectors are then shrunk toward a robust
    cohort template.
 5. Proposes background correction but accepts it only when rank correlation is
    at least the configured guard and glass leakage does not worsen.

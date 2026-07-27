@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
 from histopia.stain import StainFamily
 from histopia.stain._model import (
+    CandidateFit,
     StainModel,
+    _rank_correlation,
     canonical_vectors,
     cohort_vector_template,
     estimate_nmf_vectors,
@@ -163,3 +167,68 @@ def test_cohort_method_selection_and_shrinkage_are_deterministic() -> None:
     assert selected in {"fixed", "legacy"}
     assert set(metrics) == {"fixed", "legacy"}
     np.testing.assert_allclose(np.linalg.norm(shrunk, axis=1), 1)
+
+
+def test_nonconverged_adaptive_method_is_ineligible() -> None:
+    vectors = canonical_vectors(StainFamily.H_DAB)
+    tissue = np.array([[0.2, 0.4], [0.5, 0.1], [0.3, 0.3]]) @ vectors
+    fixed = fit_candidate(
+        tissue,
+        np.zeros((20, 3)),
+        StainFamily.H_DAB,
+        "fixed",
+        seed=3,
+    )
+    nmf = replace(
+        fixed,
+        method="nmf",
+        reconstruction_nrmse=0.0,
+        glass_leakage=0.0,
+        converged=False,
+        optimization_iterations=300,
+    )
+
+    selected, metrics = select_family_method([[fixed, nmf]])
+
+    assert selected == "fixed"
+    assert metrics["fixed"]["convergence_fraction"] == 1.0
+    assert metrics["nmf"]["convergence_fraction"] == 0.0
+    restored = CandidateFit.from_json_dict(nmf.to_json_dict())
+    assert restored.method == "nmf"
+    assert restored.converged is False
+    assert restored.optimization_iterations == 300
+    np.testing.assert_allclose(restored.vectors, nmf.vectors)
+
+
+def test_low_rank_preservation_makes_method_ineligible() -> None:
+    vectors = canonical_vectors(StainFamily.H_DAB)
+    tissue = np.array([[0.2, 0.4], [0.5, 0.1], [0.3, 0.3]]) @ vectors
+    fixed = fit_candidate(
+        tissue,
+        np.zeros((20, 3)),
+        StainFamily.H_DAB,
+        "fixed",
+        seed=4,
+    )
+    adaptive = replace(
+        fixed,
+        method="adaptive",
+        reconstruction_nrmse=0.0,
+        glass_leakage=0.0,
+        target_rank_correlation=0.5,
+    )
+
+    selected, metrics = select_family_method([[fixed, adaptive]])
+
+    assert selected == "fixed"
+    assert metrics["fixed"]["rank_guard_fraction"] == 1.0
+    assert metrics["adaptive"]["rank_guard_fraction"] == 0.0
+
+
+def test_rank_correlation_uses_average_ranks_for_ties() -> None:
+    left = np.array([0.0, 0.0, 1.0, 2.0])
+    right = np.array([0.0, 1.0, 1.0, 2.0])
+
+    assert _rank_correlation(left, left) == pytest.approx(1.0)
+    assert _rank_correlation(left, right) == pytest.approx(5 / 6)
+    assert _rank_correlation(np.ones(4), np.ones(4)) == 0.0
