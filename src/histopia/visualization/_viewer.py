@@ -2075,6 +2075,22 @@ async function loadTexture(url) {
   texture.colorSpace = THREE.SRGBColorSpace;
   return texture;
 }
+async function loadTextureSet(urls, onLoaded = null) {
+  const outcomes = await Promise.allSettled(urls.map(async url => {
+    const texture = await loadTexture(url);
+    if (onLoaded) onLoaded();
+    return texture;
+  }));
+  const textures = outcomes
+    .filter(outcome => outcome.status === 'fulfilled')
+    .map(outcome => outcome.value);
+  const failure = outcomes.find(outcome => outcome.status === 'rejected');
+  if (failure) {
+    textures.forEach(disposeTexture);
+    throw failure.reason;
+  }
+  return textures;
+}
 function requestRender() {
   if (renderRequested) return;
   renderRequested = true;
@@ -2321,9 +2337,14 @@ async function setMode(mode, force = false) {
   const mouse = current;
   const generation = ++textureGeneration;
   const transition = beginTransition();
-  const textures = await Promise.all(mouse.slides.map(async slide => {
-    return loadTexture(textureUrl(slide, mode));
-  }));
+  let textures;
+  try {
+    textures = await loadTextureSet(
+      mouse.slides.map(slide => textureUrl(slide, mode)));
+  } catch (error) {
+    if (generation !== textureGeneration || current !== mouse) return;
+    throw error;
+  }
   if (generation !== textureGeneration || current !== mouse) {
     textures.forEach(disposeTexture);
     return;
@@ -2350,6 +2371,20 @@ async function loadTopologyLinks(mouse) {
     throw new Error('Invalid topology payload');
   return payload.links;
 }
+async function loadMouseAssets(mouse, mode, clusterCount, onTexture) {
+  const [textureResult, topologyResult] = await Promise.allSettled([
+    loadTextureSet(
+      mouse.slides.map(slide => textureUrl(slide, mode, clusterCount)),
+      onTexture),
+    loadTopologyLinks(mouse),
+  ]);
+  if (textureResult.status === 'rejected') throw textureResult.reason;
+  if (topologyResult.status === 'rejected') {
+    textureResult.value.forEach(disposeTexture);
+    throw topologyResult.reason;
+  }
+  return [textureResult.value, topologyResult.value];
+}
 async function loadMouse(mouse) {
   const generation = ++loadGeneration;
   ++textureGeneration;
@@ -2360,16 +2395,23 @@ async function loadMouse(mouse) {
     mouse.semantic || currentMode === 'histology' ? currentMode : 'histology';
   const requestedK = mouse.semantic?.selected_k ?? null;
   let loadedTextures = 0;
-  const [textures, topologyLinks] = await Promise.all([
-    Promise.all(mouse.slides.map(async slide => {
-      const texture = await loadTexture(textureUrl(slide, requestedMode, requestedK));
-      loadedTextures += 1;
-      if (generation === loadGeneration)
-        progress.textContent = `Loading ${loadedTextures} / ${mouse.slides.length}`;
-      return texture;
-    })),
-    loadTopologyLinks(mouse),
-  ]);
+  let textures;
+  let topologyLinks;
+  try {
+    [textures, topologyLinks] = await loadMouseAssets(
+      mouse,
+      requestedMode,
+      requestedK,
+      () => {
+        loadedTextures += 1;
+        if (generation === loadGeneration)
+          progress.textContent = `Loading ${loadedTextures} / ${mouse.slides.length}`;
+      },
+    );
+  } catch (error) {
+    if (generation !== loadGeneration) return;
+    throw error;
+  }
   if (generation !== loadGeneration) {
     textures.forEach(disposeTexture);
     return;

@@ -39,6 +39,9 @@ def test_viewer_fits_desktop_and_ignores_stale_mouse_loads(tmp_path: Path) -> No
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     errors: list[str] = []
+    stale_failures: list[str] = []
+    stale_console_errors: list[str] = []
+    stale_failure_armed = False
     try:
         with playwright.sync_playwright() as runtime:
             browser = runtime.chromium.launch(headless=True)
@@ -53,13 +56,29 @@ def test_viewer_fits_desktop_and_ignores_stale_mouse_loads(tmp_path: Path) -> No
                   });
                 };"""
             )
+
+            def record_console_error(message) -> None:
+                nonlocal stale_failure_armed
+                if message.type != "error":
+                    return
+                if (
+                    stale_failure_armed
+                    and message.text == "Failed to load resource: net::ERR_FAILED"
+                ):
+                    stale_console_errors.append(message.text)
+                    stale_failure_armed = False
+                else:
+                    errors.append(message.text)
+
+            page.on("console", record_console_error)
             page.on(
-                "console",
-                lambda message: (
-                    errors.append(message.text) if message.type == "error" else None
+                "requestfailed",
+                lambda request: (
+                    stale_failures.append(request.url)
+                    if "/assets/first/001.webp" in request.url
+                    else errors.append(request.url)
                 ),
             )
-            page.on("requestfailed", lambda request: errors.append(request.url))
             page.on(
                 "request",
                 lambda request: (
@@ -166,6 +185,11 @@ def test_viewer_fits_desktop_and_ignores_stale_mouse_loads(tmp_path: Path) -> No
                 }"""
             )
             assert page.locator("aside").evaluate("element => element.scrollTop") > 0
+            stale_failure_armed = True
+            page.route(
+                "**/assets/first/001.webp",
+                lambda route: route.abort("failed"),
+            )
             page.evaluate(
                 """() => {
                   const select = document.querySelector('#mouse');
@@ -183,6 +207,9 @@ def test_viewer_fits_desktop_and_ignores_stale_mouse_loads(tmp_path: Path) -> No
             )
             assert page.url.endswith("/histopia/?mouse=second")
             assert page.locator("aside").evaluate("element => element.scrollTop") == 0
+            assert page.locator("#slide-focus").inner_text() != "Load failed"
+            assert len(stale_failures) == 1
+            assert stale_console_errors == ["Failed to load resource: net::ERR_FAILED"]
             page.set_viewport_size({"width": 1920, "height": 1080})
             page.locator("#next-slide").click()
             assert page.locator("#slide-focus").inner_text() == "1 / 3"
