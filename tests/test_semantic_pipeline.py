@@ -181,6 +181,11 @@ def test_fit_uses_preflight_order_and_ignores_stale_extra_features(
     assert performance["fit"]["regularization_workers"] == 1
     assert performance["fit"]["semantic_result_fingerprint"] == "result-fingerprint"
     assert performance["fit"]["total_patches"] == 4
+    assert performance["fit"]["feature_storage_dtypes"] == ["float16"]
+    assert performance["fit"]["feature_working_dtype"] == "float32"
+    assert performance["fit"]["feature_working_copy_policy"] == (
+        "direct-concatenate-in-place-normalize-v1"
+    )
     assert performance["fit"]["atlas_fit_phase_seconds"] == {"cluster_selection": 1.25}
 
 

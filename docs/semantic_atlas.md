@@ -145,19 +145,22 @@ one native math thread to avoid nested oversubscription. Context descriptors
 are prepared in consecutive windows and retained for at most the active pair
 workers plus their shared boundary section. Each section descriptor is still
 computed exactly once, but a large cohort no longer materializes descriptors
-for every section simultaneously. Independent topology regularization jobs use
-at most `fit_threads` workers and are additionally capped at eight to bound
-simultaneous probability matrices. It defaults to four and is recorded in
-sealed result runtime provenance. Keeping this value explicit avoids
-machine-dependent oversubscription and makes fitting performance reproducible
-without changing feature artifacts.
+for every section simultaneously. Stored section vectors are cast directly
+into one private float32 matrix, normalized in place, and released immediately
+after PCA projection; the source feature artifacts are never mutated.
+Independent topology regularization jobs use at most `fit_threads` workers and
+are additionally capped at eight to bound simultaneous probability matrices.
+It defaults to four and is recorded in sealed result runtime provenance.
+Keeping this value explicit avoids machine-dependent oversubscription and
+makes fitting performance reproducible without changing feature artifacts.
 
 The observational `semantic_performance.json` report records `cache_hit`, the
 validation time, and why a candidate result was not reusable; an exact hit
 reports zero atlas-fit and artifact-write time. A computed fit also records
 `correspondence_workers`, `correspondence_descriptor_window_sections`,
-`regularization_workers`, and an `atlas_fit_phase_seconds` object covering
-feature preparation, PCA fit and projection, initial and corrected
+`regularization_workers`, source and working feature dtypes,
+`feature_working_copy_policy`, and an `atlas_fit_phase_seconds` object
+covering feature preparation, PCA fit and projection, initial and corrected
 correspondence and graph construction, guarded batch correction, K selection,
 and label regularization.
 
@@ -200,6 +203,16 @@ Wall time remained effectively flat at 173.29 versus 174.17 seconds, and all
 198 non-observational files were byte-identical. The smaller 76,499-patch
 atlas remained at 2.30 GiB peak RSS because later fitting stages, rather than
 descriptor retention, set its process peak.
+
+Direct float32 concatenation and in-place normalization then reduced that
+333,739-patch replay from 6,656,900 KiB to 5,143,108 KiB peak RSS (22.7
+percent) while retaining all 198 non-observational files byte-for-byte. Wall
+time was 174.17 versus 176.54 seconds under normal host variation. Relative to
+the original all-descriptor, multi-copy fit, the two exact-output changes
+reduce peak RSS from 7,769,896 KiB to 5,143,108 KiB (33.8 percent). On the
+76,499-patch atlas, the same working-copy change reduced peak RSS from
+2,301,876 KiB to 1,842,836 KiB (19.9 percent) with all 302 non-observational
+files unchanged.
 
 Because guarded batch correction applies one additive vector to every patch in
 a section, its within-section KNN preservation is exactly one and does not

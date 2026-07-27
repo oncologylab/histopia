@@ -111,11 +111,7 @@ def fit_joint_atlas(
         len(cluster_counts),
     )
     with _measure_fit_phase("feature_preparation", phase_callback):
-        raw = np.concatenate(
-            [section.features.astype(np.float32) for section in sections]
-        )
-        sizes = tuple(len(section.features) for section in sections)
-        normalized = _normalize_section_features(raw, sizes)
+        normalized, sizes = _prepare_normalized_section_features(sections)
         sample = balanced_sample_indices(
             sizes,
             per_slide_cap=balanced_patch_cap,
@@ -130,6 +126,7 @@ def fit_joint_atlas(
         pca.fit(normalized[sample])
     with _measure_fit_phase("pca_projection", phase_callback):
         projected = pca.transform(normalized).astype(np.float32)
+    del normalized
     offsets = np.concatenate([[0], np.cumsum(sizes)]).astype(np.int64)
     graph = None
     correspondences: tuple[AdjacentSectionCorrespondence, ...] = ()
@@ -347,17 +344,44 @@ def _match_correspondences(
         )
 
 
+def _prepare_normalized_section_features(
+    sections: tuple[PatchFeatures, ...],
+) -> tuple[np.ndarray, tuple[int, ...]]:
+    """Cast directly into one working matrix and normalize that private copy."""
+
+    sizes = tuple(len(section.features) for section in sections)
+    normalized = np.concatenate(
+        tuple(section.features for section in sections),
+        dtype=np.float32,
+    )
+    return (
+        _normalize_section_features(normalized, sizes, in_place=True),
+        sizes,
+    )
+
+
 def _normalize_section_features(
     features: np.ndarray,
     section_sizes: tuple[int, ...],
+    *,
+    in_place: bool = False,
 ) -> np.ndarray:
     """L2-normalize patches while preserving shifts for guarded correction."""
 
     features = np.asarray(features, dtype=np.float32)
     if sum(section_sizes) != len(features) or any(size <= 0 for size in section_sizes):
         raise ValueError("section sizes must partition all feature rows")
+    if not in_place:
+        features = features.copy()
+    elif not features.flags.writeable:
+        raise ValueError("in-place normalization requires a writeable feature matrix")
     norms = np.linalg.norm(features, axis=1, keepdims=True)
-    return features / np.maximum(norms, np.finfo(np.float32).eps)
+    np.divide(
+        features,
+        np.maximum(norms, np.finfo(np.float32).eps),
+        out=features,
+    )
+    return features
 
 
 def _sklearn_estimators():

@@ -87,6 +87,13 @@ def _fit_saved_features(
         performance["total_patches"] = sum(
             len(section.features) for section in sections
         )
+        performance["feature_storage_dtypes"] = sorted(
+            {str(section.features.dtype) for section in sections}
+        )
+        performance["feature_working_dtype"] = "float32"
+        performance["feature_working_copy_policy"] = (
+            "direct-concatenate-in-place-normalize-v1"
+        )
         provenance = sections[0].provenance or {}
         if isinstance(provenance.get("preflight_fingerprint"), str):
             performance["preflight_fingerprint"] = provenance["preflight_fingerprint"]

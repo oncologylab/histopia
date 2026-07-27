@@ -11,6 +11,7 @@ from histopia.semantic._atlas import (
     _bounded_regularization_workers,
     _cross_edge_consistency,
     _normalize_section_features,
+    _prepare_normalized_section_features,
     _same_label_cross_distance,
     balanced_sample_indices,
     fit_joint_atlas,
@@ -53,11 +54,49 @@ def test_balanced_sample_caps_each_slide_deterministically() -> None:
 def test_section_normalization_preserves_slide_shift_for_batch_guard() -> None:
     first = np.array([[2.0, 0.0], [0.0, 2.0], [1.0, 1.0]])
     second = first + np.array([20.0, -7.0])
+    source = np.vstack([first, second])
+    original = source.copy()
 
-    normalized = _normalize_section_features(np.vstack([first, second]), (3, 3))
+    normalized = _normalize_section_features(source, (3, 3))
 
+    np.testing.assert_array_equal(source, original)
     assert not np.allclose(normalized[:3], normalized[3:])
     np.testing.assert_allclose(np.linalg.norm(normalized, axis=1), 1.0)
+
+
+def test_feature_preparation_casts_once_and_normalizes_private_copy_exactly() -> None:
+    sections = tuple(
+        replace(section, features=section.features.astype(np.float16))
+        for section in (_section("a", 0), _section("b", 2), _section("c", 4))
+    )
+    originals = tuple(section.features.copy() for section in sections)
+    legacy = np.concatenate(
+        [section.features.astype(np.float32) for section in sections]
+    )
+    norms = np.linalg.norm(legacy, axis=1, keepdims=True)
+    expected = legacy / np.maximum(norms, np.finfo(np.float32).eps)
+
+    observed, sizes = _prepare_normalized_section_features(sections)
+
+    assert sizes == (12, 12, 12)
+    assert observed.dtype == np.float32
+    np.testing.assert_array_equal(observed, expected)
+    for section, original in zip(sections, originals, strict=True):
+        np.testing.assert_array_equal(section.features, original)
+        assert not np.shares_memory(observed, section.features)
+
+
+def test_in_place_normalization_reuses_writeable_float32_matrix() -> None:
+    source = np.array(
+        [[2.0, 0.0], [0.0, 2.0], [1.0, 1.0]],
+        dtype=np.float32,
+    )
+    expected = _normalize_section_features(source, (3,))
+
+    observed = _normalize_section_features(source, (3,), in_place=True)
+
+    assert observed is source
+    np.testing.assert_array_equal(observed, expected)
 
 
 def test_joint_atlas_is_deterministic_and_returns_each_sensitivity() -> None:
