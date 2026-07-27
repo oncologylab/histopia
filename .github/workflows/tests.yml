@@ -67,13 +67,16 @@ jobs:
           python-version: "3.10"
 
       - name: Install exact CPU workflow profiles
-        run: >-
-          python -m pip install -e
-          ".[dev,registration-repro,semantic-repro,stain-repro,qupath]"
+        run: |
+          python -m pip install -e \
+            ".[dev,registration,semantic,stain,wsi,qupath]" \
+            -c constraints/registration-repro.txt \
+            -c constraints/semantic-repro.txt \
+            -c constraints/stain-repro.txt
 
       - name: Verify exact versions and workflow contracts
         env:
-          HISTOPIA_VERIFY_REPRO: "1"
+          HISTOPIA_VERIFY_REPRO_CONSTRAINTS: "1"
         run: |
           python -m pytest \
             tests/test_dependency_profiles.py \

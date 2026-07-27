@@ -357,6 +357,68 @@ def test_registration_cohort_review_rejects_unsafe_name(tmp_path: Path) -> None:
         )
 
 
+def test_workflow_review_builds_one_fixed_stage_hub(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, object]] = []
+    registration = tmp_path / "registration"
+    registration.mkdir()
+    (registration / "registration_result.json").write_text("{}")
+
+    def registration_review(runs, output, *, workers):
+        calls.append(("registration", (runs, output, workers)))
+        output.mkdir(parents=True)
+        (output / "index.html").write_text("registration")
+        return output / "index.html"
+
+    def atlas(runs, output, **kwargs):
+        calls.append(("atlas", (runs, output, kwargs)))
+        output.mkdir(parents=True)
+        (output / "manifest.json").write_text(
+            json.dumps({"schema_version": 1, "mice": []})
+        )
+        (output / "index.html").write_text("atlas")
+        return output / "index.html"
+
+    def stain(viewer, output, *, mice):
+        calls.append(("stain", (viewer, output, mice)))
+        output.mkdir(parents=True)
+        (output / "index.html").write_text("stain")
+        return output / "index.html"
+
+    monkeypatch.setattr(
+        _review_portal,
+        "build_registration_cohort_review",
+        registration_review,
+    )
+    monkeypatch.setattr(_review_portal, "build_section_viewer", atlas)
+    monkeypatch.setattr(
+        "histopia.visualization._stain_review.build_stain_review",
+        stain,
+    )
+
+    output = tmp_path / "review"
+    index = _review_portal.build_workflow_review(
+        {"mouse": registration},
+        output,
+        semantic_runs={"mouse": tmp_path / "semantic"},
+        stain_runs={"mouse": tmp_path / "stain"},
+        workers=3,
+    )
+
+    manifest = json.loads((output / "manifest.json").read_text())
+    assert index == output / "index.html"
+    assert [tab["id"] for tab in manifest["tabs"]] == [
+        "registration",
+        "atlas",
+        "stain",
+    ]
+    assert calls[1][1][2]["require_approvals"] is False
+    assert "overflow:hidden" in (output / "workflow-review.css").read_text()
+    assert str(tmp_path) not in (output / "manifest-data.js").read_text()
+
+
 @pytest.mark.browser
 def test_registration_cohort_review_shows_full_mobile_approval_status(
     tmp_path: Path, monkeypatch

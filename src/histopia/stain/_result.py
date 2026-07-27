@@ -26,12 +26,9 @@ def write_stain_result(
 
 def _current_review(path: Path, fingerprint: str) -> dict[str, object]:
     default: dict[str, object] = {
-        "schema_version": 1,
-        "approved": False,
+        "schema_version": 2,
         "fingerprint": fingerprint,
-        "reviewer": None,
-        "reviewed_at": None,
-        "notes": "",
+        "families": {},
     }
     try:
         payload = json.loads(path.read_text())
@@ -39,7 +36,7 @@ def _current_review(path: Path, fingerprint: str) -> dict[str, object]:
         return default
     if (
         not isinstance(payload, dict)
-        or payload.get("schema_version") != 1
+        or payload.get("schema_version") not in {1, 2}
         or payload.get("fingerprint") != fingerprint
     ):
         return default

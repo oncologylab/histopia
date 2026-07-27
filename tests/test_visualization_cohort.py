@@ -11,11 +11,126 @@ from PIL import Image, ImageDraw
 import histopia.semantic._registration_binding as registration_binding_module
 import histopia.visualization._viewer as viewer_module
 from histopia.semantic._result import _seal_semantic_result
-from histopia.visualization import build_section_viewer
+from histopia.visualization import build_section_viewer as _build_section_viewer
 from histopia.visualization._viewer import (
     _rasterize_semantic_rectangles,
     _semantic_rgba,
 )
+
+
+def build_section_viewer(*args, **kwargs):
+    kwargs.setdefault("require_approvals", False)
+    return _build_section_viewer(*args, **kwargs)
+
+
+def test_stable_viewer_excludes_unapproved_registration_runs(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    approved, _, _ = _write_mouse(tmp_path, "approved", with_topology=False)
+    pending, _, _ = _write_mouse(tmp_path, "pending", with_topology=False)
+
+    monkeypatch.setattr(
+        viewer_module,
+        "_registration_approval_payload",
+        lambda run: (
+            {
+                "approved": True,
+                "order_fingerprint": "reviewed",
+                "registration_result_sha256": "a" * 64,
+            }
+            if run == approved
+            else None
+        ),
+    )
+
+    output = tmp_path / "published"
+    _build_section_viewer(
+        {"approved": approved, "pending": pending},
+        output,
+    )
+
+    manifest = json.loads((output / "manifest.json").read_text())
+    report = json.loads((output / "build-report.json").read_text())
+    assert [mouse["id"] for mouse in manifest["mice"]] == ["approved"]
+    assert report["require_approvals"] is True
+    assert report["registration_skipped"] == 1
+
+
+def test_stable_viewer_rejects_an_empty_approved_publication(
+    tmp_path: Path,
+) -> None:
+    pending, _, _ = _write_mouse(tmp_path, "pending", with_topology=False)
+
+    with pytest.raises(ValueError, match="no approved registration runs"):
+        _build_section_viewer({"pending": pending}, tmp_path / "published")
+
+
+def test_stable_viewer_suppresses_pending_semantic_result(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    registration, semantic, _ = _write_mouse(
+        tmp_path,
+        "mouse",
+        with_topology=False,
+    )
+    monkeypatch.setattr(
+        viewer_module,
+        "_registration_approval_payload",
+        lambda run: {
+            "approved": True,
+            "order_fingerprint": "reviewed",
+            "registration_result_sha256": "a" * 64,
+        },
+    )
+
+    output = tmp_path / "published"
+    _build_section_viewer(
+        {"mouse": registration},
+        output,
+        semantic_runs={"mouse": semantic},
+    )
+
+    manifest = json.loads((output / "manifest.json").read_text())
+    report = json.loads((output / "build-report.json").read_text())
+    assert manifest["mice"][0]["semantic"] is None
+    assert report["semantic_skipped"] == 1
+
+
+def test_stable_viewer_suppresses_semantics_without_approval_binding(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    registration, semantic, _ = _write_mouse(
+        tmp_path,
+        "mouse",
+        with_topology=False,
+    )
+    monkeypatch.setattr(
+        viewer_module,
+        "_registration_approval_payload",
+        lambda run: {
+            "approved": True,
+            "order_fingerprint": "reviewed",
+            "registration_result_sha256": "a" * 64,
+        },
+    )
+    monkeypatch.setattr(
+        viewer_module,
+        "_semantic_review_payload",
+        lambda *args: {"approved": True, "fingerprint_matches": True},
+    )
+
+    output = tmp_path / "published"
+    _build_section_viewer(
+        {"mouse": registration},
+        output,
+        semantic_runs={"mouse": semantic},
+    )
+
+    manifest = json.loads((output / "manifest.json").read_text())
+    assert manifest["mice"][0]["semantic"] is None
 
 
 def test_viewer_embeds_seven_mouse_qc_and_exact_review_state(tmp_path: Path) -> None:

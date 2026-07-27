@@ -30,10 +30,11 @@ pip install "histopia[registration,wsi] @ git+https://github.com/oncologylab/his
 pip install "histopia[semantic] @ git+https://github.com/oncologylab/histopia.git@main"
 pip install "histopia[stain] @ git+https://github.com/oncologylab/histopia.git@main"
 pip install "histopia[uni2h] @ git+https://github.com/oncologylab/histopia.git@main"
-pip install "histopia[uni2h-repro] @ git+https://github.com/oncologylab/histopia.git@main"
 pip install "histopia[qupath] @ git+https://github.com/oncologylab/histopia.git@main"
-pip install "histopia[registration-repro,stain-repro,uni2h-repro,qupath] @ git+https://github.com/oncologylab/histopia.git@main"
 ```
+
+Exact validation environments use the checked-in constraint files described in
+[dependency management](docs/dependency_management.md).
 
 ## Workflows
 
@@ -96,12 +97,15 @@ Audit a completed cohort before publishing or consuming it downstream:
 histopia-visualize audit \
   --run sample=/path/to/registration-run \
   --semantic-run sample=/path/to/semantic-run \
+  --stain-run sample=/path/to/stain-run \
   --viewer-manifest /path/to/viewer/manifest.json
 ```
 
 The path-free report distinguishes approved results, explicit review gates,
-missing stages, and integrity failures. Existing but stale approval claims fail
-closed instead of being displayed as ordinary unapproved results.
+missing stages, and integrity failures, including family-scoped stain approval.
+Stable viewer builds publish approved results only. Use
+`histopia-visualize review` to generate a separate review hub containing
+pending registration, 3D, semantic, and stain evidence.
 
 ## Development
 

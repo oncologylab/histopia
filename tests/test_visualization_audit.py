@@ -11,6 +11,8 @@ from PIL import Image
 from histopia.semantic import approve_semantic_result
 from histopia.semantic._preflight import preflight_registration, write_preflight
 from histopia.semantic._result_validation import _seal_semantic_result
+from histopia.stain import approve_stain_result
+from histopia.stain._result import write_stain_result
 from histopia.visualization import audit_workflows, write_workflow_audit
 
 
@@ -156,6 +158,38 @@ def test_audit_reports_missing_results_and_viewer_cohorts(tmp_path: Path) -> Non
     assert cohort.viewer.issue == "viewer_cohort_missing"
 
 
+def test_audit_reports_family_scoped_stain_review_state(tmp_path: Path) -> None:
+    registration, _ = _write_approved_workflow(tmp_path)
+    stain = _write_stain_workflow(tmp_path, registration)
+
+    pending = audit_workflows(
+        {"mouse-a": registration},
+        stain_runs={"mouse-a": stain},
+    )
+
+    state = pending.cohorts[0].stain
+    assert pending.status == "review_required"
+    assert state.approved_families == ()
+    assert state.pending_families == ("h-dab",)
+    assert state.issue == "stain_approval_required"
+
+    approve_stain_result(
+        stain,
+        reviewer="Test Reviewer",
+        notes="Reviewed DAB quantification.",
+        families=["h-dab"],
+        reviewed_at="2026-07-26T12:00:00+00:00",
+    )
+    approved = audit_workflows(
+        {"mouse-a": registration},
+        stain_runs={"mouse-a": stain},
+    )
+
+    assert approved.status == "approved"
+    assert approved.cohorts[0].stain.approved_families == ("h-dab",)
+    assert approved.cohorts[0].stain.pending_families == ()
+
+
 def test_audit_rejects_unknown_semantic_and_unsafe_cohort_ids(
     tmp_path: Path,
 ) -> None:
@@ -166,6 +200,11 @@ def test_audit_rejects_unknown_semantic_and_unsafe_cohort_ids(
         )
     with pytest.raises(ValueError, match="invalid cohort IDs"):
         audit_workflows({"../mouse": tmp_path / "registration"})
+    with pytest.raises(ValueError, match="stain runs have no matching"):
+        audit_workflows(
+            {"mouse-a": tmp_path / "registration"},
+            stain_runs={"mouse-b": tmp_path / "stain"},
+        )
 
 
 def _write_approved_workflow(
@@ -311,3 +350,34 @@ def _write_approved_workflow(
 
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _write_stain_workflow(root: Path, registration: Path) -> Path:
+    stain = root / "stain"
+    stain.mkdir()
+    (stain / "map.npz").write_bytes(b"map")
+    (stain / "model.json").write_text("{}")
+    write_stain_result(
+        stain,
+        {
+            "schema_version": 1,
+            "registration_result_sha256": _sha256(
+                registration / "registration_result.json"
+            ),
+            "slides": [
+                {
+                    "id": "HE.ndpi",
+                    "family": "context-he",
+                    "quantified": False,
+                },
+                {
+                    "id": "CK19.ndpi",
+                    "family": "h-dab",
+                    "quantified": True,
+                    "map": "map.npz",
+                    "model": "model.json",
+                },
+            ],
+        },
+    )
+    return stain

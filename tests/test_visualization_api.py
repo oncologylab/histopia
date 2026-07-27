@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 from histopia import visualization
-from histopia.registration import build_section_order_review as legacy_order_review
-from histopia.registration import build_section_viewer as legacy_viewer
 
 
 def test_visualization_is_canonical_viewer_api() -> None:
-    assert visualization.build_section_viewer is legacy_viewer
-    assert visualization.build_section_order_review is legacy_order_review
-    assert visualization.MAX_DISPLAY_LINKS == 500
+    assert callable(visualization.build_section_viewer)
+    assert callable(visualization.build_section_order_review)
+
+
+def test_registration_does_not_reexport_visualization_api() -> None:
+    from histopia import registration
+
+    assert not hasattr(registration, "build_section_viewer")
+    assert not hasattr(registration, "build_section_order_review")

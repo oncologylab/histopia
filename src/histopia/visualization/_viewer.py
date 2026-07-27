@@ -239,8 +239,13 @@ def build_section_viewer(
     stain_runs: dict[str, Path | str] | None = None,
     cohort_qc: Path | str | None = None,
     workers: int = 1,
+    require_approvals: bool = True,
 ) -> Path:
-    """Build a browser viewer from completed registration run directories."""
+    """Build a browser viewer from completed registration run directories.
+
+    Approved publication is the default. Set ``require_approvals=False`` only
+    for an explicitly labeled scientific review viewer.
+    """
 
     try:
         from PIL import Image
@@ -261,6 +266,11 @@ def build_section_viewer(
     cache_stats = {"reused": 0, "encoded": 0}
     mouse_stats = {"reused": 0, "rendered": 0}
     semantic_raster_stats = {"built": 0, "reused": 0}
+    publication_stats = {
+        "registration_skipped": 0,
+        "semantic_skipped": 0,
+        "stain_families_skipped": 0,
+    }
     webp_batch = _WebpWriteBatch(
         Image,
         output_dir,
@@ -282,6 +292,10 @@ def build_section_viewer(
     for mouse_id, run_value in sorted(runs.items()):
         run_dir = Path(run_value)
         payload = json.loads((run_dir / "registration_result.json").read_text())
+        registration_approval = _registration_approval_payload(run_dir)
+        if require_approvals and registration_approval is None:
+            publication_stats["registration_skipped"] += 1
+            continue
         semantic_dir = (
             Path(semantic_runs[mouse_id]) if mouse_id in semantic_runs else None
         )
@@ -300,6 +314,27 @@ def build_section_viewer(
             if semantic_dir is not None and semantic_payload is not None
             else None
         )
+        semantic_review = (
+            _semantic_review_payload(semantic_dir, semantic_payload)
+            if semantic_dir is not None and semantic_payload is not None
+            else None
+        )
+        if (
+            require_approvals
+            and semantic_payload is not None
+            and (
+                semantic_review is None
+                or semantic_review.get("approved") is not True
+                or semantic_review.get("fingerprint_matches") is not True
+                or semantic_binding is None
+                or not semantic_binding.approval_bound
+            )
+        ):
+            semantic_dir = None
+            semantic_payload = None
+            semantic_binding = None
+            semantic_review = None
+            publication_stats["semantic_skipped"] += 1
         if semantic_binding is not None and semantic_dir is not None:
             semantic_validations.append(
                 (
@@ -309,11 +344,6 @@ def build_section_viewer(
                     semantic_binding,
                 )
             )
-        semantic_review = (
-            _semantic_review_payload(semantic_dir, semantic_payload)
-            if semantic_dir is not None and semantic_payload is not None
-            else None
-        )
         semantic_qc = cohort_rows.get(mouse_id)
         if (
             cohort_qc is not None
@@ -330,15 +360,43 @@ def build_section_viewer(
             if stain_dir is not None
             else None
         )
+        published_stain_families = (
+            set()
+            if stain_viewer is None
+            else (
+                set(stain_viewer.review.get("approved_families", []))
+                if require_approvals
+                else {
+                    str(row.get("family"))
+                    for row in stain_viewer.slides.values()
+                    if row.get("quantified")
+                }
+            )
+        )
+        if stain_viewer is not None and require_approvals:
+            publication_stats["stain_families_skipped"] += len(
+                stain_viewer.review.get("pending_families", [])
+            )
+            if not published_stain_families:
+                stain_viewer = None
+        stain_display_max_od = (
+            _published_stain_display_max(
+                stain_viewer,
+                published_stain_families,
+            )
+            if stain_viewer is not None and require_approvals
+            else (stain_viewer.display_max_od if stain_viewer is not None else None)
+        )
         if stain_viewer is not None and stain_dir is not None:
             stain_validations.append((run_dir, payload, stain_dir, stain_viewer))
-        registration_approval = _registration_approval_payload(run_dir)
         mouse_fingerprint = _viewer_mouse_fingerprint(
             run_dir,
             payload,
             semantic_payload=semantic_payload,
             semantic_binding=semantic_binding,
             stain_viewer=stain_viewer,
+            require_approvals=require_approvals,
+            published_stain_families=published_stain_families,
         )
         previous_mouse = old_mice.get(mouse_id)
         previous_cache = old_mouse_cache.get(mouse_id)
@@ -512,11 +570,15 @@ def build_section_viewer(
                 stain_row = stain_slides.get(source_path.name)
                 if stain_row is None:
                     raise ValueError(f"stain result is missing {source_path.name}")
+                family = str(stain_row.get("family"))
+                published = not require_approvals or family in published_stain_families
                 stain_slide: dict[str, object] = {
-                    "quantified": bool(stain_row.get("quantified")),
+                    "quantified": bool(stain_row.get("quantified")) and published,
                     "marker": stain_row.get("marker"),
-                    "family": stain_row.get("family"),
-                    "qc": stain_row.get("qc"),
+                    "family": family,
+                    "qc": stain_row.get("qc") if published else None,
+                    "review_required": bool(stain_row.get("quantified"))
+                    and not published,
                 }
                 if stain_slide["quantified"]:
                     stain_map = StainMap.load(stain_viewer.root / str(stain_row["map"]))
@@ -527,7 +589,7 @@ def build_section_viewer(
                         output_shape=reference_image.shape[:2],
                         registered_rgb=registered,
                         registered_mask=registered_mask,
-                        display_max_od=stain_viewer.display_max_od,
+                        display_max_od=float(stain_display_max_od),
                     )
                     stain_base = f"{order:03d}-{_safe_name(source_path.stem)}-stain"
                     stain_textures: dict[str, str] = {}
@@ -626,9 +688,15 @@ def build_section_viewer(
             "stain": (
                 {
                     "measurement": stain_viewer.payload.get("measurement"),
-                    "families": stain_viewer.payload.get("families"),
+                    "families": {
+                        family: row
+                        for family, row in dict(
+                            stain_viewer.payload.get("families", {})
+                        ).items()
+                        if not require_approvals or family in published_stain_families
+                    },
                     "fingerprint": stain_viewer.payload.get("fingerprint"),
-                    "display_max_od": stain_viewer.display_max_od,
+                    "display_max_od": stain_display_max_od,
                     "palette": [
                         "#f6f7f4",
                         "#27807e",
@@ -636,9 +704,18 @@ def build_section_viewer(
                         "#b53130",
                     ],
                     "review": stain_viewer.review,
-                    "qc": _stain_viewer_qc(stain_viewer),
+                    "qc": _stain_viewer_qc(
+                        stain_viewer,
+                        published_stain_families=(
+                            published_stain_families if require_approvals else None
+                        ),
+                    ),
                     "quantified_slides": sum(
                         bool(row.get("quantified"))
+                        and (
+                            not require_approvals
+                            or str(row.get("family")) in published_stain_families
+                        )
                         for row in stain_viewer.slides.values()
                     ),
                 }
@@ -653,6 +730,8 @@ def build_section_viewer(
         }
 
     webp_batch.flush()
+    if require_approvals and not mouse_payloads:
+        raise ValueError("no approved registration runs are available to publish")
     for (
         run_dir,
         semantic_dir,
@@ -725,6 +804,8 @@ def build_section_viewer(
             "peak_pending_assets": webp_batch.peak_pending_encoded,
             "semantic_rasters_built": semantic_raster_stats["built"],
             "semantic_rasters_reused": semantic_raster_stats["reused"],
+            "require_approvals": require_approvals,
+            **publication_stats,
             "elapsed_seconds": round(time.perf_counter() - build_started, 3),
         },
     )
@@ -741,11 +822,20 @@ def _load_semantic_result_payload(run_dir: Path) -> dict[str, object]:
     return payload
 
 
-def _stain_viewer_qc(stain_viewer: StainViewerRun) -> dict[str, object]:
+def _stain_viewer_qc(
+    stain_viewer: StainViewerRun,
+    *,
+    published_stain_families: set[str] | None = None,
+) -> dict[str, object]:
     qcs = [
         row["qc"]
         for row in stain_viewer.slides.values()
-        if row.get("quantified") and isinstance(row.get("qc"), dict)
+        if row.get("quantified")
+        and isinstance(row.get("qc"), dict)
+        and (
+            published_stain_families is None
+            or str(row.get("family")) in published_stain_families
+        )
     ]
     if not qcs:
         return {
@@ -764,6 +854,23 @@ def _stain_viewer_qc(stain_viewer: StainViewerRun) -> dict[str, object]:
             np.median([float(qc["corrected_glass_leakage"]) for qc in qcs])
         ),
     }
+
+
+def _published_stain_display_max(
+    stain_viewer: StainViewerRun,
+    families: set[str],
+) -> float:
+    q99 = [
+        float(row["quantiles"]["0.99"])
+        for row in stain_viewer.slides.values()
+        if row.get("quantified")
+        and str(row.get("family")) in families
+        and isinstance(row.get("quantiles"), dict)
+        and row["quantiles"].get("0.99") is not None
+    ]
+    if not q99 or not np.all(np.isfinite(q99)):
+        raise ValueError("approved stain families have no finite display range")
+    return max(max(q99), 1e-4)
 
 
 def _write_viewer_runtime(output_dir: Path) -> None:
@@ -1236,6 +1343,8 @@ def _viewer_mouse_fingerprint(
     semantic_payload: dict[str, object] | None,
     semantic_binding: SemanticRegistrationBinding | None,
     stain_viewer: StainViewerRun | None,
+    require_approvals: bool,
+    published_stain_families: set[str],
 ) -> str:
     slides = []
     for slide in registration.get("slides", []):
@@ -1282,6 +1391,8 @@ def _viewer_mouse_fingerprint(
             if stain_viewer is not None
             else None
         ),
+        "require_approvals": require_approvals,
+        "published_stain_families": sorted(published_stain_families),
         # Preserve the v2 null sentinel while keeping mutable QC out of asset identity.
         "semantic_qc": None,
     }

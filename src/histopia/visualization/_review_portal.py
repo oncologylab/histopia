@@ -14,6 +14,7 @@ from histopia.visualization._viewer import (
     build_alignment_review,
     build_mask_review,
     build_section_order_review,
+    build_section_viewer,
 )
 
 
@@ -176,6 +177,15 @@ def build_registration_cohort_review(
                 "stage_summary": stage_summary,
             }
         )
+    reviews.sort(
+        key=lambda review: (
+            all(
+                bool(summary.get("approved"))
+                for summary in review["stage_summary"].values()
+            ),
+            str(review["id"]),
+        )
+    )
     manifest = {"schema_version": 1, "reviews": reviews}
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
@@ -186,6 +196,93 @@ def build_registration_cohort_review(
     (output_dir / "index.html").write_text(_COHORT_PORTAL_HTML)
     (output_dir / "cohort-review.css").write_text(_COHORT_PORTAL_CSS)
     (output_dir / "cohort-review.js").write_text(_COHORT_PORTAL_JS)
+    return output_dir / "index.html"
+
+
+def build_workflow_review(
+    registration_runs: dict[str, Path | str],
+    output_dir: Path | str,
+    *,
+    semantic_runs: dict[str, Path | str] | None = None,
+    stain_runs: dict[str, Path | str] | None = None,
+    cohort_qc: Path | str | None = None,
+    workers: int = 1,
+) -> Path:
+    """Build one stable review hub for all prepared workflow stages."""
+
+    semantic_runs = semantic_runs or {}
+    stain_runs = stain_runs or {}
+    unknown = (set(semantic_runs) | set(stain_runs)) - set(registration_runs)
+    if unknown:
+        raise ValueError(
+            "review inputs have no matching registration: " + ", ".join(sorted(unknown))
+        )
+    output_dir = Path(output_dir)
+    tabs: list[dict[str, str]] = []
+    registration_index = build_registration_cohort_review(
+        registration_runs,
+        output_dir / "registration",
+        workers=workers,
+    )
+    tabs.append(
+        {
+            "id": "registration",
+            "label": "Registration",
+            "href": registration_index.relative_to(output_dir).as_posix(),
+        }
+    )
+    completed = {
+        name: run
+        for name, run in registration_runs.items()
+        if (Path(run) / "registration_result.json").is_file()
+    }
+    if completed:
+        atlas_index = build_section_viewer(
+            completed,
+            output_dir / "atlas",
+            semantic_runs={
+                name: semantic_runs[name] for name in completed if name in semantic_runs
+            },
+            stain_runs={
+                name: stain_runs[name] for name in completed if name in stain_runs
+            },
+            cohort_qc=cohort_qc,
+            workers=workers,
+            require_approvals=False,
+        )
+        tabs.append(
+            {
+                "id": "atlas",
+                "label": "3D atlas",
+                "href": atlas_index.relative_to(output_dir).as_posix(),
+            }
+        )
+        stain_mice = sorted(set(completed) & set(stain_runs))
+        if stain_mice:
+            from histopia.visualization._stain_review import build_stain_review
+
+            stain_index = build_stain_review(
+                atlas_index.parent,
+                output_dir / "stain",
+                mice=stain_mice,
+            )
+            tabs.append(
+                {
+                    "id": "stain",
+                    "label": "Stain",
+                    "href": stain_index.relative_to(output_dir).as_posix(),
+                }
+            )
+    manifest = {"schema_version": 1, "tabs": tabs}
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    encoded = json.dumps(manifest, separators=(",", ":"))
+    (output_dir / "manifest-data.js").write_text(
+        f"globalThis.HISTOPIA_WORKFLOW_REVIEW={encoded};\n"
+    )
+    (output_dir / "index.html").write_text(_WORKFLOW_HTML)
+    (output_dir / "workflow-review.css").write_text(_WORKFLOW_CSS)
+    (output_dir / "workflow-review.js").write_text(_WORKFLOW_JS)
     return output_dir / "index.html"
 
 
@@ -353,4 +450,73 @@ function choose(id){
 }
 select.addEventListener("change",()=>choose(select.value));
 choose(new URL(location.href).searchParams.get("cohort"));
+"""
+
+_WORKFLOW_HTML = """<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Histopia scientific review</title>
+  <link rel="stylesheet" href="workflow-review.css">
+</head>
+<body>
+  <header>
+    <strong>Histopia scientific review</strong>
+    <nav aria-label="Workflow stage"></nav>
+  </header>
+  <main><iframe id="review" title="Histopia scientific review"></iframe></main>
+  <script src="manifest-data.js"></script>
+  <script src="workflow-review.js"></script>
+</body>
+</html>
+"""
+
+_WORKFLOW_CSS = """
+:root{font-family:Inter,system-ui,sans-serif;color:#17202a;background:#f4f6f7}
+*{box-sizing:border-box}
+html,body{width:100%;height:100%;margin:0;overflow:hidden}
+body{display:grid;grid-template-rows:48px minmax(0,1fr)}
+header{display:flex;align-items:center;gap:20px;padding:0 16px;background:#fff;
+border-bottom:1px solid #ccd1d1;min-width:0}
+header strong{white-space:nowrap}
+nav{display:flex;align-self:stretch;min-width:0}
+button{border:0;border-bottom:3px solid transparent;background:transparent;
+padding:0 14px;color:#566573;font:inherit;cursor:pointer;white-space:nowrap}
+button[aria-pressed="true"]{border-bottom-color:#117864;color:#0b5345;font-weight:600}
+main,iframe{width:100%;height:100%;min-width:0;min-height:0;border:0}
+iframe{display:block}
+@media(max-width:560px){
+  body{grid-template-rows:72px minmax(0,1fr)}
+  header{display:grid;grid-template-rows:22px 42px;gap:0;padding:4px 8px}
+  header strong{font-size:12px}
+  nav{overflow-x:auto}
+  button{padding:0 10px;font-size:12px}
+}
+"""
+
+_WORKFLOW_JS = """
+const manifest=globalThis.HISTOPIA_WORKFLOW_REVIEW;
+if(!manifest||!manifest.tabs.length)throw new Error("Missing workflow review tabs");
+const nav=document.querySelector("nav");
+const frame=document.querySelector("#review");
+for(const tab of manifest.tabs){
+  const button=document.createElement("button");
+  button.type="button";
+  button.dataset.tab=tab.id;
+  button.textContent=tab.label;
+  button.addEventListener("click",()=>select(tab.id));
+  nav.append(button);
+}
+function select(id){
+  const tab=manifest.tabs.find(item=>item.id===id)||manifest.tabs[0];
+  for(const button of nav.querySelectorAll("button")){
+    button.setAttribute("aria-pressed",String(button.dataset.tab===tab.id));
+  }
+  frame.src=tab.href;
+  const url=new URL(location.href);
+  url.searchParams.set("view",tab.id);
+  history.replaceState(null,"",url);
+}
+select(new URL(location.href).searchParams.get("view"));
 """

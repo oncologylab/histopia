@@ -86,6 +86,11 @@ def _main(argv: list[str] | None = None) -> int:
     build.add_argument("--stain-run", type=_named_path, action="append", default=[])
     build.add_argument("--cohort-qc", type=Path)
     build.add_argument(
+        "--include-unapproved",
+        action="store_true",
+        help="Build a review viewer containing unapproved workflow stages.",
+    )
+    build.add_argument(
         "--workers",
         type=int,
         default=1,
@@ -128,6 +133,31 @@ def _main(argv: list[str] | None = None) -> int:
         required=True,
     )
     cohort_review.add_argument("--workers", type=int, default=1)
+    workflow_review = commands.add_parser(
+        "review",
+        help="Build one stable review hub for prepared workflow stages.",
+    )
+    workflow_review.add_argument("output", type=Path)
+    workflow_review.add_argument(
+        "--run",
+        type=_named_path,
+        action="append",
+        required=True,
+    )
+    workflow_review.add_argument(
+        "--semantic-run",
+        type=_named_path,
+        action="append",
+        default=[],
+    )
+    workflow_review.add_argument(
+        "--stain-run",
+        type=_named_path,
+        action="append",
+        default=[],
+    )
+    workflow_review.add_argument("--cohort-qc", type=Path)
+    workflow_review.add_argument("--workers", type=int, default=1)
     stain_review = commands.add_parser(
         "stain-review",
         help="Build a decision-focused review portal from generated stain assets.",
@@ -199,6 +229,13 @@ def _main(argv: list[str] | None = None) -> int:
         help="Named semantic run as NAME=PATH; repeat for a cohort.",
     )
     audit.add_argument(
+        "--stain-run",
+        type=_named_path,
+        action="append",
+        default=[],
+        help="Named stain run as NAME=PATH; repeat for a cohort.",
+    )
+    audit.add_argument(
         "--viewer-manifest",
         type=Path,
         help="Optional generated viewer manifest.json to verify.",
@@ -252,6 +289,19 @@ def _main(argv: list[str] | None = None) -> int:
         )
         print(index)
         return 0
+    if args.command == "review":
+        from histopia.visualization._review_portal import build_workflow_review
+
+        index = build_workflow_review(
+            _unique_named_paths(args.run, "registration"),
+            args.output,
+            semantic_runs=_unique_named_paths(args.semantic_run, "semantic"),
+            stain_runs=_unique_named_paths(args.stain_run, "stain"),
+            cohort_qc=args.cohort_qc,
+            workers=args.workers,
+        )
+        print(index)
+        return 0
     if args.command == "stain-review":
         from histopia.visualization._stain_review import (
             build_stain_review,
@@ -286,6 +336,7 @@ def _main(argv: list[str] | None = None) -> int:
             stain_runs=dict(args.stain_run),
             cohort_qc=args.cohort_qc,
             workers=args.workers,
+            require_approvals=not args.include_unapproved,
         )
         print(index)
         return 0
@@ -303,6 +354,7 @@ def _main(argv: list[str] | None = None) -> int:
         report = audit_workflows(
             _unique_named_paths(args.run, "registration"),
             semantic_runs=_unique_named_paths(args.semantic_run, "semantic"),
+            stain_runs=_unique_named_paths(args.stain_run, "stain"),
             viewer_manifest=args.viewer_manifest,
         )
         if args.output is not None:

@@ -57,21 +57,4 @@ def __getattr__(name: str):
     return value
 
 
-__all__ = [
-    "PatchFeatures",
-    "SemanticApproval",
-    "SemanticPreflight",
-    "SemanticRegistrationBinding",
-    "SemanticAtlasConfig",
-    "approve_semantic_result",
-    "fit_or_reuse_saved_features",
-    "fit_saved_features",
-    "load_semantic_config",
-    "preflight_registration",
-    "run_semantic_atlas",
-    "summarize_semantic_run",
-    "validate_semantic_approval",
-    "validate_semantic_registration_binding",
-    "write_cohort_qc",
-    "write_preflight",
-]
+__all__ = sorted(_PUBLIC_IMPORTS)

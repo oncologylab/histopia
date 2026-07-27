@@ -38,6 +38,11 @@ def _build_parser() -> argparse.ArgumentParser:
     approve.add_argument("--run", type=Path, required=True)
     approve.add_argument("--reviewer", required=True)
     approve.add_argument("--review-notes", required=True)
+    approve.add_argument(
+        "--family",
+        action="append",
+        help="Stain family to approve; repeat as needed. Defaults to every family.",
+    )
     cohort = commands.add_parser("cohort-qc")
     cohort.add_argument("--run", type=_named_path, action="append", required=True)
     cohort.add_argument("--output", type=Path, required=True)
@@ -81,10 +86,12 @@ def _main(argv: list[str] | None = None) -> int:
             args.run,
             reviewer=args.reviewer,
             notes=args.review_notes,
+            families=args.family,
         )
         print(
             f"{approval.run_dir / 'stain_review.json'}: "
-            f"fingerprint={approval.fingerprint}"
+            f"fingerprint={approval.fingerprint}; "
+            f"families={','.join(family.value for family in approval.families)}"
         )
         return 0
     if args.command == "cohort-qc":

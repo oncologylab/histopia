@@ -8,13 +8,26 @@ import numpy as np
 import pytest
 from PIL import Image
 
+from histopia.stain import approve_stain_result
 from histopia.stain._artifacts import StainMap
 from histopia.stain._result import write_stain_result
 from histopia.visualization._stain_viewer import (
+    StainViewerRun,
     _overlay_rgba,
     load_stain_viewer_run,
 )
-from histopia.visualization._viewer import build_section_viewer
+from histopia.visualization._viewer import (
+    _published_stain_display_max,
+    _stain_viewer_qc,
+)
+from histopia.visualization._viewer import (
+    build_section_viewer as _build_section_viewer,
+)
+
+
+def build_section_viewer(*args, **kwargs):
+    kwargs.setdefault("require_approvals", False)
+    return _build_section_viewer(*args, **kwargs)
 
 
 def test_viewer_builds_bound_stain_layers_and_probe_grid(tmp_path: Path) -> None:
@@ -37,6 +50,8 @@ def test_viewer_builds_bound_stain_layers_and_probe_grid(tmp_path: Path) -> None
     assert mouse["stain"]["review"] == {
         "approved": False,
         "fingerprint_matches": True,
+        "approved_families": [],
+        "pending_families": ["h-dab"],
     }
     assert slide["stain"]["quantified"] is True
     assert set(slide["stain"]["textures"]) == {"raw", "corrected"}
@@ -66,6 +81,93 @@ def test_viewer_builds_bound_stain_layers_and_probe_grid(tmp_path: Path) -> None
     report = json.loads((viewer / "build-report.json").read_text())
     assert report["mice_reused"] == 1
     assert report["mice_rendered"] == 0
+
+
+def test_stable_viewer_publishes_only_approved_stain_families(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    registration, registration_payload = _registration_run(tmp_path)
+    stain = _stain_run(tmp_path, registration, registration_payload)
+    monkeypatch.setattr(
+        "histopia.visualization._viewer._registration_approval_payload",
+        lambda run: {
+            "approved": True,
+            "order_fingerprint": "reviewed",
+            "registration_result_sha256": "a" * 64,
+        },
+    )
+
+    pending = tmp_path / "pending-viewer"
+    _build_section_viewer(
+        {"mouse": registration},
+        pending,
+        stain_runs={"mouse": stain},
+    )
+    pending_manifest = json.loads((pending / "manifest.json").read_text())
+    assert pending_manifest["mice"][0]["stain"] is None
+
+    approve_stain_result(
+        stain,
+        reviewer="Test Reviewer",
+        notes="DAB stain maps reviewed.",
+        families=["h-dab"],
+        reviewed_at="2026-07-26T12:00:00+00:00",
+    )
+    approved = tmp_path / "approved-viewer"
+    _build_section_viewer(
+        {"mouse": registration},
+        approved,
+        stain_runs={"mouse": stain},
+    )
+    approved_manifest = json.loads((approved / "manifest.json").read_text())
+    stain_payload = approved_manifest["mice"][0]["stain"]
+    assert set(stain_payload["families"]) == {"h-dab"}
+    assert stain_payload["review"]["approved_families"] == ["h-dab"]
+
+
+def test_family_publication_has_independent_scale_and_qc(tmp_path: Path) -> None:
+    viewer_run = StainViewerRun(
+        root=tmp_path,
+        payload={},
+        slides={
+            "dab": {
+                "quantified": True,
+                "family": "h-dab",
+                "quantiles": {"0.99": 0.8},
+                "qc": {
+                    "correction_accepted": True,
+                    "threshold_accepted": True,
+                    "raw_glass_leakage": 0.1,
+                    "corrected_glass_leakage": 0.02,
+                },
+            },
+            "red": {
+                "quantified": True,
+                "family": "sirius-red",
+                "quantiles": {"0.99": 8.0},
+                "qc": {
+                    "correction_accepted": False,
+                    "threshold_accepted": False,
+                    "raw_glass_leakage": 0.9,
+                    "corrected_glass_leakage": 0.8,
+                },
+            },
+        },
+        display_max_od=8.0,
+        review={},
+    )
+
+    assert _published_stain_display_max(viewer_run, {"h-dab"}) == 0.8
+    assert _stain_viewer_qc(
+        viewer_run,
+        published_stain_families={"h-dab"},
+    ) == {
+        "correction_accepted": 1,
+        "threshold_accepted": 1,
+        "raw_glass_leakage": 0.1,
+        "corrected_glass_leakage": 0.02,
+    }
 
 
 def test_stain_viewer_rejects_a_different_registration_result(
@@ -186,6 +288,7 @@ def _stain_run(
                 "quantity": "relative_chromogen_optical_density",
                 "analysis_mpp": 4.0,
             },
+            "families": {"h-dab": {"display_name": "H-DAB"}},
             "registration_result_sha256": registration_sha,
             "preflight": "preflight.json",
             "benchmark": "benchmark.json",

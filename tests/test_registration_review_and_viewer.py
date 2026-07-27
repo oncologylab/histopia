@@ -17,8 +17,15 @@ from histopia.visualization._viewer import (
     build_alignment_review,
     build_mask_review,
     build_section_order_review,
-    build_section_viewer,
 )
+from histopia.visualization._viewer import (
+    build_section_viewer as _build_section_viewer,
+)
+
+
+def build_section_viewer(*args, **kwargs):
+    kwargs.setdefault("require_approvals", False)
+    return _build_section_viewer(*args, **kwargs)
 
 
 def test_discover_slides_excludes_labels_and_generated_files(tmp_path: Path) -> None:

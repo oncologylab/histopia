@@ -52,28 +52,13 @@ def _constraint_pins(path: Path) -> dict[str, str]:
     return _pins(requirements)
 
 
-def test_reproducible_extras_match_constraint_versions() -> None:
+def test_reproducible_versions_live_only_in_constraint_files() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
     extras = project["optional-dependencies"]
-    registration = _constraint_pins(ROOT / "constraints/registration-repro.txt")
-    semantic = _constraint_pins(ROOT / "constraints/semantic-repro.txt")
-    stain = _constraint_pins(ROOT / "constraints/stain-repro.txt")
 
-    assert _pins(extras["registration-repro"]) == registration
-    assert _pins(extras["uni2h-repro"]) == semantic
-    assert _pins(extras["stain-repro"]) == stain
-    assert _pins(extras["semantic-repro"]) == {
-        package: semantic[package]
-        for package in (
-            "numpy",
-            "packaging",
-            "pillow",
-            "scikit-learn",
-            "scipy",
-            "threadpoolctl",
-            "tomli",
-        )
-    }
+    assert not any(name.endswith("-repro") for name in extras)
+    for requirements in extras.values():
+        assert not _pins(requirements)
 
 
 def test_qupath_doctor_ranges_match_normal_workflow_extras() -> None:
@@ -100,15 +85,14 @@ def test_qupath_doctor_ranges_match_normal_workflow_extras() -> None:
 
 
 @pytest.mark.skipif(
-    os.environ.get("HISTOPIA_VERIFY_REPRO") != "1",
-    reason="requires an exact reproducible-profile installation",
+    os.environ.get("HISTOPIA_VERIFY_REPRO_CONSTRAINTS") != "1",
+    reason="requires an exact constraint-based installation",
 )
-def test_installed_cpu_reproducible_profiles_match_exact_pins() -> None:
-    project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
-    extras = project["optional-dependencies"]
-    expected = _pins(
-        extras["registration-repro"] + extras["semantic-repro"] + extras["stain-repro"],
-        active_only=True,
-    )
+def test_installed_cpu_profiles_match_exact_constraints() -> None:
+    expected: dict[str, str] = {}
+    for name in ("registration-repro.txt", "semantic-repro.txt", "stain-repro.txt"):
+        for package, version in _constraint_pins(ROOT / "constraints" / name).items():
+            previous = expected.setdefault(package, version)
+            assert previous == version
 
     assert {package: distribution_version(package) for package in expected} == expected

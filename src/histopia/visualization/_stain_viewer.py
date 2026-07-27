@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -11,6 +10,7 @@ import numpy as np
 
 from histopia._atomic import write_binary_atomic
 from histopia.registration._errors import OptionalDependencyError
+from histopia.stain._approval import stain_review_status
 from histopia.stain._artifacts import StainMap
 from histopia.stain._result_validation import validate_stain_result
 
@@ -85,7 +85,7 @@ def load_stain_viewer_run(
     ]
     if not q99 or not np.all(np.isfinite(q99)):
         raise ValueError("stain result has no finite quantified display range")
-    review = _load_review(stain_run, str(payload["fingerprint"]))
+    review = stain_review_status(stain_run, payload)
     return StainViewerRun(
         root=stain_run,
         payload=payload,
@@ -332,17 +332,6 @@ def _probe_grid(
         probe_height,
         quantization_scale,
     )
-
-
-def _load_review(root: Path, fingerprint: str) -> dict[str, object]:
-    try:
-        review = json.loads((root / "stain_review.json").read_text())
-    except (OSError, json.JSONDecodeError):
-        return {"approved": False, "fingerprint_matches": False}
-    return {
-        "approved": bool(review.get("approved")),
-        "fingerprint_matches": review.get("fingerprint") == fingerprint,
-    }
 
 
 def _file_sha256(path: Path) -> str:

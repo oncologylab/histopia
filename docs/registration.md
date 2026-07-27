@@ -183,7 +183,7 @@ Build a fixed-height visual review from the generated proposal and processed
 images:
 
 ```python
-from histopia.registration import build_section_order_review
+from histopia.visualization import build_section_order_review
 
 build_section_order_review(
     "run/section_order_review.json",
@@ -668,6 +668,22 @@ histopia-register \
 
 Serve the output directory over HTTP. Browser module imports do not work
 reliably when opening `index.html` directly from the filesystem.
+
+Stable viewer builds include only fingerprint-approved registration results,
+approved semantic results, and approved stain families. Build one separate,
+fixed-viewport review endpoint for pending work:
+
+```bash
+histopia-visualize review /path/to/review \
+  --run mouse-1=/path/to/run-1 \
+  --run mouse-2=/path/to/run-2 \
+  --semantic-run mouse-1=/path/to/semantic-1 \
+  --stain-run mouse-1=/path/to/stain-1 \
+  --workers 4
+```
+
+The hub orders pending registration cohorts first and exposes only the workflow
+tabs that have prepared artifacts. It does not grant scientific approval.
 
 Repeated builds maintain checksum-verified asset and mouse caches. An unchanged
 mouse is reused only when its ordered transforms, geometry, reviewed thumbnail

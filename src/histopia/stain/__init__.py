@@ -5,6 +5,10 @@ from importlib import import_module
 _PUBLIC_IMPORTS = {
     "SlideAssay": ("histopia.stain._assays", "SlideAssay"),
     "StainApproval": ("histopia.stain._approval", "StainApproval"),
+    "StainFamilyApproval": (
+        "histopia.stain._approval",
+        "StainFamilyApproval",
+    ),
     "StainFamily": ("histopia.stain._assays", "StainFamily"),
     "StainMap": ("histopia.stain._artifacts", "StainMap"),
     "StainModel": ("histopia.stain._model", "StainModel"),
@@ -31,6 +35,10 @@ _PUBLIC_IMPORTS = {
         "run_stain_quantification",
     ),
     "summarize_stain_run": ("histopia.stain._qc", "summarize_stain_run"),
+    "stain_review_status": (
+        "histopia.stain._approval",
+        "stain_review_status",
+    ),
     "validate_stain_approval": (
         "histopia.stain._approval",
         "validate_stain_approval",

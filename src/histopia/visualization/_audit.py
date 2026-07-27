@@ -20,6 +20,13 @@ SemanticStatus = Literal[
     "incomplete",
     "invalid",
 ]
+StainStatus = Literal[
+    "approved",
+    "review_required",
+    "not_requested",
+    "incomplete",
+    "invalid",
+]
 ViewerStatus = Literal["current", "not_requested", "incomplete", "invalid"]
 
 
@@ -69,6 +76,28 @@ class SemanticWorkflowAudit:
 
 
 @dataclass(frozen=True, slots=True)
+class StainWorkflowAudit:
+    """Portable validation state for one quantitative stain result."""
+
+    status: StainStatus
+    slide_count: int | None = None
+    fingerprint: str | None = None
+    approved_families: tuple[str, ...] = ()
+    pending_families: tuple[str, ...] = ()
+    issue: str | None = None
+
+    def to_json_dict(self) -> dict[str, object]:
+        return {
+            "status": self.status,
+            "slide_count": self.slide_count,
+            "fingerprint": self.fingerprint,
+            "approved_families": list(self.approved_families),
+            "pending_families": list(self.pending_families),
+            "issue": self.issue,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class ViewerWorkflowAudit:
     """Portable validation state for one cohort in a generated viewer."""
 
@@ -87,6 +116,7 @@ class CohortWorkflowAudit:
     status: WorkflowStatus
     registration: RegistrationWorkflowAudit
     semantic: SemanticWorkflowAudit
+    stain: StainWorkflowAudit
     viewer: ViewerWorkflowAudit
 
     def to_json_dict(self) -> dict[str, object]:
@@ -95,6 +125,7 @@ class CohortWorkflowAudit:
             "status": self.status,
             "registration": self.registration.to_json_dict(),
             "semantic": self.semantic.to_json_dict(),
+            "stain": self.stain.to_json_dict(),
             "viewer": self.viewer.to_json_dict(),
         }
 
@@ -126,7 +157,7 @@ class WorkflowAudit:
             for status in ("approved", "review_required", "incomplete", "invalid")
         }
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "status": self.status,
             "summary": {
                 "cohort_count": len(self.cohorts),
@@ -153,6 +184,14 @@ class _SemanticIdentity:
 
 
 @dataclass(frozen=True, slots=True)
+class _StainIdentity:
+    slide_count: int
+    fingerprint: str
+    approved_families: tuple[str, ...]
+    pending_families: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class _ViewerManifest:
     mice: dict[str, dict[str, object]]
     issue: str | None = None
@@ -162,6 +201,7 @@ def audit_workflows(
     registration_runs: dict[str, Path | str],
     *,
     semantic_runs: dict[str, Path | str] | None = None,
+    stain_runs: dict[str, Path | str] | None = None,
     viewer_manifest: Path | str | None = None,
 ) -> WorkflowAudit:
     """Validate exact workflow state without publishing local filesystem paths."""
@@ -170,12 +210,19 @@ def audit_workflows(
         raise ValueError("at least one registration run is required")
     _validate_cohort_ids(registration_runs)
     semantic_runs = semantic_runs or {}
+    stain_runs = stain_runs or {}
     _validate_cohort_ids(semantic_runs)
+    _validate_cohort_ids(stain_runs)
     unknown_semantics = sorted(set(semantic_runs) - set(registration_runs))
     if unknown_semantics:
         raise ValueError(
             "semantic runs have no matching registration: "
             + ", ".join(unknown_semantics)
+        )
+    unknown_stains = sorted(set(stain_runs) - set(registration_runs))
+    if unknown_stains:
+        raise ValueError(
+            "stain runs have no matching registration: " + ", ".join(unknown_stains)
         )
 
     viewer = (
@@ -194,6 +241,11 @@ def audit_workflows(
             registration_root,
             semantic_root,
         )
+        stain_root = Path(stain_runs[cohort_id]) if cohort_id in stain_runs else None
+        stain, stain_identity = _audit_stain(
+            registration_identity,
+            stain_root,
+        )
         viewer_state = _audit_viewer(
             cohort_id,
             viewer,
@@ -201,11 +253,14 @@ def audit_workflows(
             registration_identity,
             semantic,
             semantic_identity,
+            stain,
+            stain_identity,
         )
         status = _overall_status(
             (
                 registration.status,
                 semantic.status,
+                stain.status,
                 viewer_state.status,
             )
         )
@@ -215,6 +270,7 @@ def audit_workflows(
                 status=status,
                 registration=registration,
                 semantic=semantic,
+                stain=stain,
                 viewer=viewer_state,
             )
         )
@@ -456,6 +512,77 @@ def _audit_semantic(
     )
 
 
+def _audit_stain(
+    registration_identity: _RegistrationIdentity | None,
+    stain_root: Path | None,
+) -> tuple[StainWorkflowAudit, _StainIdentity | None]:
+    if stain_root is None:
+        return StainWorkflowAudit(status="not_requested"), None
+    result_path = stain_root / "stain_result.json"
+    if not result_path.is_file():
+        return (
+            StainWorkflowAudit(
+                status="incomplete",
+                issue="stain_result_missing",
+            ),
+            None,
+        )
+    try:
+        from histopia.stain._approval import stain_review_status
+        from histopia.stain._result_validation import validate_stain_result
+
+        payload = validate_stain_result(stain_root)
+        fingerprint = _required_string(payload, "fingerprint")
+        slides = payload.get("slides")
+        if not isinstance(slides, list) or not slides:
+            raise ValueError("stain result contains no slides")
+        if (
+            registration_identity is None
+            or payload.get("registration_result_sha256")
+            != registration_identity.result_sha256
+            or len(slides) != registration_identity.slide_count
+        ):
+            raise ValueError("stain registration binding is stale")
+        review = stain_review_status(stain_root, payload)
+        approved = _string_tuple(review.get("approved_families"))
+        pending = _string_tuple(review.get("pending_families"))
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return (
+            StainWorkflowAudit(
+                status="invalid",
+                issue="stain_result_or_review_invalid",
+            ),
+            None,
+        )
+    identity = _StainIdentity(
+        slide_count=len(slides),
+        fingerprint=fingerprint,
+        approved_families=approved,
+        pending_families=pending,
+    )
+    if pending:
+        return (
+            StainWorkflowAudit(
+                status="review_required",
+                slide_count=identity.slide_count,
+                fingerprint=fingerprint,
+                approved_families=approved,
+                pending_families=pending,
+                issue="stain_approval_required",
+            ),
+            identity,
+        )
+    return (
+        StainWorkflowAudit(
+            status="approved",
+            slide_count=identity.slide_count,
+            fingerprint=fingerprint,
+            approved_families=approved,
+        ),
+        identity,
+    )
+
+
 def _audit_viewer(
     cohort_id: str,
     viewer: _ViewerManifest | None,
@@ -463,6 +590,8 @@ def _audit_viewer(
     registration_identity: _RegistrationIdentity | None,
     semantic: SemanticWorkflowAudit,
     semantic_identity: _SemanticIdentity | None,
+    stain: StainWorkflowAudit,
+    stain_identity: _StainIdentity | None,
 ) -> ViewerWorkflowAudit:
     if viewer is None:
         return ViewerWorkflowAudit(status="not_requested")
@@ -515,6 +644,28 @@ def _audit_viewer(
             or review.get("fingerprint_matches") is not True
         ):
             issues.append("viewer_semantic_review_mismatch")
+    viewer_stain = mouse.get("stain")
+    if stain.status == "not_requested":
+        pass
+    elif stain_identity is None:
+        issues.append("viewer_stain_not_verifiable")
+    elif not stain_identity.approved_families:
+        if viewer_stain is not None:
+            issues.append("viewer_unapproved_stain_published")
+    elif not isinstance(viewer_stain, dict):
+        issues.append("viewer_stain_missing")
+    else:
+        if viewer_stain.get("fingerprint") != stain_identity.fingerprint:
+            issues.append("viewer_stain_fingerprint_mismatch")
+        review = viewer_stain.get("review")
+        if (
+            not isinstance(review, dict)
+            or _string_tuple(review.get("approved_families"))
+            != stain_identity.approved_families
+            or _string_tuple(review.get("pending_families"))
+            != stain_identity.pending_families
+        ):
+            issues.append("viewer_stain_review_mismatch")
     if issues:
         return ViewerWorkflowAudit(status="invalid", issue="+".join(sorted(issues)))
     return ViewerWorkflowAudit(status="current")
@@ -605,6 +756,14 @@ def _required_string(payload: dict[str, object], key: str) -> str:
     if not isinstance(value, str) or not value:
         raise ValueError(f"{key} must be a non-empty string")
     return value
+
+
+def _string_tuple(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list) or any(
+        not isinstance(item, str) or not item for item in value
+    ):
+        raise ValueError("expected a list of non-empty strings")
+    return tuple(value)
 
 
 def _validate_cohort_ids(runs: dict[str, Path | str]) -> None:

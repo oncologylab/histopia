@@ -37,6 +37,7 @@ def test_build_command_targets_stable_histopia_directory(
             dict[str, Path],
             Path | None,
             int,
+            bool,
         ]
     ] = []
 
@@ -48,8 +49,19 @@ def test_build_command_targets_stable_histopia_directory(
         stain_runs: dict[str, Path],
         cohort_qc: Path | None,
         workers: int,
+        require_approvals: bool,
     ) -> Path:
-        calls.append((runs, output, semantic_runs, stain_runs, cohort_qc, workers))
+        calls.append(
+            (
+                runs,
+                output,
+                semantic_runs,
+                stain_runs,
+                cohort_qc,
+                workers,
+                require_approvals,
+            )
+        )
         return output / "index.html"
 
     monkeypatch.setattr(_cli, "build_section_viewer", capture)
@@ -83,6 +95,7 @@ def test_build_command_targets_stable_histopia_directory(
             {"mouse": stain},
             tmp_path / "cohort.json",
             4,
+            True,
         )
     ]
 
@@ -247,6 +260,63 @@ def test_stain_review_command_passes_selected_mice_and_issues(
             output,
             ["4785", "4269"],
             {"4785": {"41": "Inspect upstream mask."}},
+        )
+    ]
+
+
+def test_workflow_review_command_passes_all_named_runs(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    calls: list[tuple[object, ...]] = []
+
+    def capture(
+        runs,
+        output,
+        *,
+        semantic_runs,
+        stain_runs,
+        cohort_qc,
+        workers,
+    ):
+        calls.append((runs, output, semantic_runs, stain_runs, cohort_qc, workers))
+        return output / "index.html"
+
+    monkeypatch.setattr(
+        "histopia.visualization._review_portal.build_workflow_review",
+        capture,
+    )
+    registration = tmp_path / "registration"
+    semantic = tmp_path / "semantic"
+    stain = tmp_path / "stain"
+    output = tmp_path / "review"
+
+    result = _cli.main(
+        [
+            "review",
+            str(output),
+            "--run",
+            f"mouse={registration}",
+            "--semantic-run",
+            f"mouse={semantic}",
+            "--stain-run",
+            f"mouse={stain}",
+            "--cohort-qc",
+            str(tmp_path / "cohort.json"),
+            "--workers",
+            "4",
+        ]
+    )
+
+    assert result == 0
+    assert calls == [
+        (
+            {"mouse": registration},
+            output,
+            {"mouse": semantic},
+            {"mouse": stain},
+            tmp_path / "cohort.json",
+            4,
         )
     ]
 

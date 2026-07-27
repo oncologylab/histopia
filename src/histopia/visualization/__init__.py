@@ -3,7 +3,6 @@
 from importlib import import_module
 
 _PUBLIC_IMPORTS = {
-    "MAX_DISPLAY_LINKS": ("histopia.visualization._viewer", "MAX_DISPLAY_LINKS"),
     "CohortWorkflowAudit": (
         "histopia.visualization._audit",
         "CohortWorkflowAudit",
@@ -15,6 +14,10 @@ _PUBLIC_IMPORTS = {
     "SemanticWorkflowAudit": (
         "histopia.visualization._audit",
         "SemanticWorkflowAudit",
+    ),
+    "StainWorkflowAudit": (
+        "histopia.visualization._audit",
+        "StainWorkflowAudit",
     ),
     "ViewerWorkflowAudit": (
         "histopia.visualization._audit",
@@ -54,6 +57,10 @@ _PUBLIC_IMPORTS = {
         "histopia.visualization._stain_review",
         "build_stain_review",
     ),
+    "build_workflow_review": (
+        "histopia.visualization._review_portal",
+        "build_workflow_review",
+    ),
     "create_viewer_server": (
         "histopia.visualization._server",
         "create_viewer_server",
@@ -85,25 +92,4 @@ def __getattr__(name: str):
     return value
 
 
-__all__ = [
-    "MAX_DISPLAY_LINKS",
-    "CohortWorkflowAudit",
-    "RegistrationWorkflowAudit",
-    "SemanticWorkflowAudit",
-    "ViewerWorkflowAudit",
-    "WorkflowAudit",
-    "audit_workflows",
-    "build_alignment_review",
-    "build_mask_review",
-    "build_non_rigid_review",
-    "build_registration_cohort_review",
-    "build_registration_review",
-    "build_section_order_review",
-    "build_section_viewer",
-    "build_stain_review",
-    "create_viewer_server",
-    "export_registration_qc_showcase",
-    "export_static_showcase",
-    "serve_viewer",
-    "write_workflow_audit",
-]
+__all__ = sorted(_PUBLIC_IMPORTS)

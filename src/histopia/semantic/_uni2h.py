@@ -13,8 +13,7 @@ from typing import Any
 
 import numpy as np
 
-from histopia.compute import resolve_compute_device
-from histopia.semantic._vips import configure_vips_threads
+from histopia.compute import configure_vips_threads, resolve_compute_device
 
 _CUDA_INPUT_PIPELINE = "cuda-uint8-transform-v1"
 _HOST_INPUT_PIPELINE = "host-float32-transform-v1"

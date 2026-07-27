@@ -106,8 +106,13 @@ Review the continuous maps and QC before recording approval:
 ```bash
 histopia-stain approve --run /path/to/stain-output \
   --reviewer "Reviewer name" \
+  --family h-dab \
   --review-notes "Continuous maps, residuals, and correction QC inspected."
 ```
+
+Repeat `--family` to approve several assay families, or omit it only when every
+quantified family in the result has been reviewed. Each family remains bound to
+the exact stain-result fingerprint.
 
 Summarize several validated runs:
 

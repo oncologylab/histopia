@@ -12,6 +12,7 @@ from zipfile import BadZipFile
 import numpy as np
 
 from histopia._vips_image import normalize_vips_rgb_uchar
+from histopia.compute import configure_vips_threads
 from histopia.registration._slides import SlideGeometry
 from histopia.semantic._config import SemanticAtlasConfig
 from histopia.semantic._features import (
@@ -29,7 +30,6 @@ from histopia.semantic._preflight import (
     preflight_registration,
     write_preflight,
 )
-from histopia.semantic._vips import configure_vips_threads
 
 _EXTRACTION_METHOD = "histopia-source-grid-v2"
 

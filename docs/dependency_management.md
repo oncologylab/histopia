@@ -68,11 +68,9 @@ The stain profile installs the WSI, numerical fitting, and registered-viewer
 dependencies. Quantification runs on CPU at a configured physical resolution;
 the optional UNI2-h workflow is not used to alter measured OD.
 
-The exact tested stain runtime is available either directly or as a
-constraint:
+Use the exact tested stain runtime through its constraint file:
 
 ```bash
-python -m pip install -e ".[stain-repro]"
 python -m pip install -e ".[dev,stain]" \
     -c constraints/stain-repro.txt
 ```
@@ -88,12 +86,6 @@ The `uni2h` profile adds PyTorch and the WSI stack for CPU, CUDA, or Apple MPS
 feature extraction. The selected accelerator does not replace the CPU atlas
 fit.
 
-The exact tested UNI2-h runtime is also available directly:
-
-```bash
-python -m pip install -e ".[uni2h-repro]"
-```
-
 Reproducible KPF validation environment:
 
 ```bash
@@ -101,23 +93,19 @@ python -m pip install -e ".[dev,registration,wsi]" \
     -c constraints/registration-repro.txt
 ```
 
-The `registration-repro` extra pins the same package versions directly:
-
-```bash
-python -m pip install -e ".[dev,registration-repro]"
-```
-
-On Python 3.10, the exact profiles also pin the conditional `tomli` parser
-used to read TOML configuration. CI installs the complete reproducible CPU
-registration and atlas-fitting profiles, verifies every installed version,
-runs the registration and interchange QuPath doctors, and checks dependency
-consistency.
+On Python 3.10, the constraints also pin the conditional `tomli` parser used to
+read TOML configuration. CI installs the complete reproducible CPU registration
+and atlas-fitting profiles, verifies every installed version, runs the
+registration and interchange QuPath doctors, and checks dependency consistency.
 
 Full reproducible registration, stain, UNI2-h, and QuPath workflow:
 
 ```bash
 python -m pip install -e \
-    ".[registration-repro,stain-repro,uni2h-repro,qupath]"
+    ".[registration,semantic,stain,wsi,uni2h,qupath]" \
+    -c constraints/registration-repro.txt \
+    -c constraints/semantic-repro.txt \
+    -c constraints/stain-repro.txt
 histopia-qupath --doctor --workflow full --device auto --require-api 1
 ```
 
@@ -174,17 +162,16 @@ failure can terminate Python before Histopia can report a normal exception.
 
 - Keep runtime dependencies in optional extras unless needed at import time.
 - Use lower and upper bounds for normal workflow extras.
-- Keep exact `*-repro` extras synchronized with their checked-in constraint
-  files, including conditional Python dependencies. The test suite rejects
-  version drift between those two interfaces.
+- Keep exact versions in checked-in constraint files rather than duplicating
+  them in package extras.
 - Use `constraints/registration-repro.txt` for exact validation reruns.
 - Use `constraints/semantic-repro.txt` for the tested semantic analysis and
   GPU extraction stack. Validation used Python 3.10, an NVIDIA A100, and the
   PyTorch CUDA 13.0 wheel; use the equivalent platform wheel when CUDA 13.0 is
   unavailable.
 - Use `constraints/stain-repro.txt` for quantitative brightfield validation.
-- The `uni2h-repro` extra mirrors that constraint file. The normal `uni2h`
-  extra retains bounded ranges for portable CPU, CUDA, and Apple MPS installs.
+- The normal `uni2h` extra retains bounded ranges for portable CPU, CUDA, and
+  Apple MPS installs.
 - Do not commit virtual environments, raw slides, generated masks, warped
   images, or registration output directories.
 - Record `histopia-register` config files and `registration_result.json` files
