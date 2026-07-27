@@ -234,6 +234,7 @@ padding:0 14px;color:#566573;font:inherit;cursor:pointer}
 button[aria-pressed="true"]{border-bottom-color:#117864;color:#0b5345;font-weight:600}
 #status{margin-left:auto;color:#566573;font-size:13px;white-space:nowrap}
 main,iframe{width:100%;height:100%;min-width:0;min-height:0;border:0}
+iframe{display:block}
 @media(max-width:700px){
   body{grid-template-rows:82px minmax(0,1fr)}
   header{display:grid;grid-template-rows:20px 30px 20px;gap:2px;padding:4px 8px}
@@ -307,6 +308,7 @@ select{min-width:110px;padding:5px 8px;border:1px solid #aeb6bf;background:#fff}
 #status{min-width:0;margin-left:auto;overflow:hidden;text-overflow:ellipsis;
 white-space:nowrap;text-align:right}
 main,iframe{width:100%;height:100%;min-width:0;min-height:0;border:0}
+iframe{display:block}
 @media(max-width:600px){
   body{grid-template-rows:70px minmax(0,1fr)}
   header{display:grid;grid-template-columns:minmax(0,1fr) 92px;

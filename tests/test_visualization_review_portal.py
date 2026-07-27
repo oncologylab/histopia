@@ -414,10 +414,18 @@ def test_registration_cohort_review_shows_full_mobile_approval_status(
             """() => ({
               x: document.documentElement.scrollWidth > innerWidth,
               y: document.documentElement.scrollHeight > innerHeight,
+              bodyY: document.body.scrollHeight > document.body.clientHeight,
+              mainY: document.querySelector('main').scrollHeight >
+                document.querySelector('main').clientHeight,
+              iframeDisplay: getComputedStyle(
+                document.querySelector('iframe')).display,
             })"""
         )
         assert not dimensions["x"]
         assert not dimensions["y"]
+        assert not dimensions["bodyY"]
+        assert not dimensions["mainY"]
+        assert dimensions["iframeDisplay"] == "block"
         browser.close()
     assert errors == []
 
@@ -520,9 +528,17 @@ def test_registration_review_opens_directly_without_server(tmp_path: Path) -> No
             """() => ({
               x: document.documentElement.scrollWidth > innerWidth,
               y: document.documentElement.scrollHeight > innerHeight,
+              bodyY: document.body.scrollHeight > document.body.clientHeight,
+              mainY: document.querySelector('main').scrollHeight >
+                document.querySelector('main').clientHeight,
+              iframeDisplay: getComputedStyle(
+                document.querySelector('iframe')).display,
             })"""
         )
         assert not dimensions["x"]
         assert not dimensions["y"]
+        assert not dimensions["bodyY"]
+        assert not dimensions["mainY"]
+        assert dimensions["iframeDisplay"] == "block"
         browser.close()
     assert errors == []
