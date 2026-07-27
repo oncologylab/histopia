@@ -32,6 +32,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Image Processing",
 ]
 dependencies = [
+    "packaging>=24,<27",
     "tomli>=1.1; python_version < '3.11'",
 ]
 
@@ -49,6 +50,7 @@ wsi = [
 registration-repro = [
     "numpy==2.2.6",
     "opencv-contrib-python-headless==5.0.0.93",
+    "packaging==26.2",
     "pillow==12.3.0",
     "pyvips==2.2.3",
     "scipy==1.15.3",
@@ -81,6 +83,7 @@ uni2h = [
 uni2h-repro = [
     "huggingface-hub==0.36.2",
     "numpy==2.2.6",
+    "packaging==26.2",
     "pillow==12.3.0",
     "pyvips==2.2.3",
     "scikit-learn==1.7.2",
@@ -94,6 +97,7 @@ uni2h-repro = [
 ]
 semantic-repro = [
     "numpy==2.2.6",
+    "packaging==26.2",
     "pillow==12.3.0",
     "scikit-learn==1.7.2",
     "scipy==1.15.3",
@@ -106,7 +110,6 @@ browser-test = [
 ]
 dev = [
     "build>=1.2",
-    "packaging>=24",
     "pytest>=8",
     "ruff>=0.6",
     "twine>=5",

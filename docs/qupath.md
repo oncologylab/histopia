@@ -228,6 +228,11 @@ environment independently with:
 histopia-qupath --doctor --workflow full --device auto --require-api 1
 ```
 
+The doctor imports only the selected workflow's dependencies, checks each
+installed version against Histopia's supported range, probes pyvips safely out
+of process, and validates the requested compute device before a QuPath job can
+start.
+
 Source code and release history are maintained separately at
 [`oncologylab/qupath-extension-histopia`](https://github.com/oncologylab/qupath-extension-histopia).
 This follows QuPath's recommended extension layout and keeps its Java/Gradle

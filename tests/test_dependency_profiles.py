@@ -8,6 +8,8 @@ import pytest
 from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
 
+from histopia.qupath._doctor import _MODULE_REQUIREMENTS
+
 try:
     import tomllib
 except ModuleNotFoundError:
@@ -62,6 +64,7 @@ def test_reproducible_extras_match_constraint_versions() -> None:
         package: semantic[package]
         for package in (
             "numpy",
+            "packaging",
             "pillow",
             "scikit-learn",
             "scipy",
@@ -69,6 +72,29 @@ def test_reproducible_extras_match_constraint_versions() -> None:
             "tomli",
         )
     }
+
+
+def test_qupath_doctor_ranges_match_normal_workflow_extras() -> None:
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
+    extras = project["optional-dependencies"]
+    expected: dict[str, str] = {}
+    for extra in ("registration", "wsi", "uni2h", "qupath"):
+        for requirement_text in extras[extra]:
+            requirement = Requirement(requirement_text)
+            name = canonicalize_name(requirement.name)
+            specifier = str(requirement.specifier)
+            if name in expected:
+                assert expected[name] == specifier
+            expected[name] = specifier
+
+    observed = {
+        canonicalize_name(Requirement(requirement_text).name): str(
+            Requirement(requirement_text).specifier
+        )
+        for _, requirement_text in _MODULE_REQUIREMENTS
+    }
+
+    assert observed == expected
 
 
 @pytest.mark.skipif(

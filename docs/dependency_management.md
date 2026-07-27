@@ -100,9 +100,10 @@ python -m pip install -e ".[registration-repro,uni2h-repro,qupath]"
 histopia-qupath --doctor --workflow full --device auto --require-api 1
 ```
 
-The QuPath doctor checks only the selected workflow's imports. It loads
-libvips before the accelerator stack, reports exact dependency and compute
-versions, and rejects an extension that requires a newer workflow API. Use
+The QuPath doctor checks only the selected workflow's imports, validates their
+installed versions against Histopia's supported ranges, and loads libvips
+before the accelerator stack. It reports exact dependency and compute versions
+and rejects an extension that requires a newer workflow API. Use
 `--workflow registration`, `semantic`, or `interchange` to validate a smaller
 installation.
 

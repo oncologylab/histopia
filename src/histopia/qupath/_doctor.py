@@ -11,6 +11,9 @@ from signal import Signals
 from subprocess import CompletedProcess, run
 from typing import Any, Final
 
+from packaging.requirements import Requirement
+from packaging.version import InvalidVersion, Version
+
 from histopia import __version__
 
 QUPATH_WORKFLOW_API_VERSION: Final[int] = 1
@@ -21,20 +24,20 @@ QUPATH_WORKFLOWS: Final[tuple[str, ...]] = (
     "full",
 )
 
-_MODULE_DISTRIBUTIONS: Final[tuple[tuple[str, str], ...]] = (
-    ("numpy", "numpy"),
-    ("cv2", "opencv-contrib-python-headless"),
-    ("scipy", "scipy"),
-    ("PIL", "Pillow"),
+_MODULE_REQUIREMENTS: Final[tuple[tuple[str, str], ...]] = (
+    ("numpy", "numpy>=1.26,<3"),
+    ("cv2", "opencv-contrib-python-headless>=4.8,<6"),
+    ("scipy", "scipy>=1.11,<2"),
+    ("PIL", "Pillow>=10,<13"),
     # Load libvips before accelerator frameworks to avoid native-library conflicts.
-    ("pyvips", "pyvips"),
-    ("tifffile", "tifffile"),
-    ("sklearn", "scikit-learn"),
-    ("threadpoolctl", "threadpoolctl"),
-    ("torch", "torch"),
-    ("torchvision", "torchvision"),
-    ("timm", "timm"),
-    ("huggingface_hub", "huggingface-hub"),
+    ("pyvips", "pyvips>=2.2,<3"),
+    ("tifffile", "tifffile>=2024.8"),
+    ("sklearn", "scikit-learn>=1.5,<2"),
+    ("threadpoolctl", "threadpoolctl>=3.1,<4"),
+    ("torch", "torch>=2.8,<3"),
+    ("torchvision", "torchvision>=0.23,<1"),
+    ("timm", "timm>=1.0.19,<2"),
+    ("huggingface_hub", "huggingface-hub>=0.34,<1"),
 )
 _WORKFLOW_MODULES: Final[dict[str, frozenset[str]]] = {
     "registration": frozenset(("numpy", "cv2", "scipy", "PIL", "pyvips", "tifffile")),
@@ -98,9 +101,11 @@ def inspect_qupath_environment(
             _probe_native_pyvips()
     imported: dict[str, Any] = {}
     dependencies: dict[str, dict[str, str]] = {}
-    for module_name, distribution_name in _MODULE_DISTRIBUTIONS:
+    for module_name, requirement_text in _MODULE_REQUIREMENTS:
         if module_name not in required_modules:
             continue
+        requirement = Requirement(requirement_text)
+        distribution_name = requirement.name
         try:
             module = importer(module_name)
         except Exception as error:
@@ -112,11 +117,32 @@ def inspect_qupath_environment(
                 "environment."
             ) from error
         imported[module_name] = module
+        installed_version = _dependency_version(
+            module,
+            distribution_name,
+            version_resolver=version_resolver,
+        )
+        try:
+            supported = Version(installed_version) in requirement.specifier
+        except InvalidVersion as error:
+            raise RuntimeError(
+                f"Histopia {normalized_workflow} preflight could not validate "
+                f"{distribution_name} version {installed_version!r}. Install or "
+                f"repair {_INSTALL_PROFILES[normalized_workflow]} in the selected "
+                "Python environment."
+            ) from error
+        if not supported:
+            raise RuntimeError(
+                f"Histopia {normalized_workflow} preflight found unsupported "
+                f"{distribution_name} {installed_version}; required "
+                f"{distribution_name}{requirement.specifier}. Install or repair "
+                f"{_INSTALL_PROFILES[normalized_workflow]} in the selected Python "
+                "environment."
+            )
         dependencies[module_name] = {
             "distribution": distribution_name,
-            "version": _dependency_version(
-                module, distribution_name, version_resolver=version_resolver
-            ),
+            "version": installed_version,
+            "requirement": f"{distribution_name}{requirement.specifier}",
         }
 
     compute = None

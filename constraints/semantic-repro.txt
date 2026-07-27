@@ -1,6 +1,7 @@
 # Reproducible dependency set for semantic analysis and UNI2-h extraction.
 # Tested on Python 3.10 with an NVIDIA A100 and the PyTorch CUDA 13.0 wheel.
 numpy==2.2.6
+packaging==26.2
 pillow==12.3.0
 scikit-learn==1.7.2
 scipy==1.15.3

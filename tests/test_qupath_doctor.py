@@ -39,6 +39,22 @@ def _fake_modules() -> dict[str, object]:
     return modules
 
 
+_SUPPORTED_VERSIONS = {
+    "numpy": "2.2.6",
+    "opencv-contrib-python-headless": "5.0.0.93",
+    "scipy": "1.15.3",
+    "Pillow": "12.3.0",
+    "pyvips": "2.2.3",
+    "tifffile": "2025.5.10",
+    "scikit-learn": "1.7.2",
+    "threadpoolctl": "3.6.0",
+    "torch": "2.13.0",
+    "torchvision": "0.28.0",
+    "timm": "1.0.28",
+    "huggingface-hub": "0.36.2",
+}
+
+
 def test_registration_doctor_checks_only_registration_dependencies_in_safe_order():
     modules = _fake_modules()
     imported: list[str] = []
@@ -50,13 +66,18 @@ def test_registration_doctor_checks_only_registration_dependencies_in_safe_order
     report = inspect_qupath_environment(
         "registration",
         importer=importer,
-        version_resolver=lambda name: f"{name}-version",
+        version_resolver=_SUPPORTED_VERSIONS.__getitem__,
     )
 
     assert imported == ["numpy", "cv2", "scipy", "PIL", "pyvips", "tifffile"]
     assert report["workflow"] == "registration"
     assert report["compute"] is None
     assert report["libvips_version"] == "8.16.1"
+    assert report["dependencies"]["pyvips"] == {
+        "distribution": "pyvips",
+        "version": "2.2.3",
+        "requirement": "pyvips<3,>=2.2",
+    }
 
 
 def test_full_doctor_loads_libvips_before_torch_and_reports_compute():
@@ -77,7 +98,7 @@ def test_full_doctor_loads_libvips_before_torch_and_reports_compute():
         device="cuda:2",
         importer=importer,
         compute_inspector=inspect_compute,
-        version_resolver=lambda name: "1",
+        version_resolver=_SUPPORTED_VERSIONS.__getitem__,
     )
 
     assert imported.index("pyvips") < imported.index("torch")
@@ -96,7 +117,32 @@ def test_doctor_reports_missing_dependency_with_install_profile():
         inspect_qupath_environment(
             "registration",
             importer=importer,
-            version_resolver=lambda name: "1",
+            version_resolver=_SUPPORTED_VERSIONS.__getitem__,
+        )
+
+
+def test_doctor_rejects_installed_dependency_outside_supported_range():
+    versions = {**_SUPPORTED_VERSIONS, "pyvips": "3.1.1"}
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"unsupported pyvips 3\.1\.1.*pyvips<3,>=2\.2",
+    ):
+        inspect_qupath_environment(
+            "registration",
+            importer=_fake_modules().__getitem__,
+            version_resolver=versions.__getitem__,
+        )
+
+
+def test_doctor_rejects_unparseable_dependency_version():
+    versions = {**_SUPPORTED_VERSIONS, "pyvips": "unknown"}
+
+    with pytest.raises(RuntimeError, match=r"could not validate pyvips version"):
+        inspect_qupath_environment(
+            "registration",
+            importer=_fake_modules().__getitem__,
+            version_resolver=versions.__getitem__,
         )
 
 
