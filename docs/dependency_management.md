@@ -57,6 +57,17 @@ python -m pip install -e ".[semantic]"
 This profile fits the global atlas on CPU and does not install PyTorch. Use
 `fit_threads` to bound its independent fit tasks and native BLAS/OpenMP pools.
 
+Semantic topology reconstruction from an approved atlas:
+
+```bash
+python -m pip install -e ".[topology]" \
+    -c constraints/topology-repro.txt
+histopia-topology doctor
+```
+
+This CPU profile operates on compact selected-K fields and does not install
+PyTorch or WSI readers.
+
 Quantitative brightfield stain profiling:
 
 ```bash
@@ -98,13 +109,14 @@ read TOML configuration. CI installs the complete reproducible CPU registration
 and atlas-fitting profiles, verifies every installed version, runs the
 registration and interchange QuPath doctors, and checks dependency consistency.
 
-Full reproducible registration, stain, UNI2-h, and QuPath workflow:
+Full reproducible registration, topology, stain, UNI2-h, and QuPath workflow:
 
 ```bash
 python -m pip install -e \
-    ".[registration,semantic,stain,wsi,uni2h,qupath]" \
+    ".[registration,semantic,topology,stain,wsi,uni2h,qupath]" \
     -c constraints/registration-repro.txt \
     -c constraints/semantic-repro.txt \
+    -c constraints/topology-repro.txt \
     -c constraints/stain-repro.txt
 histopia-qupath --doctor --workflow full --device auto --require-api 1
 ```
@@ -113,8 +125,8 @@ The QuPath doctor checks only the selected workflow's imports, validates their
 installed versions against Histopia's supported ranges, and loads libvips
 before the accelerator stack. It reports exact dependency and compute versions
 and rejects an extension that requires a newer workflow API. Use
-`--workflow registration`, `semantic`, or `interchange` to validate a smaller
-installation.
+`--workflow registration`, `semantic`, `topology`, or `interchange` to validate
+a smaller installation.
 
 ## System Dependencies
 
@@ -170,6 +182,8 @@ failure can terminate Python before Histopia can report a normal exception.
   PyTorch CUDA 13.0 wheel; use the equivalent platform wheel when CUDA 13.0 is
   unavailable.
 - Use `constraints/stain-repro.txt` for quantitative brightfield validation.
+- Use `constraints/topology-repro.txt` for selected-K 3D reconstruction and
+  surface extraction.
 - The normal `uni2h` extra retains bounded ranges for portable CPU, CUDA, and
   Apple MPS installs.
 - Do not commit virtual environments, raw slides, generated masks, warped

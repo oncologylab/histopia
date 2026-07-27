@@ -1,0 +1,14 @@
+# Reproducible dependency set for semantic topology validation.
+#
+# Tested locally on Python 3.10. The topology stage is CPU-only and reuses
+# previously extracted semantic features.
+#
+#   python -m pip install -e ".[dev,topology]" \
+#       -c constraints/topology-repro.txt
+#
+numpy==2.2.6
+packaging==26.2
+scikit-image==0.25.2
+scikit-learn==1.7.2
+scipy==1.15.3
+tomli==2.4.1; python_version < "3.11"

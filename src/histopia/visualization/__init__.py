@@ -69,6 +69,10 @@ _PUBLIC_IMPORTS = {
         "histopia.visualization._stain_review",
         "build_stain_review",
     ),
+    "build_topology_review": (
+        "histopia.visualization._topology_review",
+        "build_topology_review",
+    ),
     "build_workflow_review": (
         "histopia.visualization._review_portal",
         "build_workflow_review",

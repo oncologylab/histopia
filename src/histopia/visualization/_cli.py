@@ -180,6 +180,12 @@ def _main(argv: list[str] | None = None) -> int:
         action="append",
         default=[],
     )
+    workflow_review.add_argument(
+        "--topology-run",
+        type=_named_path,
+        action="append",
+        default=[],
+    )
     workflow_review.add_argument("--cohort-qc", type=Path)
     workflow_review.add_argument("--workers", type=int, default=1)
     stain_review = commands.add_parser(
@@ -201,6 +207,17 @@ def _main(argv: list[str] | None = None) -> int:
         "--issues",
         type=Path,
         help="Optional JSON notes keyed by mouse then slide ID or order.",
+    )
+    topology_review = commands.add_parser(
+        "topology-review",
+        help="Build a fixed-viewport semantic topology surface reviewer.",
+    )
+    topology_review.add_argument("output", type=Path)
+    topology_review.add_argument(
+        "--run",
+        type=_named_path,
+        action="append",
+        required=True,
     )
     order_review = commands.add_parser(
         "order-review",
@@ -327,8 +344,18 @@ def _main(argv: list[str] | None = None) -> int:
             args.output,
             semantic_runs=_unique_named_paths(args.semantic_run, "semantic"),
             stain_runs=_unique_named_paths(args.stain_run, "stain"),
+            topology_runs=_unique_named_paths(args.topology_run, "topology"),
             cohort_qc=args.cohort_qc,
             workers=args.workers,
+        )
+        print(index)
+        return 0
+    if args.command == "topology-review":
+        from histopia.visualization._topology_review import build_topology_review
+
+        index = build_topology_review(
+            _unique_named_paths(args.run, "topology"),
+            args.output,
         )
         print(index)
         return 0

@@ -205,6 +205,7 @@ def build_workflow_review(
     *,
     semantic_runs: dict[str, Path | str] | None = None,
     stain_runs: dict[str, Path | str] | None = None,
+    topology_runs: dict[str, Path | str] | None = None,
     cohort_qc: Path | str | None = None,
     workers: int = 1,
 ) -> Path:
@@ -212,7 +213,10 @@ def build_workflow_review(
 
     semantic_runs = semantic_runs or {}
     stain_runs = stain_runs or {}
-    unknown = (set(semantic_runs) | set(stain_runs)) - set(registration_runs)
+    topology_runs = topology_runs or {}
+    unknown = (
+        set(semantic_runs) | set(stain_runs) | set(topology_runs)
+    ) - set(registration_runs)
     if unknown:
         raise ValueError(
             "review inputs have no matching registration: " + ", ".join(sorted(unknown))
@@ -271,6 +275,21 @@ def build_workflow_review(
                     "id": "stain",
                     "label": "Stain",
                     "href": stain_index.relative_to(output_dir).as_posix(),
+                }
+            )
+        topology_mice = sorted(set(completed) & set(topology_runs))
+        if topology_mice:
+            from histopia.visualization._topology_review import build_topology_review
+
+            topology_index = build_topology_review(
+                {name: topology_runs[name] for name in topology_mice},
+                output_dir / "topology",
+            )
+            tabs.append(
+                {
+                    "id": "topology",
+                    "label": "Topology",
+                    "href": topology_index.relative_to(output_dir).as_posix(),
                 }
             )
     decisions_index = _write_decisions_page(output_dir / "decisions")
@@ -654,7 +673,8 @@ const notes=document.querySelector("#notes");
 const message=document.querySelector("#message");
 const approve=document.querySelector("#approve");
 const labels={mask:"Tissue masks",order:"Section order",
-  registration:"Registered stack",semantic:"Semantic atlas",stain:"Stain"};
+  registration:"Registered stack",semantic:"Semantic atlas",
+  topology:"Semantic topology",stain:"Stain"};
 let registry=null;
 let selectedStage=null;
 keyInput.value=sessionStorage.getItem("histopiaReviewKey")||"";

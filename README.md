@@ -28,6 +28,7 @@ Install only the workflow dependencies you need:
 ```bash
 pip install "histopia[registration,wsi] @ git+https://github.com/oncologylab/histopia.git@main"
 pip install "histopia[semantic] @ git+https://github.com/oncologylab/histopia.git@main"
+pip install "histopia[topology] @ git+https://github.com/oncologylab/histopia.git@main"
 pip install "histopia[stain] @ git+https://github.com/oncologylab/histopia.git@main"
 pip install "histopia[uni2h] @ git+https://github.com/oncologylab/histopia.git@main"
 pip install "histopia[qupath] @ git+https://github.com/oncologylab/histopia.git@main"
@@ -42,6 +43,9 @@ Exact validation environments use the checked-in constraint files described in
   order, hybrid serial/reference affine alignment, QC, and resumable WSI export.
 - **Semantic atlas:** globally fitted UNI2-h morphology regions, guarded slide
   correction, automatic K evaluation, and cross-section topology.
+- **Semantic topology:** selected-K 3D surfaces, held-out flow validation,
+  manifest-aware z spacing, conservative missing-section inference, and
+  uncertainty-aware virtual planes.
 - **Stain profiling:** source-space relative optical density for H-DAB,
   Sirius Red, PAS, and Alcian Blue with guarded background correction.
 - **Visualization:** interactive 3D histology, semantic, and stain stacks with
@@ -54,6 +58,7 @@ Exact validation environments use the checked-in constraint files described in
 
 Start with [registration](docs/registration.md),
 [semantic atlas](docs/semantic_atlas.md),
+[semantic topology](docs/topology.md),
 [stain quantification](docs/stain_quantification.md), or
 [QuPath integration](docs/qupath.md). Installation profiles and reproducible
 constraints are documented in

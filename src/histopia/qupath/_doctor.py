@@ -20,6 +20,7 @@ QUPATH_WORKFLOW_API_VERSION: Final[int] = 1
 QUPATH_WORKFLOWS: Final[tuple[str, ...]] = (
     "registration",
     "semantic",
+    "topology",
     "interchange",
     "full",
 )
@@ -33,6 +34,7 @@ _MODULE_REQUIREMENTS: Final[tuple[tuple[str, str], ...]] = (
     ("pyvips", "pyvips>=2.2,<3"),
     ("tifffile", "tifffile>=2024.8"),
     ("sklearn", "scikit-learn>=1.5,<2"),
+    ("skimage", "scikit-image>=0.24,<1"),
     ("threadpoolctl", "threadpoolctl>=3.1,<4"),
     ("torch", "torch>=2.8,<3"),
     ("torchvision", "torchvision>=0.23,<1"),
@@ -56,14 +58,16 @@ _WORKFLOW_MODULES: Final[dict[str, frozenset[str]]] = {
             "huggingface_hub",
         )
     ),
+    "topology": frozenset(("numpy", "scipy", "sklearn", "skimage")),
     "interchange": frozenset(("numpy",)),
 }
 _WORKFLOW_MODULES["full"] = frozenset().union(*_WORKFLOW_MODULES.values())
 _INSTALL_PROFILES: Final[dict[str, str]] = {
     "registration": "histopia[registration,wsi]",
     "semantic": "histopia[uni2h]",
+    "topology": "histopia[topology]",
     "interchange": "histopia[qupath]",
-    "full": "histopia[registration,wsi,uni2h,qupath]",
+    "full": "histopia[registration,wsi,uni2h,topology,qupath]",
 }
 
 
@@ -167,6 +171,7 @@ def inspect_qupath_environment(
         "capabilities": {
             "registration_api_version": 1,
             "semantic_atlas_api_version": 1,
+            "topology_api_version": 1,
             "qupath_interchange_schema_version": 4,
             "native_vips_thread_control_version": 1,
         },

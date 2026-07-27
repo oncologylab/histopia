@@ -65,7 +65,7 @@ def test_qupath_doctor_ranges_match_normal_workflow_extras() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
     extras = project["optional-dependencies"]
     expected: dict[str, str] = {}
-    for extra in ("registration", "wsi", "uni2h", "qupath"):
+    for extra in ("registration", "wsi", "uni2h", "topology", "qupath"):
         for requirement_text in extras[extra]:
             requirement = Requirement(requirement_text)
             name = canonicalize_name(requirement.name)
@@ -91,7 +91,7 @@ def test_qupath_doctor_ranges_match_normal_workflow_extras() -> None:
 def test_installed_cpu_profiles_match_exact_constraints() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
     installed_requirements = list(project["dependencies"])
-    for extra in ("registration", "semantic", "stain", "wsi", "qupath"):
+    for extra in ("registration", "semantic", "topology", "stain", "wsi", "qupath"):
         installed_requirements.extend(project["optional-dependencies"][extra])
     installed_names = {
         canonicalize_name(requirement.name)

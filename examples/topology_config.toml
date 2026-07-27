@@ -1,0 +1,13 @@
+registration_run = "/path/to/registration-run"
+semantic_run = "/path/to/semantic-run"
+output_dir = "/path/to/topology-run"
+
+# Required physical metadata. Replace with the sectioning protocol value.
+section_thickness_um = 5.0
+
+# Optional exact section positions:
+# z_manifest = "/path/to/z-manifest.json"
+
+calibration_max_span = 4
+max_inferred_missing = 3
+require_approvals = true

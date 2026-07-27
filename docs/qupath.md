@@ -10,7 +10,7 @@ not enter QuPath's JVM.
 ```bash
 # Full registration, UNI2-h semantic, WSI, and interchange workflows:
 python -m pip install \
-  "histopia[registration,wsi,uni2h,qupath] @ git+https://github.com/oncologylab/histopia.git@main"
+  "histopia[registration,wsi,uni2h,topology,qupath] @ git+https://github.com/oncologylab/histopia.git@main"
 
 # Lightweight interchange export only:
 python -m pip install \
@@ -205,6 +205,9 @@ stored output checksums.
 
 The **Run analysis** tab retains advanced config-file execution. The **Export
 and import** tab supports:
+
+- launching registration, semantic-atlas, and semantic-topology JSON or TOML
+  configs through the selected Python environment
 
 - loading all available K values from a semantic result, defaulting to the
   atlas-selected K

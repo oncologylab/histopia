@@ -7,10 +7,11 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from histopia.topology._feedback import TopologyFeedbackStore
 from histopia.visualization._feedback import RegistrationFeedbackStore
 
 _COHORT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
-_STAGES = ("mask", "order", "registration", "semantic", "stain")
+_STAGES = ("mask", "order", "registration", "semantic", "topology", "stain")
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,6 +20,7 @@ class ReviewRuns:
 
     registration: Path
     semantic: Path | None = None
+    topology: Path | None = None
     stain: Path | None = None
 
 
@@ -30,11 +32,13 @@ class ReviewDecisionService:
         cohorts: dict[str, ReviewRuns],
         *,
         feedback_store: RegistrationFeedbackStore | None = None,
+        topology_feedback_store: TopologyFeedbackStore | None = None,
     ) -> None:
         if not cohorts:
             raise ValueError("review registry must contain at least one cohort")
         self._cohorts = dict(sorted(cohorts.items()))
         self._feedback_store = feedback_store
+        self._topology_feedback_store = topology_feedback_store
 
     @classmethod
     def from_file(cls, path: Path | str) -> ReviewDecisionService:
@@ -68,6 +72,12 @@ class ReviewDecisionService:
                     config_path.parent,
                     required=False,
                 ),
+                topology=_configured_path(
+                    raw,
+                    "topology",
+                    config_path.parent,
+                    required=False,
+                ),
                 stain=_configured_path(
                     raw,
                     "stain",
@@ -92,6 +102,11 @@ class ReviewDecisionService:
             cohorts,
             feedback_store=(
                 RegistrationFeedbackStore(feedback_path)
+                if feedback_path is not None
+                else None
+            ),
+            topology_feedback_store=(
+                TopologyFeedbackStore(feedback_path)
                 if feedback_path is not None
                 else None
             ),
@@ -153,6 +168,21 @@ class ReviewDecisionService:
                 reviewer=reviewer,
                 notes=notes,
             )
+        elif stage == "topology":
+            if runs.topology is None:
+                raise ValueError(f"cohort {cohort} has no topology review")
+            if self._topology_feedback_store is not None:
+                self._topology_feedback_store.require_accepted(
+                    cohort=cohort,
+                    topology_run=runs.topology,
+                )
+            from histopia.topology import approve_topology_result
+
+            approve_topology_result(
+                runs.topology,
+                reviewer=reviewer,
+                notes=notes,
+            )
         else:
             if runs.stain is None:
                 raise ValueError(f"cohort {cohort} has no stain review")
@@ -176,8 +206,15 @@ class ReviewDecisionService:
     def feedback(self, cohort: str, stage: str) -> dict[str, object]:
         """Return current per-slide registration feedback."""
 
-        store = self._required_feedback_store()
         runs = self._required_cohort(cohort)
+        if stage == "topology":
+            if runs.topology is None:
+                raise ValueError(f"cohort {cohort} has no topology review")
+            return self._required_topology_feedback_store().review(
+                cohort=cohort,
+                topology_run=runs.topology,
+            )
+        store = self._required_feedback_store()
         return store.review(
             cohort=cohort,
             stage=stage,
@@ -187,15 +224,34 @@ class ReviewDecisionService:
     def save_feedback(self, request: dict[str, object]) -> dict[str, object]:
         """Persist one fingerprint-bound per-slide review record."""
 
-        store = self._required_feedback_store()
         cohort = _required_text(request, "cohort")
         runs = self._required_cohort(cohort)
+        if request.get("stage") == "topology":
+            if runs.topology is None:
+                raise ValueError(f"cohort {cohort} has no topology review")
+            return self._required_topology_feedback_store().save(
+                request,
+                topology_run=runs.topology,
+            )
+        store = self._required_feedback_store()
         return store.save(request, registration_run=runs.registration)
 
     def feedback_summary(self) -> dict[str, object]:
         """Return aggregate issue frequencies for method improvement."""
 
-        return self._required_feedback_store().summary()
+        return {
+            "schema_version": 1,
+            "registration": (
+                self._feedback_store.summary()
+                if self._feedback_store is not None
+                else None
+            ),
+            "topology": (
+                self._topology_feedback_store.summary()
+                if self._topology_feedback_store is not None
+                else None
+            ),
+        }
 
     def _required_cohort(self, cohort: str) -> ReviewRuns:
         try:
@@ -207,6 +263,11 @@ class ReviewDecisionService:
         if self._feedback_store is None:
             raise ValueError("registration feedback storage is not configured")
         return self._feedback_store
+
+    def _required_topology_feedback_store(self) -> TopologyFeedbackStore:
+        if self._topology_feedback_store is None:
+            raise ValueError("topology feedback storage is not configured")
+        return self._topology_feedback_store
 
     def _require_registration_feedback(
         self,
@@ -230,6 +291,7 @@ class ReviewDecisionService:
                 "order": _order_status(runs.registration),
                 "registration": _registration_status(runs.registration),
                 "semantic": _semantic_status(runs.semantic),
+                "topology": _topology_status(runs.topology),
                 "stain": _stain_status(runs.stain),
             },
         }
@@ -374,6 +436,21 @@ def _stain_status(run: Path | None) -> dict[str, object]:
             {"id": family, "approved": family in approved} for family in family_names
         ],
     }
+
+
+def _topology_status(run: Path | None) -> dict[str, object]:
+    if run is None:
+        return {"available": False, "approved": False}
+    try:
+        from histopia.topology import validate_topology_approval
+
+        validate_topology_approval(run)
+    except (FileNotFoundError, OSError, TypeError, ValueError):
+        return {
+            "available": (run / "topology_result.json").is_file(),
+            "approved": False,
+        }
+    return {"available": True, "approved": True}
 
 
 def _json_object(path: Path) -> dict[str, object]:

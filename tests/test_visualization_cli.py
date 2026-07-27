@@ -303,10 +303,21 @@ def test_workflow_review_command_passes_all_named_runs(
         *,
         semantic_runs,
         stain_runs,
+        topology_runs,
         cohort_qc,
         workers,
     ):
-        calls.append((runs, output, semantic_runs, stain_runs, cohort_qc, workers))
+        calls.append(
+            (
+                runs,
+                output,
+                semantic_runs,
+                stain_runs,
+                topology_runs,
+                cohort_qc,
+                workers,
+            )
+        )
         return output / "index.html"
 
     monkeypatch.setattr(
@@ -342,6 +353,7 @@ def test_workflow_review_command_passes_all_named_runs(
             output,
             {"mouse": semantic},
             {"mouse": stain},
+            {},
             tmp_path / "cohort.json",
             4,
         )
