@@ -133,7 +133,7 @@ def _match_section_sequence(
     configs: Sequence[CorrespondenceConfig],
     workers: int = 1,
 ) -> tuple[AdjacentSectionCorrespondence, ...]:
-    """Match every adjacent pair while reusing each section descriptor."""
+    """Match every adjacent pair with one bounded, reusable descriptor per section."""
 
     section_count = len(grid_rc)
     if section_count < 2:
@@ -162,25 +162,27 @@ def _match_section_sequence(
         for config in configs[1:]
     ):
         raise ValueError("section sequence context radii must match")
-    descriptors = tuple(
-        (
-            _context_descriptors(
-                section_grid,
-                section_features,
-                configs[0].context_radii_grid,
-            )
-            if len(section_grid)
-            else None
-        )
-        for section_grid, _, section_features in prepared
-    )
 
-    def match_pair(index: int) -> AdjacentSectionCorrespondence:
+    def prepare_descriptor(index: int) -> np.ndarray | None:
+        section_grid, _, section_features = prepared[index]
+        if not len(section_grid):
+            return None
+        return _context_descriptors(
+            section_grid,
+            section_features,
+            configs[0].context_radii_grid,
+        )
+
+    def match_pair(
+        index: int,
+        source_descriptor: np.ndarray | None,
+        target_descriptor: np.ndarray | None,
+    ) -> AdjacentSectionCorrespondence:
         return _match_prepared_adjacent_sections(
             prepared[index][1],
-            descriptors[index],
+            source_descriptor,
             prepared[index + 1][1],
-            descriptors[index + 1],
+            target_descriptor,
             source_section=index,
             target_section=index + 1,
             config=configs[index],
@@ -188,12 +190,38 @@ def _match_section_sequence(
 
     pair_count = section_count - 1
     if workers == 1 or pair_count == 1:
-        return tuple(match_pair(index) for index in range(pair_count))
+        matches: list[AdjacentSectionCorrespondence] = []
+        source_descriptor = prepare_descriptor(0)
+        for index in range(pair_count):
+            target_descriptor = prepare_descriptor(index + 1)
+            matches.append(match_pair(index, source_descriptor, target_descriptor))
+            source_descriptor = target_descriptor
+        return tuple(matches)
+
+    worker_count = min(workers, pair_count)
+    matches = []
     with ThreadPoolExecutor(
-        max_workers=min(workers, pair_count),
+        max_workers=worker_count,
         thread_name_prefix="histopia-correspondence",
     ) as executor:
-        return tuple(executor.map(match_pair, range(pair_count)))
+        source_descriptor = prepare_descriptor(0)
+        for start in range(0, pair_count, worker_count):
+            stop = min(start + worker_count, pair_count)
+            target_descriptors = tuple(
+                executor.map(prepare_descriptor, range(start + 1, stop + 1))
+            )
+            descriptors = (source_descriptor, *target_descriptors)
+            matches.extend(
+                executor.map(
+                    match_pair,
+                    range(start, stop),
+                    descriptors[:-1],
+                    descriptors[1:],
+                )
+            )
+            source_descriptor = descriptors[-1]
+            del descriptors, target_descriptors
+    return tuple(matches)
 
 
 def _match_prepared_adjacent_sections(

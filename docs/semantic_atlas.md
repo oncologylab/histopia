@@ -141,20 +141,25 @@ libvips' adaptive default.
 correction, global clustering, and K selection cap their native BLAS and OpenMP
 pools at this value. Adjacent-section correspondence uses one pair worker when
 the budget is one and at most two pair workers otherwise; each matcher receives
-one native math thread to avoid nested oversubscription. Independent topology
-regularization jobs use at most `fit_threads` workers and are additionally
-capped at eight to bound simultaneous probability matrices. It defaults to
-four and is recorded in sealed result runtime provenance. Keeping this value
-explicit avoids machine-dependent oversubscription and makes fitting
-performance reproducible without changing feature artifacts.
+one native math thread to avoid nested oversubscription. Context descriptors
+are prepared in consecutive windows and retained for at most the active pair
+workers plus their shared boundary section. Each section descriptor is still
+computed exactly once, but a large cohort no longer materializes descriptors
+for every section simultaneously. Independent topology regularization jobs use
+at most `fit_threads` workers and are additionally capped at eight to bound
+simultaneous probability matrices. It defaults to four and is recorded in
+sealed result runtime provenance. Keeping this value explicit avoids
+machine-dependent oversubscription and makes fitting performance reproducible
+without changing feature artifacts.
 
 The observational `semantic_performance.json` report records `cache_hit`, the
 validation time, and why a candidate result was not reusable; an exact hit
 reports zero atlas-fit and artifact-write time. A computed fit also records
-`correspondence_workers`, `regularization_workers`, and an
-`atlas_fit_phase_seconds` object covering feature preparation, PCA fit and
-projection, initial and corrected correspondence and graph construction,
-guarded batch correction, K selection, and label regularization.
+`correspondence_workers`, `correspondence_descriptor_window_sections`,
+`regularization_workers`, and an `atlas_fit_phase_seconds` object covering
+feature preparation, PCA fit and projection, initial and corrected
+correspondence and graph construction, guarded batch correction, K selection,
+and label regularization.
 
 On a validated 23-section atlas with 76,499 patches, one, four, eight, 16, and
 32 fit threads took 95.7, 71.7, 73.3, 73.6, and 106.2 seconds, respectively.
@@ -187,6 +192,14 @@ On a larger 15-section atlas with 333,739 patches, the same policy reduced
 atlas fitting from 242.35 to 181.84 seconds and the complete workflow from
 257.84 to 196.88 seconds. All 182 non-observational output files retained the
 same aggregate digest and semantic fingerprint.
+
+A controlled replay of that 333,739-patch atlas compared all-section
+descriptor retention with the bounded three-section window used by two pair
+workers. Peak RSS fell from 7,769,896 KiB to 6,656,900 KiB (14.3 percent).
+Wall time remained effectively flat at 173.29 versus 174.17 seconds, and all
+198 non-observational files were byte-identical. The smaller 76,499-patch
+atlas remained at 2.30 GiB peak RSS because later fitting stages, rather than
+descriptor retention, set its process peak.
 
 Because guarded batch correction applies one additive vector to every patch in
 a section, its within-section KNN preservation is exactly one and does not

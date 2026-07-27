@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tracemalloc
+from threading import Lock
 
 import numpy as np
 import pytest
@@ -76,8 +77,10 @@ def test_matching_reports_missing_and_distant_tiles_as_unmatched() -> None:
         )
 
 
+@pytest.mark.parametrize("workers", (1, 2))
 def test_section_sequence_reuses_descriptors_and_matches_pairwise(
     monkeypatch: pytest.MonkeyPatch,
+    workers: int,
 ) -> None:
     rows, columns = np.mgrid[:3, :4]
     grid = np.column_stack([rows.ravel(), columns.ravel()]).astype(np.int32)
@@ -125,7 +128,7 @@ def test_section_sequence_reuses_descriptors_and_matches_pairwise(
         coordinates,
         features,
         configs=configs,
-        workers=2,
+        workers=workers,
     )
 
     assert descriptor_calls == 3
@@ -137,6 +140,87 @@ def test_section_sequence_reuses_descriptors_and_matches_pairwise(
                 np.testing.assert_array_equal(left, right)
             else:
                 assert left == right
+
+
+def test_parallel_section_sequence_prepares_bounded_descriptor_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows, columns = np.mgrid[:2, :3]
+    grid = np.column_stack([rows.ravel(), columns.ravel()]).astype(np.int32)
+    section_count = 7
+    coordinates = tuple(
+        grid[:, ::-1].astype(float) * 100.0 + np.array([index, 0.0])
+        for index in range(section_count)
+    )
+    rng = np.random.default_rng(290)
+    features = tuple(
+        rng.normal(size=(len(grid), 4)).astype(np.float32) for _ in range(section_count)
+    )
+    feature_indices = {id(values): index for index, values in enumerate(features)}
+    configs = tuple(
+        CorrespondenceConfig(patch_width_um=100.0) for _ in range(section_count - 1)
+    )
+    real_descriptor = correspondence_module._context_descriptors
+    real_match = correspondence_module._match_prepared_adjacent_sections
+    events: list[tuple[str, int]] = []
+    lock = Lock()
+
+    def tracked_descriptor(
+        section_grid: np.ndarray,
+        section_features: np.ndarray,
+        radii: tuple[int, ...],
+    ) -> np.ndarray:
+        result = real_descriptor(section_grid, section_features, radii)
+        with lock:
+            events.append(("prepare", feature_indices[id(section_features)]))
+        return result
+
+    def tracked_match(*args: object, **kwargs: object) -> object:
+        result = real_match(*args, **kwargs)
+        with lock:
+            events.append(("match", int(kwargs["source_section"])))
+        return result
+
+    monkeypatch.setattr(
+        correspondence_module,
+        "_context_descriptors",
+        tracked_descriptor,
+    )
+    monkeypatch.setattr(
+        correspondence_module,
+        "_match_prepared_adjacent_sections",
+        tracked_match,
+    )
+
+    observed = _match_section_sequence(
+        (grid,) * section_count,
+        coordinates,
+        features,
+        configs=configs,
+        workers=2,
+    )
+
+    assert len(observed) == section_count - 1
+    assert sorted(index for event, index in events if event == "prepare") == list(
+        range(section_count)
+    )
+    first_match = next(
+        index for index, event in enumerate(events) if event[0] == "match"
+    )
+    assert {value for event, value in events[:first_match] if event == "prepare"} == {
+        0,
+        1,
+        2,
+    }
+    for batch_start in (2, 4):
+        first_new_descriptor = next(
+            index
+            for index, event in enumerate(events)
+            if event == ("prepare", batch_start + 1)
+        )
+        assert {
+            value for event, value in events[:first_new_descriptor] if event == "match"
+        } == set(range(batch_start))
 
 
 def test_section_sequence_rejects_invalid_worker_count() -> None:

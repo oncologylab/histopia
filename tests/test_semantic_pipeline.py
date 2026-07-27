@@ -177,6 +177,7 @@ def test_fit_uses_preflight_order_and_ignores_stale_extra_features(
     assert performance["fit"]["status"] == "completed"
     assert performance["fit"]["fit_threads"] == 4
     assert performance["fit"]["correspondence_workers"] == 1
+    assert performance["fit"]["correspondence_descriptor_window_sections"] == 2
     assert performance["fit"]["regularization_workers"] == 1
     assert performance["fit"]["semantic_result_fingerprint"] == "result-fingerprint"
     assert performance["fit"]["total_patches"] == 4

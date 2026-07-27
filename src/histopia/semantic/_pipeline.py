@@ -134,6 +134,10 @@ def _fit_saved_features(
             len(config.cluster_counts),
         )
         performance["correspondence_workers"] = correspondence_workers
+        performance["correspondence_descriptor_window_sections"] = min(
+            len(sections),
+            correspondence_workers + 1,
+        )
         performance["regularization_workers"] = regularization_workers
 
         def record_fit_phase(name: str, seconds: float) -> None:
