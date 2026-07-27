@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import json
 import shutil
+import struct
 from pathlib import Path
+from statistics import median
 
 from histopia.topology import validate_topology_result
 
@@ -34,8 +36,20 @@ def build_topology_review(
         payload = validate_topology_result(root)
         benchmark = json.loads((root / str(payload["benchmark"])).read_text())
         mesh_rows = []
+        plane_rows = []
         cohort_assets = assets / cohort
         cohort_assets.mkdir(parents=True, exist_ok=True)
+        for index, row in enumerate(payload["planes"]):
+            source = root / str(row["artifact"])
+            destination = cohort_assets / f"plane-{index:03d}.bin"
+            shape_rc = _write_plane_binary(source, destination)
+            plane_rows.append(
+                {
+                    **row,
+                    "viewer_asset": destination.relative_to(output).as_posix(),
+                    "shape_rc": list(shape_rc),
+                }
+            )
         for index, row in enumerate(payload["meshes"]):
             source = root / str(row["viewer_asset"])
             destination = cohort_assets / f"mesh-{index:03d}.bin"
@@ -60,13 +74,14 @@ def build_topology_review(
                 "segment_count": payload["segment_count"],
                 "gap_decisions": payload["gap_decisions"],
                 "pair_evidence": payload["pair_evidence"],
-                "planes": payload["planes"],
+                "planes": plane_rows,
                 "meshes": mesh_rows,
                 "classes": payload["classes"],
                 "benchmark": benchmark["summary"],
+                "surface_qc": _surface_qc(payload, benchmark["summary"]),
             }
         )
-    manifest = {"schema_version": 1, "cohorts": cohorts}
+    manifest = {"schema_version": 2, "cohorts": cohorts}
     output.mkdir(parents=True, exist_ok=True)
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     encoded = json.dumps(manifest, separators=(",", ":"))
@@ -77,6 +92,69 @@ def build_topology_review(
     (output / "topology-review.css").write_text(_CSS)
     (output / "topology-review.js").write_text(_JS)
     return output / "index.html"
+
+
+def _write_plane_binary(source: Path, destination: Path) -> tuple[int, int]:
+    """Write compact labels and uncertainty for a browser section texture."""
+
+    try:
+        import numpy as np
+    except ImportError as exc:
+        raise RuntimeError(
+            "topology review generation requires the 'topology' extra"
+        ) from exc
+    with np.load(source, allow_pickle=False) as archive:
+        labels = np.asarray(archive["labels"])
+        uncertainty = np.asarray(archive["uncertainty"], dtype=np.float32)
+    if labels.ndim != 2 or uncertainty.shape != labels.shape:
+        raise ValueError(f"invalid topology plane arrays: {source}")
+    if np.any((labels < -1) | (labels > 254)):
+        raise ValueError(f"topology plane labels exceed browser format: {source}")
+    encoded_labels = np.where(labels < 0, 255, labels).astype(np.uint8)
+    encoded_uncertainty = np.rint(np.clip(uncertainty, 0.0, 1.0) * 255.0).astype(
+        np.uint8
+    )
+    rows, columns = labels.shape
+    destination.write_bytes(
+        struct.pack("<4sII", b"HTP1", columns, rows)
+        + encoded_labels.tobytes(order="C")
+        + encoded_uncertainty.tobytes(order="C")
+    )
+    return int(rows), int(columns)
+
+
+def _surface_qc(
+    payload: dict[str, object],
+    benchmark: dict[str, object],
+) -> dict[str, object]:
+    """Summarize whether sparse class surfaces are suitable for display."""
+
+    evidence = payload.get("pair_evidence", [])
+    agreements = sorted(
+        float(row["matched_label_agreement"])
+        for row in evidence
+        if isinstance(row, dict) and row.get("matched_label_agreement") is not None
+    )
+    median_agreement = float(median(agreements)) if agreements else 0.0
+    flow_dice = float(benchmark.get("flow_macro_class_dice", 0.0))
+    components = sum(
+        int(row.get("component_count", 0))
+        for row in payload.get("classes", [])
+        if isinstance(row, dict)
+    )
+    reasons = []
+    if flow_dice < 0.75:
+        reasons.append("heldout_semantic_dice_below_0.75")
+    if median_agreement < 0.75:
+        reasons.append("median_adjacent_agreement_below_0.75")
+    if components > 500:
+        reasons.append("excess_surface_fragmentation")
+    return {
+        "status": "passed" if not reasons else "failed",
+        "reasons": reasons,
+        "median_adjacent_agreement": median_agreement,
+        "component_count": components,
+    }
 
 
 _HTML = """<!doctype html>
@@ -93,17 +171,23 @@ _HTML = """<!doctype html>
     <strong>Histopia topology</strong>
     <select id="cohort" aria-label="Cohort"></select>
     <span id="provenance"></span>
+    <div class="mode" role="group" aria-label="Rendering mode">
+      <button class="active" data-mode="sections">Sections</button>
+      <button data-mode="surfaces">Diagnostic surface</button>
+    </div>
     <button id="fit" title="Fit reconstruction to view">Fit</button>
-    <button id="reset" title="Reset camera">Reset</button>
+    <button id="reset" title="Show every section">All</button>
   </header>
   <main>
     <section id="viewport" aria-label="Interactive semantic topology"></section>
     <aside>
       <section class="controls">
         <div id="metrics"></div>
-        <label>Z exaggeration <input id="z-scale" type="range" min="1" max="250" value="100"></label>
-        <label><input id="observed" type="checkbox" checked> Observed planes</label>
-        <label><input id="virtual" type="checkbox" checked> Inferred planes</label>
+        <output id="surface-status"></output>
+        <label>Display spacing <input id="z-scale" type="range" min="1" max="100" value="25"></label>
+        <label>Section opacity <input id="opacity" type="range" min="20" max="100" value="82"></label>
+        <label><input id="observed" type="checkbox" checked> Observed sections</label>
+        <label><input id="virtual" type="checkbox" checked> Inferred sections</label>
         <div id="classes"></div>
       </section>
       <section class="pairs">
@@ -137,7 +221,7 @@ _HTML = """<!doctype html>
 
 _CSS = """
 :root{color-scheme:dark;font-family:Inter,system-ui,sans-serif;background:#0d1117;color:#e6edf3}
-*{box-sizing:border-box}body{margin:0;height:100dvh;overflow:hidden}header{height:48px;display:flex;align-items:center;gap:12px;padding:0 14px;border-bottom:1px solid #30363d;background:#161b22}header strong{font-size:15px}header span{color:#9da7b3;font-size:12px;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}button,select,input,textarea{font:inherit;color:inherit;background:#21262d;border:1px solid #484f58;border-radius:4px}button,select,input{height:30px;padding:0 9px}button{cursor:pointer}button:hover{border-color:#8c959f}main{height:calc(100dvh - 48px);display:grid;grid-template-columns:minmax(0,1fr) 340px}#viewport{min-width:0;position:relative;background:#080b10}aside{border-left:1px solid #30363d;display:grid;grid-template-rows:auto minmax(100px,1fr) auto;min-height:0;background:#0d1117}aside>section{padding:10px 12px;border-bottom:1px solid #30363d}.controls{font-size:12px;display:grid;gap:7px}.controls label{display:flex;align-items:center;gap:7px}.controls input[type=range]{padding:0;flex:1}.controls input[type=checkbox],#issues input{height:auto}.metric-grid{display:grid;grid-template-columns:1fr 1fr;gap:5px}.metric{background:#161b22;padding:6px;border-radius:4px}.metric b{display:block;font-size:14px}.class-row{display:flex;align-items:center;gap:7px;margin-top:5px}.swatch{width:11px;height:11px;border-radius:2px}.pairs{min-height:0;display:flex;flex-direction:column}.pairs h2,.review h2{font-size:12px;text-transform:uppercase;color:#9da7b3;margin:0 0 7px}#pair-list{overflow:auto;min-height:0}.pair{width:100%;height:auto;text-align:left;padding:7px;margin-bottom:4px;background:#161b22}.pair.selected{border-color:#58a6ff}.pair span{display:flex;justify-content:space-between;font-size:11px}.pair small{color:#9da7b3}.review{display:grid;gap:6px}.review input,.review textarea{width:100%}.review textarea{height:54px;padding:6px;resize:none}.review label{font-size:11px;color:#9da7b3}.review label input{width:58px;margin-left:5px}.decision{display:grid;grid-template-columns:repeat(3,1fr);gap:5px}.decision button:first-child{border-color:#3fb950}.decision button:last-child{border-color:#f85149}#issues{display:flex;flex-wrap:wrap;gap:4px;font-size:10px}#issues label{padding:3px 5px;background:#161b22;border-radius:3px}#status{font-size:11px;min-height:15px;color:#9da7b3}@media(max-width:900px){main{grid-template-columns:minmax(0,1fr) 290px}aside{font-size:11px}}
+*{box-sizing:border-box}body{margin:0;height:100dvh;overflow:hidden}header{height:48px;display:flex;align-items:center;gap:10px;padding:0 14px;border-bottom:1px solid #30363d;background:#161b22}header strong{font-size:15px}header span{color:#9da7b3;font-size:12px;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}button,select,input,textarea{font:inherit;color:inherit;background:#21262d;border:1px solid #484f58;border-radius:4px}button,select,input{height:30px;padding:0 9px}button{cursor:pointer}button:hover{border-color:#8c959f}.mode{display:flex}.mode button{border-radius:0}.mode button:first-child{border-radius:4px 0 0 4px}.mode button:last-child{border-radius:0 4px 4px 0}.mode button.active{background:#1f6feb;border-color:#58a6ff}main{height:calc(100dvh - 48px);display:grid;grid-template-columns:minmax(0,1fr) 350px}#viewport{min-width:0;position:relative;background:#080b10}#viewport canvas{display:block;background:#080b10}aside{min-width:0;overflow:hidden;border-left:1px solid #30363d;display:grid;grid-template-rows:auto minmax(100px,1fr) auto;min-height:0;background:#0d1117}aside>section{min-width:0;padding:10px 12px;border-bottom:1px solid #30363d}.controls{font-size:12px;display:grid;gap:7px}.controls label{display:flex;align-items:center;gap:7px}.controls input[type=range]{padding:0;flex:1}.controls input[type=checkbox],#issues input{height:auto}.metric-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:5px}.metric{min-width:0;background:#161b22;padding:6px;border-radius:4px}.metric b{display:block;font-size:14px}.metric.fail b,#surface-status.fail{color:#ff7b72}.metric.pass b,#surface-status.pass{color:#56d364}#surface-status{font-size:11px;min-height:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.class-row{display:flex;align-items:center;gap:7px;margin-top:5px}.swatch{width:11px;height:11px;border-radius:2px}.pairs{min-width:0;min-height:0;display:flex;flex-direction:column}.pairs h2,.review h2{font-size:12px;text-transform:uppercase;color:#9da7b3;margin:0 0 7px}#pair-list{overflow:auto;min-width:0;min-height:0}.pair{min-width:0;width:100%;height:auto;text-align:left;padding:7px;margin-bottom:4px;background:#161b22}.pair.selected{border-color:#58a6ff;background:#17243a}.pair span{display:flex;justify-content:space-between;font-size:11px}.pair small{display:block;max-width:100%;color:#9da7b3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.review{min-width:0;display:grid;gap:6px}.review input,.review textarea{min-width:0;width:100%}.review textarea{height:54px;padding:6px;resize:none}.review label{font-size:11px;color:#9da7b3}.review label input{width:58px;margin-left:5px}.decision{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:5px}.decision button:first-child{border-color:#3fb950}.decision button:last-child{border-color:#f85149}#issues{display:flex;flex-wrap:wrap;gap:4px;font-size:10px}#issues label{padding:3px 5px;background:#161b22;border-radius:3px}#status{font-size:11px;min-height:15px;color:#9da7b3}@media(max-width:1050px){header span{display:none}main{grid-template-columns:minmax(0,1fr) 310px}.mode button{font-size:11px;padding:0 6px}}
 """
 
 _JS = r"""
@@ -148,13 +232,32 @@ const el=id=>document.getElementById(id);
 const scene=new THREE.Scene();scene.background=new THREE.Color(0x080b10);
 const camera=new THREE.PerspectiveCamera(42,1,0.1,1e7);
 const renderer=new THREE.WebGLRenderer({antialias:true,powerPreference:"high-performance"});
-renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.localClippingEnabled=true;el("viewport").append(renderer.domElement);
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.outputColorSpace=THREE.SRGBColorSpace;el("viewport").append(renderer.domElement);
 const controls=new OrbitControls(camera,renderer.domElement);controls.enableDamping=true;
 scene.add(new THREE.HemisphereLight(0xffffff,0x263238,2.2));
 const light=new THREE.DirectionalLight(0xffffff,2);light.position.set(1,2,2);scene.add(light);
-let group=new THREE.Group(),planes=new THREE.Group(),current=null,selectedPair=null,loadGeneration=0;
-scene.add(group);scene.add(planes);
+const sections=new THREE.Group(),surfaces=new THREE.Group();scene.add(sections);scene.add(surfaces);
+let current=null,selectedPair=null,loadGeneration=0,mode="sections",surfacesLoaded=false,paletteRgb=[];
+let enabledClasses=new Set();
 function resize(){const r=el("viewport").getBoundingClientRect();renderer.setSize(r.width,r.height,false);camera.aspect=r.width/r.height;camera.updateProjectionMatrix()}addEventListener("resize",resize);
+function dispose(root){while(root.children.length){const item=root.children[0];root.remove(item);item.material?.map?.dispose();item.geometry?.dispose();item.material?.dispose()}}
+function clear(){dispose(sections);dispose(surfaces);surfacesLoaded=false}
+function colorBytes(value){const color=new THREE.Color(value);return [Math.round(255*color.r),Math.round(255*color.g),Math.round(255*color.b)]}
+function sectionTexture(item){
+ const pixels=new Uint8Array(item.labels.length*4),opacity=+el("opacity").value/100;
+ for(let i=0;i<item.labels.length;i++){const label=item.labels[i],offset=i*4;if(label===255||!enabledClasses.has(label)){pixels[offset+3]=0;continue}const rgb=paletteRgb[label];pixels[offset]=rgb[0];pixels[offset+1]=rgb[1];pixels[offset+2]=rgb[2];const confidence=1-item.uncertainty[i]/255;pixels[offset+3]=Math.round(255*opacity*(item.row.observed?1:.55+.45*confidence))}
+ const texture=new THREE.DataTexture(pixels,item.width,item.height,THREE.RGBAFormat);texture.colorSpace=THREE.SRGBColorSpace;texture.magFilter=THREE.NearestFilter;texture.minFilter=THREE.NearestFilter;texture.flipY=true;texture.needsUpdate=true;return texture
+}
+async function loadSection(row,generation){
+ const buffer=await fetch(row.viewer_asset).then(r=>{if(!r.ok)throw Error("Section load failed");return r.arrayBuffer()});
+ if(String.fromCharCode(...new Uint8Array(buffer,0,4))!=="HTP1")throw Error("Invalid section texture");
+ const view=new DataView(buffer),width=view.getUint32(4,true),height=view.getUint32(8,true),count=width*height;
+ const item={row,width,height,labels:new Uint8Array(buffer,12,count),uncertainty:new Uint8Array(buffer,12+count,count)};
+ const grid=current.reference_grid,w=grid.shape_rc[1]*grid.spacing_um,h=grid.shape_rc[0]*grid.spacing_um;
+ const geometry=new THREE.PlaneGeometry(w,h),material=new THREE.MeshBasicMaterial({map:sectionTexture(item),transparent:true,side:THREE.DoubleSide,depthWrite:false,alphaTest:.02});
+ const plane=new THREE.Mesh(geometry,material);plane.rotation.x=-Math.PI/2;plane.position.set(grid.origin_um_xy[0]+w/2,0,-grid.origin_um_xy[1]-h/2);plane.userData=item;
+ if(generation!==loadGeneration){geometry.dispose();material.map.dispose();material.dispose();return}sections.add(plane)
+}
 async function loadMesh(row,generation){
  const buffer=await fetch(row.viewer_asset).then(r=>{if(!r.ok)throw Error("Mesh load failed");return r.arrayBuffer()});
  const view=new DataView(buffer);if(String.fromCharCode(...new Uint8Array(buffer,0,4))!=="HTM1")throw Error("Invalid mesh");
@@ -162,30 +265,35 @@ async function loadMesh(row,generation){
  for(let i=0;i<nv;i++){pos[3*i]=raw[3*i];pos[3*i+1]=raw[3*i+2];pos[3*i+2]=-raw[3*i+1]}
  const index=new Uint32Array(buffer,12+nv*12,nf*3),geometry=new THREE.BufferGeometry();
  geometry.setAttribute("position",new THREE.BufferAttribute(pos,3));geometry.setIndex(new THREE.BufferAttribute(index,1));geometry.computeVertexNormals();
- const material=new THREE.MeshStandardMaterial({color:row.color,roughness:.72,metalness:.02,transparent:true,opacity:.78,side:THREE.DoubleSide});
- const mesh=new THREE.Mesh(geometry,material);mesh.userData={classIndex:row.class_index};if(generation!==loadGeneration){geometry.dispose();material.dispose();return}group.add(mesh);
+ const material=new THREE.MeshStandardMaterial({color:row.color,roughness:.72,metalness:.02,transparent:true,opacity:.72,side:THREE.DoubleSide});
+ const mesh=new THREE.Mesh(geometry,material);mesh.userData={classIndex:row.class_index};if(generation!==loadGeneration){geometry.dispose();material.dispose();return}surfaces.add(mesh)
 }
-function clear(){for(const root of [group,planes]){while(root.children.length){const o=root.children.pop();o.geometry?.dispose();o.material?.dispose()}}}
-function planeObjects(c){
- const grid=c.reference_grid,ox=grid.origin_um_xy[0],oy=grid.origin_um_xy[1],w=grid.shape_rc[1]*grid.spacing_um,h=grid.shape_rc[0]*grid.spacing_um;
- for(const row of c.planes){const g=new THREE.PlaneGeometry(w,h),m=new THREE.MeshBasicMaterial({color:row.observed?0x58a6ff:0xd29922,wireframe:true,transparent:true,opacity:row.observed?.10:.24,side:THREE.DoubleSide});const p=new THREE.Mesh(g,m);p.rotation.x=-Math.PI/2;p.position.set(ox+w/2,row.z_um,-oy-h/2);p.userData={observed:row.observed};planes.add(p)}
+async function ensureSurfaces(){
+ if(surfacesLoaded)return;const generation=loadGeneration;el("surface-status").textContent="Loading diagnostic surfaces...";
+ await Promise.all(current.meshes.map(row=>loadMesh(row,generation)));if(generation!==loadGeneration)return;surfacesLoaded=true;applySpacing();applyClasses();showSurfaceStatus()
 }
 function fit(){
- const box=new THREE.Box3().setFromObject(group);if(box.isEmpty())return;const center=box.getCenter(new THREE.Vector3()),size=box.getSize(new THREE.Vector3()),radius=Math.max(size.x,size.y,size.z);controls.target.copy(center);camera.position.set(center.x+radius*.9,center.y+radius*.75,center.z+radius*1.15);camera.near=Math.max(radius/10000,.1);camera.far=radius*20;camera.updateProjectionMatrix();controls.update()
+ const root=mode==="sections"?sections:surfaces,box=new THREE.Box3().setFromObject(root);if(box.isEmpty())return;const center=box.getCenter(new THREE.Vector3()),size=box.getSize(new THREE.Vector3()),radius=Math.max(size.x,size.y,size.z);controls.target.copy(center);camera.position.set(center.x+radius*.82,center.y+radius*.72,center.z+radius*1.18);camera.near=Math.max(radius/10000,.1);camera.far=radius*20;camera.updateProjectionMatrix();controls.update();renderer.render(scene,camera)
 }
 async function selectCohort(id){
  const generation=++loadGeneration;current=data.cohorts.find(c=>c.id===id);selectedPair=null;clear();el("provenance").textContent=`${current.observed_section_count} observed | ${current.virtual_section_count} inferred | z: ${current.z_source} | loading`;
- el("metrics").innerHTML=`<div class="metric-grid"><div class="metric"><b>${pct(current.benchmark.flow_macro_class_dice)}</b>flow Dice</div><div class="metric"><b>${signed(current.benchmark.flow_gain_over_zero)}</b>gain vs zero</div><div class="metric"><b>${pct(current.benchmark.gap_interval_accuracy)}</b>gap accuracy</div><div class="metric"><b>${current.segment_count}</b>segments</div></div>`;
+ el("metrics").innerHTML=`<div class="metric-grid"><div class="metric"><b>${pct(current.benchmark.flow_macro_class_dice)}</b>held-out Dice</div><div class="metric"><b>${pct(current.surface_qc.median_adjacent_agreement)}</b>adjacent agreement</div><div class="metric"><b>${signed(current.benchmark.flow_gain_over_zero)}</b>gain vs zero</div><div class="metric ${current.surface_qc.status==="passed"?"pass":"fail"}"><b>${current.surface_qc.status}</b>surface QC</div></div>`;
+ showSurfaceStatus();enabledClasses=new Set(current.classes.map(row=>row.class_index));paletteRgb=current.palette.map(colorBytes);
  el("classes").innerHTML=current.classes.map(r=>`<label class="class-row"><input type="checkbox" checked data-class="${r.class_index}"><span class="swatch" style="background:${r.color}"></span>Class ${r.class_index} | ${r.estimated_volume_mm3.toFixed(3)} mm3</label>`).join("");
- el("classes").querySelectorAll("input").forEach(x=>x.onchange=()=>group.children.filter(m=>m.userData.classIndex===+x.dataset.class).forEach(m=>m.visible=x.checked));
- el("pair-list").innerHTML=current.gap_decisions.map((r,i)=>`<button class="pair" data-i="${i}"><span><b>${String(r.source_section+1).padStart(2,"0")} to ${String(r.target_section+1).padStart(2,"0")}</b><em>${r.status}</em></span><small>${r.intervals} interval${r.intervals===1?"":"s"} | confidence ${pct(r.confidence)}</small></button>`).join("");
+ el("classes").querySelectorAll("input").forEach(x=>x.onchange=()=>{x.checked?enabledClasses.add(+x.dataset.class):enabledClasses.delete(+x.dataset.class);applyClasses()});
+ el("pair-list").innerHTML=current.gap_decisions.map((r,i)=>`<button class="pair" data-i="${i}"><span><b>${String(r.source_section+1).padStart(2,"0")} to ${String(r.target_section+1).padStart(2,"0")}</b><em>${r.status}</em></span><small>${sectionName(r.source_section)} → ${sectionName(r.target_section)}</small><small>${r.intervals} interval${r.intervals===1?"":"s"} | confidence ${pct(r.confidence)}</small></button>`).join("");
  el("pair-list").querySelectorAll(".pair").forEach(x=>x.onclick=()=>choosePair(+x.dataset.i));
- planeObjects(current);await Promise.all(current.meshes.map(row=>loadMesh(row,generation)));if(generation!==loadGeneration)return;applyScale();fit();el("provenance").textContent=el("provenance").textContent.replace("loading","ready")
+ await Promise.all(current.planes.map(row=>loadSection(row,generation)));if(generation!==loadGeneration)return;applySpacing();applyVisibility();setMode("sections");fit();await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));if(generation!==loadGeneration)return;el("provenance").textContent=el("provenance").textContent.replace("loading","ready")
 }
-function choosePair(i){selectedPair=i;el("pair-list").querySelectorAll(".pair").forEach((x,j)=>x.classList.toggle("selected",i===j));const r=current.gap_decisions[i];el("pair-title").textContent=`Transition ${r.source_section+1} to ${r.target_section+1}`;el("intervals").value=r.intervals;el("status").textContent=(r.reasons||[]).join(", ")||"Ready for review"}
-function applyScale(){const z=+el("z-scale").value;group.scale.y=z;planes.scale.y=z}
+function sectionName(index){return current.planes.find(row=>row.observed&&row.source_section===index)?.slide_id||`Section ${index+1}`}
+function choosePair(i){selectedPair=i;el("pair-list").querySelectorAll(".pair").forEach((x,j)=>x.classList.toggle("selected",i===j));const r=current.gap_decisions[i];el("pair-title").textContent=`Transition ${r.source_section+1} to ${r.target_section+1}`;el("intervals").value=r.intervals;el("status").textContent=(r.reasons||[]).join(", ")||"Ready for review";applyVisibility();if(mode==="sections")fit()}
+function applySpacing(){if(!current)return;const scale=+el("z-scale").value,z0=Math.min(...current.planes.map(row=>row.z_um));for(const plane of sections.children)plane.position.y=(plane.userData.row.z_um-z0)*scale;surfaces.scale.y=scale}
+function applyClasses(){for(const plane of sections.children){plane.material.map.dispose();plane.material.map=sectionTexture(plane.userData);plane.material.needsUpdate=true}for(const mesh of surfaces.children)mesh.visible=enabledClasses.has(mesh.userData.classIndex)}
+function applyVisibility(){if(!current)return;const observed=el("observed").checked,inferred=el("virtual").checked,pair=selectedPair===null?null:current.gap_decisions[selectedPair];for(const plane of sections.children){const row=plane.userData.row,kind=row.observed?observed:inferred,inPair=!pair||(row.observed?(row.source_section===pair.source_section||row.source_section===pair.target_section):(row.source_section===pair.source_section&&row.target_section===pair.target_section));plane.visible=kind&&inPair}}
+function showSurfaceStatus(){if(!current)return;const output=el("surface-status"),failed=current.surface_qc.status!=="passed";output.className=failed?"fail":"pass";output.textContent=failed?`Diagnostic surfaces failed continuity QC (${current.surface_qc.component_count.toLocaleString()} components)`:"Surface continuity QC passed"}
+async function setMode(next){mode=next;document.querySelectorAll("[data-mode]").forEach(button=>button.classList.toggle("active",button.dataset.mode===mode));sections.visible=mode==="sections";surfaces.visible=mode==="surfaces";if(mode==="surfaces")await ensureSurfaces();fit()}
 function pct(x){return `${(100*x).toFixed(1)}%`}function signed(x){return `${x>=0?"+":""}${(100*x).toFixed(1)} pp`}
-el("z-scale").oninput=applyScale;el("observed").onchange=e=>planes.children.filter(p=>p.userData.observed).forEach(p=>p.visible=e.target.checked);el("virtual").onchange=e=>planes.children.filter(p=>!p.userData.observed).forEach(p=>p.visible=e.target.checked);el("fit").onclick=fit;el("reset").onclick=fit;
+el("z-scale").oninput=applySpacing;el("opacity").oninput=applyClasses;el("observed").onchange=applyVisibility;el("virtual").onchange=applyVisibility;el("fit").onclick=fit;el("reset").onclick=()=>{selectedPair=null;el("pair-list").querySelectorAll(".pair").forEach(x=>x.classList.remove("selected"));el("pair-title").textContent="Select a transition";applyVisibility();fit()};document.querySelectorAll("[data-mode]").forEach(button=>button.onclick=()=>setMode(button.dataset.mode));
 const labels=["wrong_gap_count","unsupported_interpolation","surface_fragmentation","class_discontinuity","excess_uncertainty","wrong_z_spacing","other"];el("issues").innerHTML=labels.map(x=>`<label><input type="checkbox" value="${x}">${x.replaceAll("_"," ")}</label>`).join("");
 document.querySelectorAll("[data-decision]").forEach(b=>b.onclick=()=>save(b.dataset.decision));
 async function save(decision){if(selectedPair===null){el("status").textContent="Select a transition first";return}const r=current.gap_decisions[selectedPair],body={cohort:current.id,stage:"topology",fingerprint:current.fingerprint,slide_id:`${String(r.source_section).padStart(3,"0")}-${String(r.target_section).padStart(3,"0")}`,decision,labels:[...el("issues").querySelectorAll("input:checked")].map(x=>x.value),comment:el("comment").value,reviewer:el("reviewer").value,suggested_intervals:+el("intervals").value};if(decision==="accept")body.labels=[];el("status").textContent="Saving...";try{const response=await fetch("/api/reviews/feedback",{method:"POST",headers:{"Content-Type":"application/json","Authorization":`Bearer ${el("token").value}`},body:JSON.stringify(body)}),payload=await response.json();if(!response.ok)throw Error(payload.error||"Review save failed");el("status").textContent=`Saved ${decision}`}catch(error){el("status").textContent=error.message}}

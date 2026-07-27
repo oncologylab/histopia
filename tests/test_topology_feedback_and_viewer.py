@@ -1,16 +1,20 @@
 from __future__ import annotations
 
+import io
 import json
+import threading
 from pathlib import Path
 
 import numpy as np
 import pytest
+from PIL import Image
 
 from histopia.topology._feedback import TopologyFeedbackStore
 from histopia.topology._model import ReconstructedPlane
 from histopia.topology._pipeline import _write_meshes, _write_planes
 from histopia.topology._result import write_topology_result
 from histopia.visualization import build_topology_review
+from histopia.visualization._server import create_viewer_server
 
 
 def test_topology_feedback_requires_every_current_pair(tmp_path: Path) -> None:
@@ -40,16 +44,100 @@ def test_topology_feedback_requires_every_current_pair(tmp_path: Path) -> None:
     assert updated["summary"]["by_decision"] == {"accept": 1}
 
 
-def test_topology_viewer_copies_only_declared_mesh_assets(tmp_path: Path) -> None:
+def test_topology_viewer_builds_section_assets_and_gates_surfaces(
+    tmp_path: Path,
+) -> None:
     run = _topology_run(tmp_path / "run")
     index = build_topology_review({"sample": run}, tmp_path / "viewer")
 
     manifest = json.loads((index.parent / "manifest.json").read_text())
+    assert manifest["schema_version"] == 2
     cohort = manifest["cohorts"][0]
     assert cohort["id"] == "sample"
+    assert cohort["planes"][0]["viewer_asset"].startswith("assets/sample/")
+    plane_asset = index.parent / cohort["planes"][0]["viewer_asset"]
+    assert plane_asset.read_bytes()[:4] == b"HTP1"
     assert cohort["meshes"][0]["viewer_asset"].startswith("assets/sample/")
     assert (index.parent / cohort["meshes"][0]["viewer_asset"]).is_file()
+    assert cohort["surface_qc"] == {
+        "status": "failed",
+        "reasons": [
+            "median_adjacent_agreement_below_0.75",
+        ],
+        "median_adjacent_agreement": 0.0,
+        "component_count": 1,
+    }
     assert (index.parent / "vendor" / "three.module.min.js").is_file()
+    javascript = (index.parent / "topology-review.js").read_text()
+    assert 'mode="sections"' in javascript
+    assert "Diagnostic surfaces failed continuity QC" in javascript
+
+
+@pytest.mark.browser
+def test_topology_viewer_defaults_to_section_faithful_rendering(
+    tmp_path: Path,
+) -> None:
+    playwright = pytest.importorskip("playwright.sync_api")
+    run = _topology_run(tmp_path / "run")
+    build_topology_review({"sample": run}, tmp_path / "viewer")
+    server = create_viewer_server(
+        tmp_path,
+        bind="127.0.0.1",
+        port=0,
+        required_routes=("viewer",),
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    errors: list[str] = []
+    try:
+        with playwright.sync_playwright() as runtime:
+            browser = runtime.chromium.launch(headless=True)
+            page = browser.new_page(viewport={"width": 1920, "height": 1080})
+            page.on(
+                "console",
+                lambda message: (
+                    errors.append(message.text) if message.type == "error" else None
+                ),
+            )
+            page.goto(
+                f"http://127.0.0.1:{server.server_port}/viewer/",
+                wait_until="networkidle",
+            )
+            page.wait_for_function(
+                "() => document.querySelector('#provenance').textContent"
+                ".includes('ready')"
+            )
+            assert (
+                page.locator("[data-mode='sections']").get_attribute("class")
+                == "active"
+            )
+            assert page.locator(".metric").count() == 4
+            assert page.locator("#surface-status").get_attribute("class") == "fail"
+            screenshot = page.locator("canvas").screenshot()
+            pixels = np.asarray(Image.open(io.BytesIO(screenshot)).convert("RGB"))
+            assert np.ptp(pixels.reshape(-1, 3), axis=0).max() > 20
+            page.locator(".pair").first.click()
+            assert page.locator(".pair.selected").count() == 1
+            page.locator("#reset").click()
+            assert page.locator(".pair.selected").count() == 0
+            for width, height in ((1920, 1080), (3840, 2160)):
+                page.set_viewport_size({"width": width, "height": height})
+                overflow = page.evaluate(
+                    """() => ({
+                      x: document.documentElement.scrollWidth > innerWidth,
+                      y: document.documentElement.scrollHeight > innerHeight,
+                      aside: document.querySelector('aside').getBoundingClientRect(),
+                    })"""
+                )
+                assert not overflow["x"]
+                assert not overflow["y"]
+                assert overflow["aside"]["width"] <= 351
+            browser.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+    assert not errors
 
 
 def _topology_run(root: Path) -> Path:

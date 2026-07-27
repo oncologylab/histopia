@@ -43,6 +43,23 @@ histopia-visualize topology-review /path/to/review \
   --run sample=/path/to/topology-run
 ```
 
+The reviewer opens in **Sections** mode. This renders each observed semantic
+field independently and preserves the registered section geometry. A
+**Diagnostic surface** mode is available only for troubleshooting. It is
+explicitly marked as failed when held-out semantic agreement, adjacent-section
+agreement, or surface fragmentation does not meet the display gate. A failed
+surface must not be interpreted as reconstructed anatomy.
+
+For morphology-aware inspection, use a section viewer built from both the
+registration and semantic runs. Its histology, semantic blend, adjacent-pair,
+and topology-link modes retain source-image context:
+
+```bash
+histopia-visualize build /path/to/viewer-root \
+  --run sample=/path/to/registration-run \
+  --semantic-run sample=/path/to/semantic-run
+```
+
 Review every transition before approval. Pair feedback supports
 `accept`, `hold`, and `reject`, issue labels, comments, and a suggested interval
 count. Approval is fingerprint-bound:
