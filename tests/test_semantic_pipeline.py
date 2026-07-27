@@ -135,6 +135,7 @@ def test_fit_uses_preflight_order_and_ignores_stale_extra_features(
         runtime_events.append("fit")
         captured.append(tuple(section.slide_id for section in sections))
         assert kwargs["correspondence_workers"] == 1
+        assert kwargs["regularization_workers"] == 1
         phase_callback = kwargs["phase_callback"]
         assert callable(phase_callback)
         phase_callback("cluster_selection", 1.25)
@@ -176,6 +177,7 @@ def test_fit_uses_preflight_order_and_ignores_stale_extra_features(
     assert performance["fit"]["status"] == "completed"
     assert performance["fit"]["fit_threads"] == 4
     assert performance["fit"]["correspondence_workers"] == 1
+    assert performance["fit"]["regularization_workers"] == 1
     assert performance["fit"]["semantic_result_fingerprint"] == "result-fingerprint"
     assert performance["fit"]["total_patches"] == 4
     assert performance["fit"]["atlas_fit_phase_seconds"] == {"cluster_selection": 1.25}

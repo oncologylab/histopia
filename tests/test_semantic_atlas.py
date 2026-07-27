@@ -8,6 +8,7 @@ import pytest
 from histopia.semantic import PatchFeatures
 from histopia.semantic import _atlas as atlas_module
 from histopia.semantic._atlas import (
+    _bounded_regularization_workers,
     _cross_edge_consistency,
     _normalize_section_features,
     _same_label_cross_distance,
@@ -142,6 +143,56 @@ def test_joint_atlas_rejects_invalid_correspondence_workers() -> None:
             regularize=False,
             correspondence_workers=0,
         )
+
+
+def test_joint_atlas_rejects_invalid_regularization_workers() -> None:
+    with pytest.raises(ValueError, match="regularization_workers"):
+        fit_joint_atlas(
+            (_section("a", 0), _section("b", 2)),
+            cluster_counts=(2,),
+            pca_components=2,
+            balanced_patch_cap=12,
+            regularize=False,
+            regularization_workers=0,
+        )
+
+
+def test_regularization_workers_respect_budget_work_and_memory_caps() -> None:
+    assert _bounded_regularization_workers(1, 11) == 1
+    assert _bounded_regularization_workers(4, 11) == 4
+    assert _bounded_regularization_workers(32, 11) == 8
+    assert _bounded_regularization_workers(32, 3) == 3
+
+
+def test_parallel_k_regularization_is_bit_exact() -> None:
+    sections = (_section("a", 0), _section("b", 2), _section("c", 4))
+    sequential = fit_joint_atlas(
+        sections,
+        cluster_counts=(2, 3, 4),
+        pca_components=2,
+        balanced_patch_cap=12,
+        seed=8,
+        regularize=True,
+        regularization_workers=1,
+    )
+    parallel = fit_joint_atlas(
+        sections,
+        cluster_counts=(2, 3, 4),
+        pca_components=2,
+        balanced_patch_cap=12,
+        seed=8,
+        regularize=True,
+        regularization_workers=8,
+    )
+
+    assert tuple(sequential.clusterings) == tuple(parallel.clusterings)
+    for count in sequential.clusterings:
+        left = sequential.clusterings[count]
+        right = parallel.clusterings[count]
+        np.testing.assert_array_equal(left.labels, right.labels)
+        np.testing.assert_array_equal(left.joint_labels, right.joint_labels)
+        np.testing.assert_array_equal(left.centroids, right.centroids)
+        assert left.diffusion_guard == right.diffusion_guard
 
 
 def test_regularized_atlas_builds_and_passes_adjacent_correspondences(

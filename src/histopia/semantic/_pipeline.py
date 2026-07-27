@@ -9,7 +9,12 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from histopia.semantic._atlas import JointAtlas, _sklearn_estimators, fit_joint_atlas
+from histopia.semantic._atlas import (
+    JointAtlas,
+    _bounded_regularization_workers,
+    _sklearn_estimators,
+    fit_joint_atlas,
+)
 from histopia.semantic._config import SemanticAtlasConfig
 from histopia.semantic._correspondence import CorrespondenceConfig
 from histopia.semantic._extract import (
@@ -124,7 +129,12 @@ def _fit_saved_features(
             config.fit_threads,
             max(1, len(sections) - 1),
         )
+        regularization_workers = _bounded_regularization_workers(
+            config.fit_threads,
+            len(config.cluster_counts),
+        )
         performance["correspondence_workers"] = correspondence_workers
+        performance["regularization_workers"] = regularization_workers
 
         def record_fit_phase(name: str, seconds: float) -> None:
             fit_phase_seconds[name] = seconds
@@ -141,6 +151,7 @@ def _fit_saved_features(
                 max_cross_section_distance_um=config.max_cross_section_distance_um,
                 phase_callback=record_fit_phase,
                 correspondence_workers=correspondence_workers,
+                regularization_workers=regularization_workers,
             )
         performance["atlas_fit_seconds"] = elapsed_seconds(stage_started)
 

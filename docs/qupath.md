@@ -154,8 +154,9 @@ the Python workflow tests.
 
 The QuPath **Device** control selects the backend for UNI2-h feature extraction.
 The global semantic atlas then uses the validated CPU implementation;
-**Fit threads** bounds its native BLAS and OpenMP pools. An idle GPU during the
-fit stage is therefore expected and does not indicate a fallback or failure.
+**Fit threads** bounds its independent fit tasks and native BLAS/OpenMP pools.
+An idle GPU during the fit stage is therefore expected and does not indicate a
+fallback or failure.
 
 The **QC detail** control selects Histopia's post-mask alignment artifact tier.
 `review` is the production default and retains the primary per-slide panels

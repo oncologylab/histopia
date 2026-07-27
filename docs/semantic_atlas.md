@@ -138,22 +138,23 @@ therefore cannot be changed later in the same process. Leave it unset to use
 libvips' adaptive default.
 
 `fit_threads` independently bounds CPU work during global fitting. PCA, batch
-correction, global clustering, K selection, and topology regularization cap
-their native BLAS and OpenMP pools at this value. Adjacent-section
-correspondence uses one pair worker when the budget is one and at most two pair
-workers otherwise; each matcher receives one native math thread to avoid
-nested oversubscription. It defaults to four and is recorded in sealed result
-runtime provenance. Keeping this value explicit avoids machine-dependent
-oversubscription and makes fitting performance reproducible without changing
-feature artifacts.
+correction, global clustering, and K selection cap their native BLAS and OpenMP
+pools at this value. Adjacent-section correspondence uses one pair worker when
+the budget is one and at most two pair workers otherwise; each matcher receives
+one native math thread to avoid nested oversubscription. Independent topology
+regularization jobs use at most `fit_threads` workers and are additionally
+capped at eight to bound simultaneous probability matrices. It defaults to
+four and is recorded in sealed result runtime provenance. Keeping this value
+explicit avoids machine-dependent oversubscription and makes fitting
+performance reproducible without changing feature artifacts.
 
 The observational `semantic_performance.json` report records `cache_hit`, the
 validation time, and why a candidate result was not reusable; an exact hit
 reports zero atlas-fit and artifact-write time. A computed fit also records
-`correspondence_workers` and an `atlas_fit_phase_seconds` object covering
-feature preparation, PCA fit and projection, initial and corrected
-correspondence and graph construction, guarded batch correction, K selection,
-and label regularization.
+`correspondence_workers`, `regularization_workers`, and an
+`atlas_fit_phase_seconds` object covering feature preparation, PCA fit and
+projection, initial and corrected correspondence and graph construction,
+guarded batch correction, K selection, and label regularization.
 
 On a validated 23-section atlas with 76,499 patches, one, four, eight, 16, and
 32 fit threads took 95.7, 71.7, 73.3, 73.6, and 106.2 seconds, respectively.
@@ -314,6 +315,19 @@ workflow fell from 52.10 to 49.63 seconds. On the 15-section,
 119.50 seconds and the complete workflow from 196.88 to 189.82 seconds, while
 selected K, peak memory, and all 182 non-observational artifacts remained
 unchanged.
+
+Each requested K is regularized independently after global cluster selection.
+Histopia executes these jobs with a bounded pool controlled by `fit_threads`;
+result collection remains in requested-K order. On the 15-section,
+333,739-patch stress atlas, controlled artifact replay reduced the median
+regularization stage from 22.50 seconds with one worker to 12.82 seconds with
+two, 7.51 seconds with four, and 5.84 seconds with eight. All labels and
+acceptance guards were exact at every setting. A complete four-worker refit
+reduced the phase from 21.32 to 7.27 seconds and retained all 182
+non-observational files byte for byte at 7,709,400 KiB peak RSS. On the
+23-section, 76,499-patch atlas, a paired complete refit fell from 56.02 to
+52.23 seconds; regularization fell from 4.49 to 1.43 seconds, peak RSS differed
+by only 260 KiB, and all 278 non-observational files were byte-identical.
 
 ## Review And Viewer
 

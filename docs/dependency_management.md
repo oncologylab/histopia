@@ -55,7 +55,7 @@ python -m pip install -e ".[semantic]"
 ```
 
 This profile fits the global atlas on CPU and does not install PyTorch. Use
-`fit_threads` to bound its native BLAS and OpenMP pools.
+`fit_threads` to bound its independent fit tasks and native BLAS/OpenMP pools.
 
 UNI2-h extraction from source whole-slide images:
 

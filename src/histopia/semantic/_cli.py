@@ -53,7 +53,7 @@ def _add_fit_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--fit-threads",
         type=_positive_int,
-        help="Override native BLAS/OpenMP threads used for global atlas fitting.",
+        help="Override CPU task and native BLAS/OpenMP limits for atlas fitting.",
     )
     parser.add_argument(
         "--overwrite-fit",

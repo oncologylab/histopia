@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass
 
@@ -27,6 +28,7 @@ from histopia.semantic._graph import (
 from histopia.semantic._selection import ClusterSelectionResult, select_cluster_count
 
 FitPhaseCallback = Callable[[str, float], None]
+_MAX_REGULARIZATION_WORKERS = 8
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,6 +91,7 @@ def fit_joint_atlas(
     max_cross_section_distance_um: float = 112.0,
     phase_callback: FitPhaseCallback | None = None,
     correspondence_workers: int = 1,
+    regularization_workers: int = 1,
 ) -> JointAtlas:
     """Fit one normalized feature space and clustering across every section."""
 
@@ -103,6 +106,10 @@ def fit_joint_atlas(
         or correspondence_workers <= 0
     ):
         raise ValueError("correspondence_workers must be a positive integer")
+    regularization_workers = _bounded_regularization_workers(
+        regularization_workers,
+        len(cluster_counts),
+    )
     with _measure_fit_phase("feature_preparation", phase_callback):
         raw = np.concatenate(
             [section.features.astype(np.float32) for section in sections]
@@ -208,43 +215,25 @@ def fit_joint_atlas(
 
     clusterings: dict[int, AtlasClustering] = {}
     with _measure_fit_phase("label_regularization", phase_callback):
-        for cluster_count in counts:
-            joint = selection.labels_by_k[cluster_count]
-            centroids = np.stack(
-                [
-                    projected[joint == label].mean(axis=0)
-                    for label in range(cluster_count)
-                ]
-            )
-            selected = joint
-            guard = None
-            if graph is not None:
-                diffusion = diffuse_labels(joint, graph, n_clusters=cluster_count)
-                before_consistency = _cross_edge_consistency(joint, graph)
-                after_consistency = _cross_edge_consistency(diffusion.labels, graph)
-                before_distance = _same_label_cross_distance(joint, graph, sections)
-                after_distance = _same_label_cross_distance(
-                    diffusion.labels, graph, sections
-                )
-                guard = evaluate_diffusion_guard(
-                    joint,
-                    diffusion.labels,
-                    adjacent_consistency_before=before_consistency,
-                    adjacent_consistency_after=after_consistency,
-                    centroid_distance_before=before_distance,
-                    centroid_distance_after=after_distance,
-                    max_changed_fraction=0.25,
-                    max_centroid_worsening_fraction=0.10,
-                )
-                if guard.accepted:
-                    selected = diffusion.labels
-            clusterings[cluster_count] = AtlasClustering(
+
+        def regularize(cluster_count: int) -> tuple[int, AtlasClustering]:
+            return cluster_count, _regularize_clustering(
                 cluster_count,
-                selected,
-                joint,
-                centroids.astype(np.float32),
-                guard,
+                selection.labels_by_k[cluster_count],
+                projected,
+                graph,
+                sections,
             )
+
+        if regularization_workers == 1 or len(counts) == 1:
+            rows = tuple(map(regularize, counts))
+        else:
+            with ThreadPoolExecutor(
+                max_workers=regularization_workers,
+                thread_name_prefix="histopia-semantic-regularization",
+            ) as executor:
+                rows = tuple(executor.map(regularize, counts))
+        clusterings.update(rows)
     return JointAtlas(
         slide_ids=tuple(section.slide_id for section in sections),
         section_offsets=offsets,
@@ -275,6 +264,55 @@ def _measure_fit_phase(
         yield
     finally:
         callback(name, round(max(0.0, time.perf_counter() - started), 6))
+
+
+def _bounded_regularization_workers(workers: int, cluster_count: int) -> int:
+    """Bound independent K jobs by the requested CPU budget and memory policy."""
+
+    if isinstance(workers, bool) or not isinstance(workers, int) or workers <= 0:
+        raise ValueError("regularization_workers must be a positive integer")
+    return min(workers, max(1, cluster_count), _MAX_REGULARIZATION_WORKERS)
+
+
+def _regularize_clustering(
+    cluster_count: int,
+    joint: np.ndarray,
+    projected: np.ndarray,
+    graph: GraphEdges | None,
+    sections: tuple[PatchFeatures, ...],
+) -> AtlasClustering:
+    """Build one K result without mutating shared atlas inputs."""
+
+    centroids = np.stack(
+        [projected[joint == label].mean(axis=0) for label in range(cluster_count)]
+    )
+    selected = joint
+    guard = None
+    if graph is not None:
+        diffusion = diffuse_labels(joint, graph, n_clusters=cluster_count)
+        before_consistency = _cross_edge_consistency(joint, graph)
+        after_consistency = _cross_edge_consistency(diffusion.labels, graph)
+        before_distance = _same_label_cross_distance(joint, graph, sections)
+        after_distance = _same_label_cross_distance(diffusion.labels, graph, sections)
+        guard = evaluate_diffusion_guard(
+            joint,
+            diffusion.labels,
+            adjacent_consistency_before=before_consistency,
+            adjacent_consistency_after=after_consistency,
+            centroid_distance_before=before_distance,
+            centroid_distance_after=after_distance,
+            max_changed_fraction=0.25,
+            max_centroid_worsening_fraction=0.10,
+        )
+        if guard.accepted:
+            selected = diffusion.labels
+    return AtlasClustering(
+        cluster_count,
+        selected,
+        joint,
+        centroids.astype(np.float32),
+        guard,
+    )
 
 
 def _match_correspondences(
