@@ -89,9 +89,21 @@ def test_qupath_doctor_ranges_match_normal_workflow_extras() -> None:
     reason="requires an exact constraint-based installation",
 )
 def test_installed_cpu_profiles_match_exact_constraints() -> None:
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
+    installed_requirements = list(project["dependencies"])
+    for extra in ("registration", "semantic", "stain", "wsi", "qupath"):
+        installed_requirements.extend(project["optional-dependencies"][extra])
+    installed_names = {
+        canonicalize_name(requirement.name)
+        for raw_requirement in installed_requirements
+        if (requirement := Requirement(raw_requirement)).marker is None
+        or requirement.marker.evaluate()
+    }
     expected: dict[str, str] = {}
     for name in ("registration-repro.txt", "semantic-repro.txt", "stain-repro.txt"):
         for package, version in _constraint_pins(ROOT / "constraints" / name).items():
+            if package not in installed_names:
+                continue
             previous = expected.setdefault(package, version)
             assert previous == version
 
