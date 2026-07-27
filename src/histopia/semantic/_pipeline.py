@@ -94,6 +94,7 @@ def _fit_saved_features(
         performance["feature_working_copy_policy"] = (
             "direct-concatenate-bounded-in-place-normalize-v2"
         )
+        performance["pca_training_copy_policy"] = "private-balanced-sample-reused-v1"
         provenance = sections[0].provenance or {}
         if isinstance(provenance.get("preflight_fingerprint"), str):
             performance["preflight_fingerprint"] = provenance["preflight_fingerprint"]

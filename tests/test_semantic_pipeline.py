@@ -186,6 +186,9 @@ def test_fit_uses_preflight_order_and_ignores_stale_extra_features(
     assert performance["fit"]["feature_working_copy_policy"] == (
         "direct-concatenate-bounded-in-place-normalize-v2"
     )
+    assert performance["fit"]["pca_training_copy_policy"] == (
+        "private-balanced-sample-reused-v1"
+    )
     assert performance["fit"]["atlas_fit_phase_seconds"] == {"cluster_selection": 1.25}
 
 

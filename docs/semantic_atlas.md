@@ -160,10 +160,10 @@ validation time, and why a candidate result was not reusable; an exact hit
 reports zero atlas-fit and artifact-write time. A computed fit also records
 `correspondence_workers`, `correspondence_descriptor_window_sections`,
 `regularization_workers`, source and working feature dtypes,
-`feature_working_copy_policy`, and an `atlas_fit_phase_seconds` object
-covering feature preparation, PCA fit and projection, initial and corrected
-correspondence and graph construction, guarded batch correction, K selection,
-and label regularization.
+`feature_working_copy_policy`, `pca_training_copy_policy`, and an
+`atlas_fit_phase_seconds` object covering feature preparation, PCA fit and
+projection, initial and corrected correspondence and graph construction,
+guarded batch correction, K selection, and label regularization.
 
 On a validated 23-section atlas with 76,499 patches, one, four, eight, 16, and
 32 fit threads took 95.7, 71.7, 73.3, 73.6, and 106.2 seconds, respectively.
@@ -224,6 +224,16 @@ exact-output changes reduce peak RSS from 7,769,896 KiB to 4,010,956 KiB
 (48.4 percent). The smaller 76,499-patch replay remained at approximately
 1.84 GiB because a later phase already set its peak; all 302 non-observational
 files again remained byte-identical.
+
+The balanced PCA training rows are already a private advanced-index copy.
+Allowing PCA to center that disposable matrix directly avoids a second
+defensive training copy. On the 333,739-patch replay, peak RSS fell from
+4,010,956 KiB to 3,641,736 KiB (9.2 percent), PCA fitting fell from 2.122 to
+1.553 seconds, and wall time fell from 175.48 to 168.26 seconds. All 198
+non-observational files remained byte-identical. Relative to the original
+implementation, the four exact-output changes reduce peak RSS by 53.1 percent.
+On the 76,499-patch replay, peak RSS fell from 1,842,880 KiB to 1,406,768 KiB
+(23.7 percent), while all 302 non-observational files remained byte-identical.
 
 Because guarded batch correction applies one additive vector to every patch in
 a section, its within-section KNN preservation is exactly one and does not

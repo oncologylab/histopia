@@ -125,6 +125,32 @@ def test_feature_normalization_blocks_rows_without_changing_arithmetic(
     assert observed_shapes == [(3, 5), (3, 5), (1, 5)]
 
 
+def test_pca_reuses_its_private_balanced_training_sample(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_pca, real_kmeans = atlas_module._sklearn_estimators()
+    copy_values: list[bool | None] = []
+
+    def capture_pca(*args: object, **kwargs: object):
+        copy_values.append(kwargs.get("copy"))
+        return real_pca(*args, **kwargs)
+
+    monkeypatch.setattr(
+        atlas_module,
+        "_sklearn_estimators",
+        lambda: (capture_pca, real_kmeans),
+    )
+
+    fit_joint_atlas(
+        (_section("a", 0), _section("b", 2)),
+        cluster_counts=(2,),
+        pca_components=2,
+        regularize=False,
+    )
+
+    assert copy_values == [False]
+
+
 def test_joint_atlas_is_deterministic_and_returns_each_sensitivity() -> None:
     sections = (_section("a", 0), _section("b", 2))
 

@@ -122,9 +122,16 @@ def fit_joint_atlas(
         if component_count <= 0:
             raise ValueError("PCA requires non-empty patch features")
         PCA, _ = _sklearn_estimators()
-        pca = PCA(n_components=component_count, svd_solver="auto", random_state=seed)
+        pca = PCA(
+            n_components=component_count,
+            svd_solver="auto",
+            random_state=seed,
+            copy=False,
+        )
     with _measure_fit_phase("pca_fit", phase_callback):
-        pca.fit(normalized[sample])
+        training_features = normalized[sample]
+        pca.fit(training_features)
+        del training_features
     with _measure_fit_phase("pca_projection", phase_callback):
         projected = pca.transform(normalized).astype(np.float32)
     del normalized
