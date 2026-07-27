@@ -93,7 +93,8 @@ def pair_evidence(
     support_union = source.support | target.support
     support_intersection = source.support & target.support
     dice = (
-        2.0 * float(np.count_nonzero(support_intersection))
+        2.0
+        * float(np.count_nonzero(support_intersection))
         / float(np.count_nonzero(source.support) + np.count_nonzero(target.support))
         if np.any(support_union)
         else 1.0
@@ -255,9 +256,7 @@ def predict_morphology_interval(
 
     maximum = min(maximum_intervals, len(calibrator.centers))
     centers = calibrator.centers[:maximum]
-    valid = np.all(np.isfinite(centers), axis=1) & (
-        calibrator.counts[:maximum] >= 2
-    )
+    valid = np.all(np.isfinite(centers), axis=1) & (calibrator.counts[:maximum] >= 2)
     distances = np.full(maximum, np.inf, dtype=np.float64)
     distances[valid] = np.linalg.norm(
         (centers[valid] - np.asarray(features, dtype=float)) / calibrator.scale,
@@ -288,9 +287,7 @@ def morphology_pair_features(
     source_area = max(int(np.count_nonzero(source_support)), 1)
     target_area = max(int(np.count_nonzero(target_support)), 1)
     intersection = source_support & target_support
-    support_dice = (
-        2.0 * np.count_nonzero(intersection) / (source_area + target_area)
-    )
+    support_dice = 2.0 * np.count_nonzero(intersection) / (source_area + target_area)
     classes = source.membership.shape[0]
     semantic_js = _jensen_shannon(
         _label_distribution(source.labels, classes),

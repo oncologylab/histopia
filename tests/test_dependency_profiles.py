@@ -100,7 +100,12 @@ def test_installed_cpu_profiles_match_exact_constraints() -> None:
         or requirement.marker.evaluate()
     }
     expected: dict[str, str] = {}
-    for name in ("registration-repro.txt", "semantic-repro.txt", "stain-repro.txt"):
+    for name in (
+        "registration-repro.txt",
+        "semantic-repro.txt",
+        "topology-repro.txt",
+        "stain-repro.txt",
+    ):
         for package, version in _constraint_pins(ROOT / "constraints" / name).items():
             if package not in installed_names:
                 continue

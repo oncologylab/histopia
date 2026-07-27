@@ -129,9 +129,7 @@ def interpolate_pair(
     )
     sdf = (1.0 - fraction) * warped_source_sdf + fraction * warped_target_sdf
     support = sdf >= 0
-    membership = (
-        (1.0 - fraction) * source_membership + fraction * target_membership
-    )
+    membership = (1.0 - fraction) * source_membership + fraction * target_membership
     total = membership.sum(axis=0)
     np.divide(
         membership,

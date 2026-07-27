@@ -214,9 +214,9 @@ def build_workflow_review(
     semantic_runs = semantic_runs or {}
     stain_runs = stain_runs or {}
     topology_runs = topology_runs or {}
-    unknown = (
-        set(semantic_runs) | set(stain_runs) | set(topology_runs)
-    ) - set(registration_runs)
+    unknown = (set(semantic_runs) | set(stain_runs) | set(topology_runs)) - set(
+        registration_runs
+    )
     if unknown:
         raise ValueError(
             "review inputs have no matching registration: " + ", ".join(sorted(unknown))

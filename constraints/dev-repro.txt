@@ -1,0 +1,2 @@
+# Exact formatter used by local development and CI.
+ruff==0.16.0

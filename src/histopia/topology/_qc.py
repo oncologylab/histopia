@@ -35,9 +35,7 @@ def summarize_topology_run(run_dir: Path | str) -> TopologyRunQc:
     decisions = payload.get("gap_decisions", [])
     classes = payload.get("classes", [])
     meshes = payload.get("meshes", [])
-    benchmark = json.loads(
-        (Path(run_dir) / str(payload["benchmark"])).read_text()
-    )
+    benchmark = json.loads((Path(run_dir) / str(payload["benchmark"])).read_text())
     benchmark_summary = benchmark["summary"]
     total_volume = sum(float(row["estimated_volume_mm3"]) for row in classes)
     inferred_volume = sum(float(row["inferred_volume_mm3"]) for row in classes)

@@ -242,6 +242,8 @@ def _endpoint_evidence(
         target_patch_count=int(np.count_nonzero(target.support)),
         patch_width_um=spacing_um,
     )
+
+
 def _rc_to_xy(
     coordinates_rc: np.ndarray,
     *,
@@ -264,8 +266,7 @@ def _field_metrics(predicted: np.ndarray, truth: np.ndarray) -> dict[str, float]
         | set(np.unique(truth[truth_support]).tolist())
     )
     class_dice = [
-        _dice(predicted == class_index, truth == class_index)
-        for class_index in classes
+        _dice(predicted == class_index, truth == class_index) for class_index in classes
     ]
     return {
         "tissue_dice": _dice(predicted_support, truth_support),
@@ -301,9 +302,7 @@ def _boundary_f1(left: np.ndarray, right: np.ndarray) -> float:
         else 0.0
     )
     return (
-        2.0 * precision * recall / (precision + recall)
-        if precision + recall
-        else 0.0
+        2.0 * precision * recall / (precision + recall) if precision + recall else 0.0
     )
 
 

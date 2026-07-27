@@ -60,7 +60,8 @@ This profile fits the global atlas on CPU and does not install PyTorch. Use
 Semantic topology reconstruction from an approved atlas:
 
 ```bash
-python -m pip install -e ".[topology]" \
+python -m pip install -e ".[dev,topology]" \
+    -c constraints/dev-repro.txt \
     -c constraints/topology-repro.txt
 histopia-topology doctor
 ```
@@ -113,7 +114,8 @@ Full reproducible registration, topology, stain, UNI2-h, and QuPath workflow:
 
 ```bash
 python -m pip install -e \
-    ".[registration,semantic,topology,stain,wsi,uni2h,qupath]" \
+    ".[dev,registration,semantic,topology,stain,wsi,uni2h,qupath]" \
+    -c constraints/dev-repro.txt \
     -c constraints/registration-repro.txt \
     -c constraints/semantic-repro.txt \
     -c constraints/topology-repro.txt \

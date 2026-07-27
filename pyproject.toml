@@ -93,7 +93,7 @@ browser-test = [
 dev = [
     "build>=1.2",
     "pytest>=8",
-    "ruff>=0.6",
+    "ruff>=0.16,<0.17",
     "twine>=5",
 ]
 

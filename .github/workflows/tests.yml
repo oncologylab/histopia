@@ -25,7 +25,9 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install package
-        run: python -m pip install -e ".[dev,registration,semantic,stain,wsi]"
+        run: |
+          python -m pip install -e ".[dev,registration,semantic,topology,stain,wsi]" \
+            -c constraints/dev-repro.txt
 
       - name: Run Ruff
         run: python -m ruff check . && python -m ruff format --check .
@@ -46,7 +48,8 @@ jobs:
 
       - name: Install package and browser
         run: |
-          python -m pip install -e ".[browser-test,registration,semantic,stain,wsi]"
+          python -m pip install -e \
+            ".[browser-test,registration,semantic,topology,stain,wsi]"
           python -m playwright install --with-deps chromium
 
       - name: Run browser checks
@@ -69,9 +72,11 @@ jobs:
       - name: Install exact CPU workflow profiles
         run: |
           python -m pip install -e \
-            ".[dev,registration,semantic,stain,wsi,qupath]" \
+            ".[dev,registration,semantic,topology,stain,wsi,qupath]" \
+            -c constraints/dev-repro.txt \
             -c constraints/registration-repro.txt \
             -c constraints/semantic-repro.txt \
+            -c constraints/topology-repro.txt \
             -c constraints/stain-repro.txt
 
       - name: Verify exact versions and workflow contracts
@@ -82,7 +87,9 @@ jobs:
             tests/test_dependency_profiles.py \
             tests/test_optional_import_boundaries.py
           histopia-qupath \
-            --doctor --workflow registration --device cpu --require-api 1
+            --doctor --workflow registration --device cpu --require-api 2
           histopia-qupath \
-            --doctor --workflow interchange --device cpu --require-api 1
+            --doctor --workflow interchange --device cpu --require-api 2
+          histopia-qupath \
+            --doctor --workflow topology --device cpu --require-api 2
           python -m pip check

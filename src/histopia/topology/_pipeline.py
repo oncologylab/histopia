@@ -605,8 +605,7 @@ def _reconstruct_planes(
                         fraction=fraction,
                         z_um=(
                             z_positions[index]
-                            + fraction
-                            * (z_positions[index + 1] - z_positions[index])
+                            + fraction * (z_positions[index + 1] - z_positions[index])
                         ),
                         segment=segment,
                         source_section=index,
@@ -816,7 +815,8 @@ def _trapezoid_volume(
         return float(areas[0] * fallback_thickness_um)
     return float(
         sum(
-            0.5 * (areas[index] + areas[index + 1])
+            0.5
+            * (areas[index] + areas[index + 1])
             * (z_positions[index + 1] - z_positions[index])
             for index in range(len(areas) - 1)
         )
