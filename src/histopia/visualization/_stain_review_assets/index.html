@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Histopia stain decision review</title>
+  <link rel="stylesheet" href="stain-review.css">
+</head>
+<body>
+  <header>
+    <strong>Histopia stain review</strong>
+    <label>
+      <span>Mouse</span>
+      <select id="mouse"></select>
+    </label>
+    <span id="outcome" class="status" role="status"></span>
+    <button id="details-toggle" type="button" aria-pressed="false">Evidence</button>
+    <button id="export" type="button">Export review</button>
+    <a id="viewer" target="_blank" rel="noreferrer">Open 3D viewer</a>
+  </header>
+  <section id="scope">
+    <strong>Decision scope</strong>
+    <span>Continuous relative target OD at 4 &micro;m/px</span>
+    <span class="excluded">Excludes binary calls, cross-antibody comparison, absolute concentration, and cell-level expression</span>
+  </section>
+  <main>
+    <aside id="queue-panel">
+      <div class="queue-toolbar">
+        <button type="button" data-filter="priority" aria-pressed="true">Priority</button>
+        <button type="button" data-filter="all" aria-pressed="false">All</button>
+        <button type="button" data-filter="unreviewed" aria-pressed="false">Open</button>
+        <button type="button" data-filter="concern" aria-pressed="false">Concerns</button>
+      </div>
+      <div id="progress"></div>
+      <ol id="queue"></ol>
+    </aside>
+    <section id="workspace">
+      <div class="slide-toolbar">
+        <div>
+          <strong id="slide-title"></strong>
+          <span id="slide-meta"></span><span id="chromogen"></span>
+        </div>
+        <div id="color-scale" aria-label="Target optical density color scale">
+          <span>0</span><i></i><span id="scale-maximum"></span>
+        </div>
+        <div class="zoom-tools" aria-label="Linked image zoom">
+          <button type="button" data-zoom="-1" title="Zoom out">-</button>
+          <button type="button" data-zoom="0">Fit</button>
+          <button type="button" data-zoom="1" title="Zoom in">+</button>
+        </div>
+      </div>
+      <div id="image-grid">
+        <figure>
+          <div class="image-stage"><img data-image="histology" alt=""></div>
+          <figcaption>Registered histology</figcaption>
+        </figure>
+        <figure>
+          <div class="image-stage"><img data-image="raw_overlay" alt=""></div>
+          <figcaption>Raw target OD + histology</figcaption>
+        </figure>
+        <figure>
+          <div class="image-stage"><img data-image="corrected_overlay" alt=""></div>
+          <figcaption id="output-overlay-label">Output target OD + histology</figcaption>
+        </figure>
+        <figure>
+          <div class="image-stage"><img data-image="corrected" alt=""></div>
+          <figcaption id="output-map-label">Output target OD only</figcaption>
+        </figure>
+      </div>
+    </section>
+    <aside id="evidence">
+      <section class="evidence-section">
+        <div class="section-heading">
+          <strong>Continuous OD evidence</strong>
+          <span id="priority-badge"></span>
+        </div>
+        <dl id="metrics"></dl>
+        <p id="family-summary"></p>
+      </section>
+      <section class="evidence-section">
+        <strong>Priority reasons</strong>
+        <ul id="reasons"></ul>
+        <p id="known-issue" role="alert"></p>
+      </section>
+      <section class="evidence-section">
+        <strong>Acceptance checks</strong>
+        <label><input type="checkbox" data-check="specificity"> Signal follows visible chromogen</label>
+        <label><input type="checkbox" data-check="glass"> Blank glass remains quiet</label>
+        <label><input type="checkbox" data-check="preserved"> Correction preserves stained regions</label>
+        <label><input type="checkbox" data-check="support"> Tissue support is valid</label>
+      </section>
+      <section class="evidence-section">
+        <strong>Draft slide decision</strong>
+        <div id="decisions">
+          <button type="button" data-decision="accept">Accept</button>
+          <button type="button" data-decision="hold">Hold</button>
+          <button type="button" data-decision="reject">Reject</button>
+        </div>
+        <textarea id="notes" rows="3" placeholder="Review note"></textarea>
+        <div class="review-navigation">
+          <button id="previous" type="button">Previous</button>
+          <button id="next" type="button">Next priority</button>
+        </div>
+      </section>
+      <section class="evidence-section threshold">
+        <strong>Binary positivity</strong>
+        <p id="threshold-status"></p>
+        <span>Reported separately and excluded from this continuous-OD decision.</span>
+      </section>
+    </aside>
+  </main>
+  <script src="manifest-data.js"></script>
+  <script src="stain-review.js"></script>
+</body>
+</html>

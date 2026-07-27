@@ -199,6 +199,58 @@ def test_registration_cohort_review_command_passes_named_runs(
     assert calls == [({"4845": first, "8471": second}, output, 4)]
 
 
+def test_stain_review_command_passes_selected_mice_and_issues(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    calls: list[
+        tuple[Path, Path, list[str] | None, dict[str, dict[str, str]] | None]
+    ] = []
+
+    def capture(
+        viewer: Path,
+        output: Path,
+        *,
+        mice: list[str] | None,
+        issues: dict[str, dict[str, str]] | None,
+    ) -> Path:
+        calls.append((viewer, output, mice, issues))
+        return output / "index.html"
+
+    monkeypatch.setattr(
+        "histopia.visualization._stain_review.build_stain_review",
+        capture,
+    )
+    viewer = tmp_path / "viewer" / "histopia"
+    output = tmp_path / "viewer" / "stain-review"
+    issues = tmp_path / "issues.json"
+    issues.write_text(json.dumps({"4785": {"41": "Inspect upstream mask."}}))
+
+    result = _cli.main(
+        [
+            "stain-review",
+            str(viewer),
+            str(output),
+            "--mouse",
+            "4785",
+            "--mouse",
+            "4269",
+            "--issues",
+            str(issues),
+        ]
+    )
+
+    assert result == 0
+    assert calls == [
+        (
+            viewer,
+            output,
+            ["4785", "4269"],
+            {"4785": {"41": "Inspect upstream mask."}},
+        )
+    ]
+
+
 def test_order_review_command_passes_worker_count(tmp_path: Path, monkeypatch) -> None:
     calls: list[tuple[Path, Path, Path, int]] = []
 

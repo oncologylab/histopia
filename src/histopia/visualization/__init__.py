@@ -50,6 +50,10 @@ _PUBLIC_IMPORTS = {
         "histopia.visualization._viewer",
         "build_section_viewer",
     ),
+    "build_stain_review": (
+        "histopia.visualization._stain_review",
+        "build_stain_review",
+    ),
     "create_viewer_server": (
         "histopia.visualization._server",
         "create_viewer_server",
@@ -96,6 +100,7 @@ __all__ = [
     "build_registration_review",
     "build_section_order_review",
     "build_section_viewer",
+    "build_stain_review",
     "create_viewer_server",
     "export_registration_qc_showcase",
     "export_static_showcase",

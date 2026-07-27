@@ -140,3 +140,41 @@ Color is a display encoding, not a second normalization. Use the numeric OD
 summary and QC flags for interpretation. The viewer clips display and probe
 grids at the largest slide-level 99th-percentile value within each mouse while
 the sealed source-space maps retain their complete continuous values.
+
+## Decision Review
+
+Build a cohort review portal from an existing generated viewer:
+
+```bash
+histopia-visualize stain-review /path/to/viewer-root/histopia \
+  /path/to/viewer-root/stain-review \
+  --mouse sample-a \
+  --mouse sample-b
+```
+
+The portal ranks a bounded review set from correction rejection, rank-guard
+failure, increased candidate glass leakage, high corrected leakage, high
+reconstruction residual, and assay-family coverage. It presents registered
+histology, raw OD overlay, final output overlay, and final output OD with linked
+zoom. When a correction proposal fails, the final panels are explicitly
+identified as the raw fallback.
+
+Slide checks, notes, and draft accept/hold/reject decisions are stored in the
+browser under the exact stain fingerprint. They are review aids and do not
+write or imply scientific approval. Export the draft as JSON, then use
+`histopia-stain approve` only after the continuous-OD evidence is acceptable.
+Binary positivity, cross-antibody normalization, absolute concentration, and
+cell-level expression remain outside this approval scope.
+
+Known upstream issues can be displayed from an optional JSON file:
+
+```json
+{
+  "sample-a": {
+    "12": "Upstream tissue support requires correction."
+  }
+}
+```
+
+Pass it with `--issues /path/to/issues.json`. A slide can be keyed by its
+integer order encoded as a string or by its exact slide ID.

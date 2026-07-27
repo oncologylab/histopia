@@ -128,6 +128,26 @@ def _main(argv: list[str] | None = None) -> int:
         required=True,
     )
     cohort_review.add_argument("--workers", type=int, default=1)
+    stain_review = commands.add_parser(
+        "stain-review",
+        help="Build a decision-focused review portal from generated stain assets.",
+    )
+    stain_review.add_argument(
+        "viewer",
+        type=Path,
+        help="Generated Histopia application containing manifest.json.",
+    )
+    stain_review.add_argument("output", type=Path)
+    stain_review.add_argument(
+        "--mouse",
+        action="append",
+        help="Exact viewer mouse ID; repeat to select a cohort.",
+    )
+    stain_review.add_argument(
+        "--issues",
+        type=Path,
+        help="Optional JSON notes keyed by mouse then slide ID or order.",
+    )
     order_review = commands.add_parser(
         "order-review",
         help="Build a fixed-viewport section-order review.",
@@ -229,6 +249,21 @@ def _main(argv: list[str] | None = None) -> int:
             dict(args.run),
             args.output,
             workers=args.workers,
+        )
+        print(index)
+        return 0
+    if args.command == "stain-review":
+        from histopia.visualization._stain_review import (
+            build_stain_review,
+            load_stain_review_issues,
+        )
+
+        issues = load_stain_review_issues(args.issues) if args.issues else None
+        index = build_stain_review(
+            args.viewer,
+            args.output,
+            mice=args.mouse,
+            issues=issues,
         )
         print(index)
         return 0
