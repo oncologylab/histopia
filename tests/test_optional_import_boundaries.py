@@ -12,6 +12,7 @@ import pytest
     [
         ("histopia.registration._cli", ["--help"]),
         ("histopia.semantic._cli", ["--help"]),
+        ("histopia.stain._cli", ["--help"]),
         ("histopia.visualization._cli", ["--help"]),
         ("histopia.qupath._cli", ["--help"]),
     ],
@@ -59,9 +60,11 @@ def test_public_config_loaders_do_not_import_optional_dependencies() -> None:
 
         from histopia.registration import load_registration_config
         from histopia.semantic import load_semantic_config
+        from histopia.stain import load_stain_config
 
         assert callable(load_registration_config)
         assert callable(load_semantic_config)
+        assert callable(load_stain_config)
         assert "numpy" not in sys.modules
         assert "cv2" not in sys.modules
         assert "torch" not in sys.modules

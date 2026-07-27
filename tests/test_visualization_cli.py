@@ -29,22 +29,33 @@ def test_serve_command_dispatches_explicit_network_settings(
 def test_build_command_targets_stable_histopia_directory(
     tmp_path: Path, monkeypatch
 ) -> None:
-    calls: list[tuple[dict[str, Path], Path, dict[str, Path], Path | None, int]] = []
+    calls: list[
+        tuple[
+            dict[str, Path],
+            Path,
+            dict[str, Path],
+            dict[str, Path],
+            Path | None,
+            int,
+        ]
+    ] = []
 
     def capture(
         runs: dict[str, Path],
         output: Path,
         *,
         semantic_runs: dict[str, Path],
+        stain_runs: dict[str, Path],
         cohort_qc: Path | None,
         workers: int,
     ) -> Path:
-        calls.append((runs, output, semantic_runs, cohort_qc, workers))
+        calls.append((runs, output, semantic_runs, stain_runs, cohort_qc, workers))
         return output / "index.html"
 
     monkeypatch.setattr(_cli, "build_section_viewer", capture)
     registration = tmp_path / "registration"
     semantic = tmp_path / "semantic"
+    stain = tmp_path / "stain"
 
     result = _cli.main(
         [
@@ -54,6 +65,8 @@ def test_build_command_targets_stable_histopia_directory(
             f"mouse={registration}",
             "--semantic-run",
             f"mouse={semantic}",
+            "--stain-run",
+            f"mouse={stain}",
             "--cohort-qc",
             str(tmp_path / "cohort.json"),
             "--workers",
@@ -67,6 +80,7 @@ def test_build_command_targets_stable_histopia_directory(
             {"mouse": registration},
             tmp_path / "viewer" / "histopia",
             {"mouse": semantic},
+            {"mouse": stain},
             tmp_path / "cohort.json",
             4,
         )

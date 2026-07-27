@@ -83,6 +83,7 @@ def _main(argv: list[str] | None = None) -> int:
     build.add_argument("root", type=Path, help="Viewer root containing histopia/.")
     build.add_argument("--run", type=_named_path, action="append", required=True)
     build.add_argument("--semantic-run", type=_named_path, action="append", default=[])
+    build.add_argument("--stain-run", type=_named_path, action="append", default=[])
     build.add_argument("--cohort-qc", type=Path)
     build.add_argument(
         "--workers",
@@ -247,6 +248,7 @@ def _main(argv: list[str] | None = None) -> int:
             dict(args.run),
             args.root / "histopia",
             semantic_runs=dict(args.semantic_run),
+            stain_runs=dict(args.stain_run),
             cohort_qc=args.cohort_qc,
             workers=args.workers,
         )

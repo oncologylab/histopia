@@ -13,15 +13,15 @@ histopia-visualize showcase \
 
 Repeat `--mouse` in the desired browser order. The exporter copies only the
 selected mice, rejects duplicate or local absolute paths, refuses unapproved
-semantic results, and writes:
+semantic or stain results, and writes:
 
 - the browser entry point, JavaScript, CSS, and selected static textures;
 - a pinned Three.js runtime and its license, so the viewer has no CDN or
   third-party runtime request;
 - a selected-cohort `manifest.json`;
 - `.nojekyll` for static hosting; and
-- `showcase.json`, which records each semantic fingerprint and the SHA-256
-  digest of every inventoried file.
+- `showcase.json`, which records semantic and stain fingerprints plus the
+  SHA-256 digest of every inventoried file.
 
 The current public artifact contains 16 reviewed registration stacks spanning
 401 serial sections. Seven stacks also contain fingerprint-reviewed semantic

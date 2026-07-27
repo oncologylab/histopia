@@ -30,9 +30,16 @@ from histopia.semantic._registration_binding import (
     SemanticRegistrationBinding,
     validate_semantic_registration_binding,
 )
+from histopia.stain._artifacts import StainMap
 from histopia.visualization._registration_state import (
     current_registration_review_stages,
     registration_artifact_slide_names,
+)
+from histopia.visualization._stain_viewer import (
+    StainViewerRun,
+    build_stain_viewer_assets,
+    load_stain_viewer_run,
+    write_stain_probe,
 )
 
 THREE_VERSION = "0.170.0"
@@ -42,7 +49,7 @@ THREE_VENDOR_SHA256 = {
     "three.module.min.js": "08fd7545d13d2c7fb65ab691530a802dafefd638596501854f267d0fb13c39e7",
 }
 MAX_DISPLAY_LINKS = 500
-VIEWER_MOUSE_CACHE_VERSION = 4
+VIEWER_MOUSE_CACHE_VERSION = 5
 _LOSSY_WEBP_METHOD = 5
 _LOSSLESS_WEBP_METHOD = 6
 _VIEWER_QC_FIELDS = (
@@ -229,6 +236,7 @@ def build_section_viewer(
     *,
     provisional_mice: set[str] | None = None,
     semantic_runs: dict[str, Path | str] | None = None,
+    stain_runs: dict[str, Path | str] | None = None,
     cohort_qc: Path | str | None = None,
     workers: int = 1,
 ) -> Path:
@@ -263,11 +271,13 @@ def build_section_viewer(
     )
     provisional_mice = provisional_mice or set()
     semantic_runs = semantic_runs or {}
+    stain_runs = stain_runs or {}
     cohort_rows = _load_cohort_rows(cohort_qc)
     mouse_payloads: list[dict[str, object]] = []
     semantic_validations: list[
         tuple[Path, Path, dict[str, object], SemanticRegistrationBinding]
     ] = []
+    stain_validations: list[tuple[Path, dict[str, object], Path, StainViewerRun]] = []
 
     for mouse_id, run_value in sorted(runs.items()):
         run_dir = Path(run_value)
@@ -314,12 +324,21 @@ def build_section_viewer(
         if semantic_qc is not None and semantic_payload is not None:
             if semantic_qc.get("fingerprint") != semantic_payload.get("fingerprint"):
                 raise ValueError(f"cohort QC fingerprint does not match {mouse_id}")
+        stain_dir = Path(stain_runs[mouse_id]) if mouse_id in stain_runs else None
+        stain_viewer = (
+            load_stain_viewer_run(run_dir, payload, stain_dir)
+            if stain_dir is not None
+            else None
+        )
+        if stain_viewer is not None and stain_dir is not None:
+            stain_validations.append((run_dir, payload, stain_dir, stain_viewer))
         registration_approval = _registration_approval_payload(run_dir)
         mouse_fingerprint = _viewer_mouse_fingerprint(
             run_dir,
             payload,
             semantic_payload=semantic_payload,
             semantic_binding=semantic_binding,
+            stain_viewer=stain_viewer,
         )
         previous_mouse = old_mice.get(mouse_id)
         previous_cache = old_mouse_cache.get(mouse_id)
@@ -346,6 +365,8 @@ def build_section_viewer(
                     if semantic_binding is not None
                     else None
                 )
+            if previous_mouse.get("stain") is not None and stain_viewer is not None:
+                previous_mouse["stain"]["review"] = stain_viewer.review
             mouse_payloads.append(previous_mouse)
             new_mouse_cache[mouse_id] = previous_cache
             mouse_stats["reused"] += 1
@@ -371,6 +392,7 @@ def build_section_viewer(
             if semantic_payload is not None
             else []
         )
+        stain_slides = stain_viewer.slides if stain_viewer is not None else {}
         palette = semantic_payload["palette"] if semantic_payload is not None else []
         reference_path = Path(payload["reference_slide"])
         reference_row = next(row for row in payload["slides"] if row["is_reference"])
@@ -486,6 +508,90 @@ def build_section_viewer(
                 slide_payload["blend_texture"] = (
                     f"assets/{_safe_name(mouse_id)}/{blend_name}"
                 )
+            if stain_viewer is not None:
+                stain_row = stain_slides.get(source_path.name)
+                if stain_row is None:
+                    raise ValueError(f"stain result is missing {source_path.name}")
+                stain_slide: dict[str, object] = {
+                    "quantified": bool(stain_row.get("quantified")),
+                    "marker": stain_row.get("marker"),
+                    "family": stain_row.get("family"),
+                    "qc": stain_row.get("qc"),
+                }
+                if stain_slide["quantified"]:
+                    stain_map = StainMap.load(stain_viewer.root / str(stain_row["map"]))
+                    stain_assets = build_stain_viewer_assets(
+                        stain_map,
+                        source_shape=source.shape[:2],
+                        matrix=matrix,
+                        output_shape=reference_image.shape[:2],
+                        registered_rgb=registered,
+                        registered_mask=registered_mask,
+                        display_max_od=stain_viewer.display_max_od,
+                    )
+                    stain_base = f"{order:03d}-{_safe_name(source_path.stem)}-stain"
+                    stain_textures: dict[str, str] = {}
+                    stain_overlay_textures: dict[str, str] = {}
+                    for variant, image in (
+                        ("raw", stain_assets.raw_rgba),
+                        ("corrected", stain_assets.corrected_rgba),
+                    ):
+                        name = f"{stain_base}-{variant}.webp"
+                        webp_batch.queue(
+                            image,
+                            mouse_assets / name,
+                            options={
+                                "lossless": False,
+                                "quality": 91,
+                                "method": _LOSSY_WEBP_METHOD,
+                            },
+                        )
+                        stain_textures[variant] = (
+                            f"assets/{_safe_name(mouse_id)}/{name}"
+                        )
+                    for variant, image in (
+                        ("raw", stain_assets.raw_overlay_rgba),
+                        ("corrected", stain_assets.corrected_overlay_rgba),
+                    ):
+                        name = f"{stain_base}-{variant}-overlay.webp"
+                        webp_batch.queue(
+                            image,
+                            mouse_assets / name,
+                            options={
+                                "lossless": False,
+                                "quality": 91,
+                                "method": _LOSSY_WEBP_METHOD,
+                            },
+                        )
+                        stain_overlay_textures[variant] = (
+                            f"assets/{_safe_name(mouse_id)}/{name}"
+                        )
+                    probe_name = f"{stain_base}-probe.bin"
+                    write_stain_probe(
+                        mouse_assets / probe_name,
+                        stain_assets.probe_values,
+                    )
+                    qc = stain_row.get("qc")
+                    threshold = (
+                        qc.get("positive_threshold_od")
+                        if isinstance(qc, dict)
+                        else None
+                    )
+                    stain_slide.update(
+                        {
+                            "textures": stain_textures,
+                            "overlay_textures": stain_overlay_textures,
+                            "probe": (f"assets/{_safe_name(mouse_id)}/{probe_name}"),
+                            "probe_width": stain_assets.probe_width,
+                            "probe_height": stain_assets.probe_height,
+                            "probe_scale_od": stain_assets.probe_scale_od,
+                            "probe_nodata": 65535,
+                            "positive_threshold_od": threshold,
+                            "positive_fraction": stain_row.get("positive_fraction"),
+                            "quantiles": stain_row.get("quantiles"),
+                        }
+                    )
+                slide_payload["stain"] = stain_slide
             slides.append(slide_payload)
         webp_batch.flush()
         mouse_payload = {
@@ -515,6 +621,28 @@ def build_section_viewer(
                     "link_pair_count": len(topology_links),
                 }
                 if semantic_payload is not None
+                else None
+            ),
+            "stain": (
+                {
+                    "measurement": stain_viewer.payload.get("measurement"),
+                    "families": stain_viewer.payload.get("families"),
+                    "fingerprint": stain_viewer.payload.get("fingerprint"),
+                    "display_max_od": stain_viewer.display_max_od,
+                    "palette": [
+                        "#f6f7f4",
+                        "#27807e",
+                        "#eebe46",
+                        "#b53130",
+                    ],
+                    "review": stain_viewer.review,
+                    "qc": _stain_viewer_qc(stain_viewer),
+                    "quantified_slides": sum(
+                        bool(row.get("quantified"))
+                        for row in stain_viewer.slides.values()
+                    ),
+                }
+                if stain_viewer is not None
                 else None
             ),
         }
@@ -547,6 +675,19 @@ def build_section_viewer(
             raise ValueError(
                 "semantic registration binding changed during viewer generation"
             )
+    for run_dir, expected_registration, stain_dir, expected_stain in stain_validations:
+        current_registration = json.loads(
+            (run_dir / "registration_result.json").read_text()
+        )
+        if current_registration != expected_registration:
+            raise ValueError("registration result changed during viewer generation")
+        current_stain = load_stain_viewer_run(
+            run_dir,
+            current_registration,
+            stain_dir,
+        )
+        if current_stain.payload != expected_stain.payload:
+            raise ValueError("stain result changed during viewer generation")
     (output_dir / "manifest.json").write_text(
         json.dumps({"schema_version": 1, "mice": mouse_payloads}, indent=2) + "\n"
     )
@@ -598,6 +739,31 @@ def _load_semantic_result_payload(run_dir: Path) -> dict[str, object]:
     if not isinstance(payload, dict):
         raise ValueError("semantic result root must be an object")
     return payload
+
+
+def _stain_viewer_qc(stain_viewer: StainViewerRun) -> dict[str, object]:
+    qcs = [
+        row["qc"]
+        for row in stain_viewer.slides.values()
+        if row.get("quantified") and isinstance(row.get("qc"), dict)
+    ]
+    if not qcs:
+        return {
+            "correction_accepted": 0,
+            "threshold_accepted": 0,
+            "raw_glass_leakage": 0.0,
+            "corrected_glass_leakage": 0.0,
+        }
+    return {
+        "correction_accepted": sum(bool(qc.get("correction_accepted")) for qc in qcs),
+        "threshold_accepted": sum(bool(qc.get("threshold_accepted")) for qc in qcs),
+        "raw_glass_leakage": float(
+            np.median([float(qc["raw_glass_leakage"]) for qc in qcs])
+        ),
+        "corrected_glass_leakage": float(
+            np.median([float(qc["corrected_glass_leakage"]) for qc in qcs])
+        ),
+    }
 
 
 def _write_viewer_runtime(output_dir: Path) -> None:
@@ -1069,6 +1235,7 @@ def _viewer_mouse_fingerprint(
     *,
     semantic_payload: dict[str, object] | None,
     semantic_binding: SemanticRegistrationBinding | None,
+    stain_viewer: StainViewerRun | None,
 ) -> str:
     slides = []
     for slide in registration.get("slides", []):
@@ -1109,6 +1276,11 @@ def _viewer_mouse_fingerprint(
         ),
         "semantic_registration_binding": (
             semantic_binding.to_json_dict() if semantic_binding is not None else None
+        ),
+        "stain_fingerprint": (
+            stain_viewer.payload.get("fingerprint")
+            if stain_viewer is not None
+            else None
         ),
         # Preserve the v2 null sentinel while keeping mutable QC out of asset identity.
         "semantic_qc": None,
@@ -1192,6 +1364,16 @@ def _mouse_asset_paths(mouse: dict[str, object]) -> tuple[str, ...]:
             paths.update(
                 value for value in semantic_textures.values() if isinstance(value, str)
             )
+        stain = slide.get("stain")
+        if isinstance(stain, dict):
+            for key in ("textures", "overlay_textures"):
+                textures = stain.get(key)
+                if isinstance(textures, dict):
+                    paths.update(
+                        value for value in textures.values() if isinstance(value, str)
+                    )
+            if isinstance(stain.get("probe"), str):
+                paths.add(stain["probe"])
     semantic = mouse.get("semantic")
     if isinstance(semantic, dict) and isinstance(semantic.get("links_url"), str):
         paths.add(semantic["links_url"])
@@ -1796,10 +1978,28 @@ _INDEX_HTML = """<!doctype html>
       <p id="order-status"></p>
       <div id="mode" class="segmented" aria-label="Texture mode">
         <button data-mode="histology" class="active">Histology</button>
-        <button data-mode="blend">Blend</button>
+        <button data-mode="blend">Semantic blend</button>
         <button data-mode="semantic">Semantic</button>
+        <button data-mode="stain-overlay">Stain + histology</button>
+        <button data-mode="stain">Stain</button>
       </div>
       <div id="legend"></div>
+      <section id="stain-controls" hidden>
+        <label>Signal<select id="stain-variant">
+          <option value="corrected">Corrected target OD</option>
+          <option value="raw">Raw target OD</option>
+        </select></label>
+        <label>Probe threshold
+          <span class="range-value"><output id="stain-threshold-value">25%</output> of scale</span>
+          <input id="stain-threshold" type="range" min="0" max="100" value="25">
+        </label>
+        <label>ROI radius
+          <span class="range-value"><output id="roi-radius-value">2.0%</output> of width</span>
+          <input id="roi-radius" type="range" min="0.5" max="10" step="0.5" value="2">
+        </label>
+        <p id="stain-scale"></p>
+        <div id="stain-probe">Click a tissue region to profile visible sections.</div>
+      </section>
       <label>Regions<select id="clusters" disabled></select></label>
       <p id="qc"></p>
       <label>Adjacent pair<select id="link-pair" disabled></select></label>
@@ -2058,6 +2258,11 @@ const loader = new THREE.TextureLoader();
 let current;
 let currentMode = 'histology';
 let currentK = null;
+let currentStainVariant = 'corrected';
+let probePoint = null;
+let probeGeneration = 0;
+let probeRefreshTimer = null;
+const probeCache = new Map();
 let linkObject = null;
 let loadGeneration = 0;
 let textureGeneration = 0;
@@ -2238,6 +2443,7 @@ function setSlideVisibility(predicate) {
   });
   updateSlideFocus();
   rebuildLinks();
+  refreshProbe();
 }
 function focusSlide(index) {
   const slides = orderedSlides();
@@ -2268,6 +2474,7 @@ function buildList() {
       slide.mesh.visible = toggle.checked;
       updateSlideFocus();
       rebuildLinks();
+      refreshProbe();
     });
     const text = document.createElement('span');
     text.textContent = `${slide.label}${slide.reference ? ' (reference)' : ''}`;
@@ -2291,23 +2498,47 @@ function buildList() {
 function textureUrl(slide, mode, clusterCount = currentK) {
   if (mode === 'semantic') return slide.semantic_textures[String(clusterCount)];
   if (mode === 'blend') return slide.blend_texture;
+  if (mode === 'stain')
+    return slide.stain?.quantified
+      ? slide.stain.textures[currentStainVariant]
+      : slide.texture;
+  if (mode === 'stain-overlay')
+    return slide.stain?.quantified
+      ? slide.stain.overlay_textures[currentStainVariant]
+      : slide.texture;
   return slide.texture;
 }
+function modeAvailable(mouse, mode) {
+  if (mode === 'histology') return true;
+  if (mode === 'semantic' || mode === 'blend') return Boolean(mouse?.semantic);
+  if (mode === 'stain' || mode === 'stain-overlay') return Boolean(mouse?.stain);
+  return false;
+}
 function updateModeControls() {
-  const available = Boolean(current?.semantic);
   document.querySelectorAll('#mode button').forEach(button => {
-    button.disabled = button.dataset.mode !== 'histology' && !available;
+    button.disabled = !modeAvailable(current, button.dataset.mode);
     button.classList.toggle('active', button.dataset.mode === currentMode);
   });
   const legend = document.querySelector('#legend');
   legend.replaceChildren();
-  if (available && currentMode !== 'histology') {
+  const semanticMode = currentMode === 'semantic' || currentMode === 'blend';
+  const stainMode = currentMode === 'stain' || currentMode === 'stain-overlay';
+  if (current?.semantic && semanticMode) {
     current.semantic.palette.slice(0, currentK).forEach((color, index) => {
       const item = document.createElement('span');
       item.innerHTML = `<i style="background:${color}"></i>Region ${index + 1}`;
       legend.append(item);
     });
+  } else if (current?.stain && stainMode) {
+    const scale = document.createElement('div');
+    scale.className = 'stain-color-scale';
+    scale.title = `0 to ${Number(current.stain.display_max_od).toFixed(3)} OD`;
+    legend.append(scale);
   }
+  document.querySelector('#stain-controls').hidden = !stainMode;
+  document.querySelector('#stain-scale').textContent = current?.stain && stainMode
+    ? `Fixed scale 0–${Number(current.stain.display_max_od).toFixed(3)} relative OD`
+    : '';
   const qc = document.querySelector('#qc');
   const review = current?.semantic?.review;
   const cohort = current?.semantic?.qc;
@@ -2330,10 +2561,35 @@ function updateModeControls() {
     details.push(`batch ${batch.accepted ? 'accepted' : 'rejected'}: ${raw} to ${proposed}`);
     details.push(`K ${currentK} score ${Number(metric.composite_score).toFixed(3)}`);
   }
+  if (current?.stain && stainMode) {
+    const stainReview = current.stain.review;
+    const stainQc = current.stain.qc;
+    details.length = 0;
+    details.push(
+      `${current.stain.quantified_slides}/${current.slides.length} quantified`);
+    if (stainQc) {
+      details.push(
+        `correction ${stainQc.correction_accepted}/` +
+        `${current.stain.quantified_slides} accepted`);
+      details.push(
+        `glass ${Number(stainQc.raw_glass_leakage).toFixed(3)} to ` +
+        `${Number(stainQc.corrected_glass_leakage).toFixed(3)} OD`);
+      details.push(
+        `threshold ${stainQc.threshold_accepted}/` +
+        `${current.stain.quantified_slides} stable`);
+    }
+    details.push(stainReview?.approved
+      ? 'Stain QC approved'
+      : (stainReview?.fingerprint_matches
+        ? 'Stain QC approval required'
+        : 'Stain QC fingerprint mismatch'));
+    details.push('relative OD; not cross-antibody normalized');
+  }
   qc.textContent = details.join(' | ');
 }
 async function setMode(mode, force = false) {
-  if (!current || (mode !== 'histology' && !current.semantic) || (!force && mode === currentMode)) return;
+  if (!current || !modeAvailable(current, mode) ||
+      (!force && mode === currentMode)) return;
   const mouse = current;
   const generation = ++textureGeneration;
   const transition = beginTransition();
@@ -2360,6 +2616,145 @@ async function setMode(mode, force = false) {
   requestRenderBurst();
   await finishTransition(transition);
 }
+async function loadProbe(slide) {
+  if (!slide.stain?.quantified) return null;
+  if (probeCache.has(slide.stain.probe))
+    return probeCache.get(slide.stain.probe);
+  const request = fetch(slide.stain.probe).then(async response => {
+    if (!response.ok)
+      throw new Error(`Stain probe request failed: ${response.status}`);
+    const values = new Uint16Array(await response.arrayBuffer());
+    const pixels = slide.stain.probe_width * slide.stain.probe_height;
+    if (values.length !== pixels * 2)
+      throw new Error('Invalid stain probe grid');
+    return values;
+  });
+  probeCache.set(slide.stain.probe, request);
+  return request;
+}
+function probeStatistics(slide, values, point, variant, radiusFraction) {
+  const width = slide.stain.probe_width;
+  const height = slide.stain.probe_height;
+  const pixels = width * height;
+  const offset = variant === 'corrected' ? pixels : 0;
+  const centerX = point.x * (width - 1);
+  const centerY = point.y * (height - 1);
+  const radius = Math.max(1, radiusFraction * width);
+  const x0 = Math.max(0, Math.floor(centerX - radius));
+  const x1 = Math.min(width - 1, Math.ceil(centerX + radius));
+  const y0 = Math.max(0, Math.floor(centerY - radius));
+  const y1 = Math.min(height - 1, Math.ceil(centerY + radius));
+  const samples = [];
+  for (let y = y0; y <= y1; y += 1) {
+    for (let x = x0; x <= x1; x += 1) {
+      if ((x - centerX) ** 2 + (y - centerY) ** 2 > radius ** 2) continue;
+      const encoded = values[offset + y * width + x];
+      if (encoded !== slide.stain.probe_nodata)
+        samples.push(encoded * slide.stain.probe_scale_od);
+    }
+  }
+  if (!samples.length) return null;
+  samples.sort((left, right) => left - right);
+  const quantile = fraction =>
+    samples[Math.min(samples.length - 1, Math.floor(fraction * samples.length))];
+  const mean = samples.reduce((sum, value) => sum + value, 0) / samples.length;
+  const threshold = Number(document.querySelector('#stain-threshold').value) /
+    100 * current.stain.display_max_od;
+  return {
+    mean,
+    median: quantile(0.5),
+    p90: quantile(0.9),
+    positive: samples.filter(value => value >= threshold).length / samples.length,
+    pixels: samples.length,
+  };
+}
+function renderProbe(point, rows) {
+  const root = document.querySelector('#stain-probe');
+  root.replaceChildren();
+  const header = document.createElement('div');
+  header.className = 'probe-header';
+  header.textContent =
+    `ROI x ${(100 * point.x).toFixed(1)}%, y ${(100 * point.y).toFixed(1)}%`;
+  root.append(header);
+  if (!rows.length) {
+    const empty = document.createElement('p');
+    empty.textContent = 'No quantified tissue in this ROI.';
+    root.append(empty);
+    return;
+  }
+  for (const {slide, stats} of rows) {
+    const row = document.createElement('div');
+    row.className = 'probe-row';
+    const label = document.createElement('span');
+    label.textContent = slide.label;
+    label.title = slide.id;
+    const value = document.createElement('strong');
+    value.textContent = `${stats.median.toFixed(3)} OD`;
+    const bar = document.createElement('i');
+    bar.style.width =
+      `${Math.min(100, 100 * stats.median / current.stain.display_max_od)}%`;
+    const detail = document.createElement('small');
+    detail.textContent =
+      `mean ${stats.mean.toFixed(3)} · p90 ${stats.p90.toFixed(3)} · ` +
+      `${(100 * stats.positive).toFixed(0)}% above threshold`;
+    row.append(label, value, bar, detail);
+    root.append(row);
+  }
+}
+async function updateProbe() {
+  if (!current?.stain || !probePoint) return;
+  const generation = ++probeGeneration;
+  const mouse = current;
+  const variant = currentStainVariant;
+  const radiusFraction = Number(document.querySelector('#roi-radius').value) / 100;
+  const visible = orderedSlides().filter(
+    slide => slide.mesh.visible && slide.stain?.quantified);
+  document.querySelector('#stain-probe').textContent =
+    `Profiling ${visible.length} visible sections…`;
+  const loaded = await Promise.all(
+    visible.map(async slide => [slide, await loadProbe(slide)]));
+  if (generation !== probeGeneration || current !== mouse) return;
+  const rows = loaded.flatMap(([slide, values]) => {
+    const stats = probeStatistics(
+      slide, values, probePoint, variant, radiusFraction);
+    return stats ? [{slide, stats}] : [];
+  });
+  renderProbe(probePoint, rows);
+}
+function refreshProbe() {
+  if (!probePoint) return;
+  clearTimeout(probeRefreshTimer);
+  probeRefreshTimer = setTimeout(
+    () => updateProbe().catch(reportLoadError),
+    60,
+  );
+}
+const raycaster = new THREE.Raycaster();
+const pointer = new THREE.Vector2();
+let pointerDown = null;
+renderer.domElement.addEventListener('pointerdown', event => {
+  pointerDown = {x: event.clientX, y: event.clientY};
+});
+renderer.domElement.addEventListener('pointerup', event => {
+  if (!current?.stain || !pointerDown ||
+      Math.hypot(event.clientX - pointerDown.x, event.clientY - pointerDown.y) > 4) {
+    pointerDown = null;
+    return;
+  }
+  pointerDown = null;
+  const box = renderer.domElement.getBoundingClientRect();
+  pointer.x = ((event.clientX - box.left) / box.width) * 2 - 1;
+  pointer.y = -((event.clientY - box.top) / box.height) * 2 + 1;
+  raycaster.setFromCamera(pointer, camera);
+  const hit = raycaster.intersectObjects(
+    group.children.filter(mesh => mesh.visible), false)[0];
+  if (!hit?.uv) return;
+  probePoint = {
+    x: THREE.MathUtils.clamp(hit.uv.x, 0, 1),
+    y: THREE.MathUtils.clamp(1 - hit.uv.y, 0, 1),
+  };
+  updateProbe().catch(reportLoadError);
+});
 async function loadTopologyLinks(mouse) {
   if (!mouse.semantic) return [];
   if (mouse.semantic.links) return mouse.semantic.links;
@@ -2391,8 +2786,9 @@ async function loadMouse(mouse) {
   const transition = beginTransition();
   const progress = document.querySelector('#slide-focus');
   progress.textContent = `Loading ${mouse.id}...`;
-  const requestedMode =
-    mouse.semantic || currentMode === 'histology' ? currentMode : 'histology';
+  const requestedMode = modeAvailable(mouse, currentMode)
+    ? currentMode
+    : 'histology';
   const requestedK = mouse.semantic?.selected_k ?? null;
   let loadedTextures = 0;
   let textures;
@@ -2421,6 +2817,10 @@ async function loadMouse(mouse) {
     disposeTexture(mesh.material.map); mesh.material.dispose(); mesh.geometry.dispose();
   });
   group.clear(); current = mouse; currentMode = requestedMode;
+  probePoint = null;
+  ++probeGeneration;
+  document.querySelector('#stain-probe').textContent =
+    'Click a tissue region to profile visible sections.';
   if (mouse.semantic) mouse.semantic.links = topologyLinks;
   currentK = mouse.semantic?.selected_k ?? null;
   const clusterSelect = document.querySelector('#clusters');
@@ -2429,7 +2829,7 @@ async function loadMouse(mouse) {
     clusterSelect.add(new Option(`K = ${k}${k === currentK ? ' (selected)' : ''}`, k)));
   clusterSelect.value = currentK ?? '';
   clusterSelect.disabled = !mouse.semantic;
-  if (!mouse.semantic) currentMode = 'histology';
+  if (!modeAvailable(mouse, currentMode)) currentMode = 'histology';
   const approval = mouse.registration_approval;
   document.querySelector('#order-status').textContent = approval
     ? `Approved registration · ${approval.reviewed_at.slice(0, 10)}`
@@ -2483,6 +2883,24 @@ document.querySelector('#clusters').addEventListener('change', async event => {
   currentK = Number(event.target.value);
   try { await setMode('semantic', true); } catch (error) { reportLoadError(error); }
 });
+document.querySelector('#stain-variant').addEventListener('change', async event => {
+  currentStainVariant = event.target.value;
+  refreshProbe();
+  if (currentMode === 'stain' || currentMode === 'stain-overlay') {
+    try { await setMode(currentMode, true); }
+    catch (error) { reportLoadError(error); }
+  }
+});
+document.querySelector('#stain-threshold').addEventListener('input', event => {
+  document.querySelector('#stain-threshold-value').textContent =
+    `${event.target.value}%`;
+  refreshProbe();
+});
+document.querySelector('#roi-radius').addEventListener('input', event => {
+  document.querySelector('#roi-radius-value').textContent =
+    `${Number(event.target.value).toFixed(1)}%`;
+  refreshProbe();
+});
 document.querySelector('#reset').addEventListener('click', resetCamera);
 document.querySelector('#previous-slide').addEventListener('click', () => stepSlide(-1));
 document.querySelector('#next-slide').addEventListener('click', () => stepSlide(1));
@@ -2512,4 +2930,4 @@ try { await loadMouse(initialMouse); } catch (error) { reportLoadError(error); }
 requestRender();
 """
 
-_STYLES_CSS = """*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden}body{font-family:Arial,sans-serif;color:#202426;background:#f4f5f3}main{display:grid;grid-template-columns:300px minmax(0,1fr);width:100%;height:100%;overflow:hidden}aside{min-width:0;min-height:0;padding:18px;border-right:1px solid #c9ceca;background:#fff;overflow-y:auto;overflow-x:hidden}h1{font-size:22px;margin:0 0 18px}label{display:grid;gap:6px;font-size:13px;margin:14px 0}select,input{width:100%}.commands,.segmented,.visibility-commands{display:flex;gap:8px;margin:16px 0}button{border:1px solid #88918b;background:#fff;padding:7px 10px;border-radius:4px;cursor:pointer}.segmented{gap:0}.segmented button{flex:1;border-radius:0;margin-left:-1px}.segmented button:first-child{margin-left:0;border-radius:4px 0 0 4px}.segmented button:last-child{border-radius:0 4px 4px 0}.segmented button.active{background:#202426;color:#fff}.segmented button:disabled{color:#a7aca8;cursor:default}.slide-navigation{display:grid;grid-template-columns:36px minmax(0,1fr) 36px;align-items:center;gap:8px;margin:16px 0}.slide-navigation button{width:36px;height:32px;padding:0;font-size:18px}.slide-navigation output{text-align:center;font-size:12px;white-space:nowrap}.visibility-commands button{flex:1}#legend{display:grid;grid-template-columns:1fr 1fr;gap:5px;font-size:11px}#legend span{display:flex;align-items:center;gap:5px}#legend i{display:block;width:12px;height:12px;border:1px solid #555}#order-status{font-size:12px;color:#8a4f12}ol{padding:0;list-style:none}li{display:grid;grid-template-columns:20px minmax(0,1fr);align-items:center;min-height:32px;border-bottom:1px solid #eceeec;font-size:12px;cursor:grab}li span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}li input{width:14px}#viewport{position:relative;min-width:0;min-height:0;width:100%;height:100%;overflow:hidden;background:#f4f5f3}canvas{display:block;width:100%!important;height:100%!important}@media(max-width:720px){main{grid-template-columns:1fr;grid-template-rows:250px minmax(0,1fr)}aside{border-right:0;border-bottom:1px solid #c9ceca}#sections{display:none}}"""
+_STYLES_CSS = """*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden}body{font-family:Arial,sans-serif;color:#202426;background:#f4f5f3}main{display:grid;grid-template-columns:300px minmax(0,1fr);width:100%;height:100%;overflow:hidden}aside{min-width:0;min-height:0;padding:18px;border-right:1px solid #c9ceca;background:#fff;overflow-y:auto;overflow-x:hidden}h1{font-size:22px;margin:0 0 18px}label{display:grid;gap:6px;font-size:13px;margin:14px 0}select,input{width:100%}.commands,.segmented,.visibility-commands{display:flex;gap:8px;margin:16px 0}button{border:1px solid #88918b;background:#fff;padding:7px 10px;border-radius:4px;cursor:pointer}.segmented{gap:0}.segmented button{flex:1;border-radius:0;margin-left:-1px}.segmented button:first-child{margin-left:0;border-radius:4px 0 0 4px}.segmented button:last-child{border-radius:0 4px 4px 0}.segmented button.active{background:#202426;color:#fff}.segmented button:disabled{color:#a7aca8;cursor:default}.slide-navigation{display:grid;grid-template-columns:36px minmax(0,1fr) 36px;align-items:center;gap:8px;margin:16px 0}.slide-navigation button{width:36px;height:32px;padding:0;font-size:18px}.slide-navigation output{text-align:center;font-size:12px;white-space:nowrap}.visibility-commands button{flex:1}#legend{display:grid;grid-template-columns:1fr 1fr;gap:5px;font-size:11px}#legend span{display:flex;align-items:center;gap:5px}#legend i{display:block;width:12px;height:12px;border:1px solid #555}#order-status{font-size:12px;color:#8a4f12}ol{padding:0;list-style:none}li{display:grid;grid-template-columns:20px minmax(0,1fr);align-items:center;min-height:32px;border-bottom:1px solid #eceeec;font-size:12px;cursor:grab}li span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}li input{width:14px}#viewport{position:relative;min-width:0;min-height:0;width:100%;height:100%;overflow:hidden;background:#f4f5f3}canvas{display:block;width:100%!important;height:100%!important}#mode.segmented{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px}#mode.segmented button,#mode.segmented button:first-child,#mode.segmented button:last-child{min-height:31px;margin:0;border-radius:4px;padding:5px 7px;font-size:11px}#stain-controls{border-top:1px solid #dfe3df;border-bottom:1px solid #dfe3df;padding:2px 0 10px}#stain-controls[hidden]{display:none}.range-value{float:right;color:#65706a;font-size:11px}.stain-color-scale{grid-column:1/-1;height:12px;border:1px solid #737b76;background:linear-gradient(90deg,#f6f7f4,#27807e,#eebe46,#b53130)}#stain-scale{font-size:11px;color:#59635d;margin:6px 0}#stain-probe{display:grid;gap:5px;max-height:260px;overflow:auto;font-size:11px}.probe-header{position:sticky;top:0;background:#fff;padding:3px 0;font-weight:700;z-index:1}.probe-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 6px;padding:4px 0;border-bottom:1px solid #eceeec}.probe-row span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.probe-row i{grid-column:1/-1;display:block;height:4px;min-width:1px;background:#27807e}.probe-row small{grid-column:1/-1;color:#65706a}#qc{font-size:11px;line-height:1.35;color:#59635d}@media(max-width:720px){main{grid-template-columns:1fr;grid-template-rows:250px minmax(0,1fr)}aside{border-right:0;border-bottom:1px solid #c9ceca}#sections{display:none}}"""

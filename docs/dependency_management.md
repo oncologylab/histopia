@@ -57,6 +57,26 @@ python -m pip install -e ".[semantic]"
 This profile fits the global atlas on CPU and does not install PyTorch. Use
 `fit_threads` to bound its independent fit tasks and native BLAS/OpenMP pools.
 
+Quantitative brightfield stain profiling:
+
+```bash
+python -m pip install -e ".[stain]"
+histopia-stain doctor
+```
+
+The stain profile installs the WSI, numerical fitting, and registered-viewer
+dependencies. Quantification runs on CPU at a configured physical resolution;
+the optional UNI2-h workflow is not used to alter measured OD.
+
+The exact tested stain runtime is available either directly or as a
+constraint:
+
+```bash
+python -m pip install -e ".[stain-repro]"
+python -m pip install -e ".[dev,stain]" \
+    -c constraints/stain-repro.txt
+```
+
 UNI2-h extraction from source whole-slide images:
 
 ```bash
@@ -93,10 +113,11 @@ registration and atlas-fitting profiles, verifies every installed version,
 runs the registration and interchange QuPath doctors, and checks dependency
 consistency.
 
-Full reproducible registration, WSI, UNI2-h, and QuPath workflow:
+Full reproducible registration, stain, UNI2-h, and QuPath workflow:
 
 ```bash
-python -m pip install -e ".[registration-repro,uni2h-repro,qupath]"
+python -m pip install -e \
+    ".[registration-repro,stain-repro,uni2h-repro,qupath]"
 histopia-qupath --doctor --workflow full --device auto --require-api 1
 ```
 
@@ -161,6 +182,7 @@ failure can terminate Python before Histopia can report a normal exception.
   GPU extraction stack. Validation used Python 3.10, an NVIDIA A100, and the
   PyTorch CUDA 13.0 wheel; use the equivalent platform wheel when CUDA 13.0 is
   unavailable.
+- Use `constraints/stain-repro.txt` for quantitative brightfield validation.
 - The `uni2h-repro` extra mirrors that constraint file. The normal `uni2h`
   extra retains bounded ranges for portable CPU, CUDA, and Apple MPS installs.
 - Do not commit virtual environments, raw slides, generated masks, warped

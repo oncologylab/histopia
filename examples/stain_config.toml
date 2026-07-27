@@ -1,0 +1,22 @@
+registration_run = "/path/to/accepted-registration-run"
+output_dir = "/path/to/stain-output"
+
+# Measurement resolution in physical source-slide space.
+analysis_mpp = 4.0
+# Unlisted brightfield markers are interpreted as hematoxylin-DAB.
+default_family = "h-dab"
+methods = ["legacy", "fixed", "macenko", "nmf"]
+sample_pixels = 100000
+white_sample_pixels = 50000
+vector_shrinkage = 0.25
+correction_rank_guard = 0.98
+seed = 0
+# Increase cautiously: independent WSI sections are held in memory per worker.
+workers = 1
+# Total native libvips budget divided across spawned workers.
+vips_threads = 4
+require_registration_approval = true
+
+# For unusual filenames or mixed acquisition batches, provide an exact JSON
+# assay manifest with slide_id, marker, family, and optional batch_id fields.
+# assay_manifest = "/path/to/assays.json"

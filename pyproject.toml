@@ -64,6 +64,16 @@ semantic = [
     "scipy>=1.11,<2",
     "threadpoolctl>=3.1,<4",
 ]
+stain = [
+    "numpy>=1.26,<3",
+    "opencv-contrib-python-headless>=4.8,<6",
+    "pillow>=10,<13",
+    "pyvips>=2.2,<3",
+    "scikit-learn>=1.5,<2",
+    "scipy>=1.11,<2",
+    "threadpoolctl>=3.1,<4",
+    "tifffile>=2024.8",
+]
 qupath = [
     "numpy>=1.26,<3",
 ]
@@ -104,6 +114,18 @@ semantic-repro = [
     "threadpoolctl==3.6.0",
     "tomli==2.4.1; python_version < '3.11'",
 ]
+stain-repro = [
+    "numpy==2.2.6",
+    "opencv-contrib-python-headless==5.0.0.93",
+    "packaging==26.2",
+    "pillow==12.3.0",
+    "pyvips==2.2.3",
+    "scikit-learn==1.7.2",
+    "scipy==1.15.3",
+    "threadpoolctl==3.6.0",
+    "tifffile==2025.5.10",
+    "tomli==2.4.1; python_version < '3.11'",
+]
 browser-test = [
     "playwright>=1.50,<2",
     "pytest>=8",
@@ -118,6 +140,7 @@ dev = [
 [project.scripts]
 histopia-register = "histopia.registration._cli:main"
 histopia-semantic = "histopia.semantic._cli:main"
+histopia-stain = "histopia.stain._cli:main"
 histopia-visualize = "histopia.visualization._cli:main"
 histopia-qupath = "histopia.qupath._cli:main"
 
@@ -139,6 +162,7 @@ markers = [
     "browser: headless browser checks requiring Playwright Chromium",
     "integration: local tests that require external image data or optional WSI dependencies",
     "uni2h: local tests that require a gated UNI2-h checkpoint and GPU dependencies",
+    "stain: local tests that require optional WSI stain dependencies",
 ]
 
 [tool.ruff]

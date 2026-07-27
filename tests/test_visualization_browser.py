@@ -27,7 +27,14 @@ def test_viewer_fits_desktop_and_ignores_stale_mouse_loads(tmp_path: Path) -> No
     assets.mkdir(parents=True)
     mice = [
         _browser_mouse(assets, "first", 2, (170, 40, 40)),
-        _browser_mouse(assets, "second", 3, (30, 120, 180), semantic=True),
+        _browser_mouse(
+            assets,
+            "second",
+            3,
+            (30, 120, 180),
+            semantic=True,
+            stain=True,
+        ),
     ]
     (site / "manifest.json").write_text(json.dumps({"schema_version": 1, "mice": mice}))
     (site / "index.html").write_text(_INDEX_HTML)
@@ -124,6 +131,33 @@ def test_viewer_fits_desktop_and_ignores_stale_mouse_loads(tmp_path: Path) -> No
                 Image.open(io.BytesIO(semantic_screenshot)).convert("RGB")
             )
             assert np.ptp(semantic_pixels.reshape(-1, 3), axis=0).max() > 20
+            page.locator("#mode button[data-mode='stain-overlay']").click()
+            page.wait_for_function(
+                """() => document.querySelector('#viewport')
+                    .getAttribute('aria-busy') === 'false'
+                  && document.querySelector(
+                    "#mode button[data-mode='stain-overlay']"
+                  ).classList.contains('active')"""
+            )
+            assert page.locator("#stain-controls").is_visible()
+            canvas_box = page.locator("canvas").bounding_box()
+            assert canvas_box is not None
+            page.locator("canvas").click(
+                position={
+                    "x": canvas_box["width"] / 2,
+                    "y": canvas_box["height"] / 2,
+                }
+            )
+            page.wait_for_function(
+                "() => document.querySelectorAll('#stain-probe .probe-row').length > 0"
+            )
+            assert "relative OD" in page.locator("#qc").inner_text()
+            assert "OD" in page.locator("#stain-probe").inner_text()
+            page.locator("#stain-variant").select_option("raw")
+            page.wait_for_function(
+                """() => document.querySelector('#viewport')
+                    .getAttribute('aria-busy') === 'false'"""
+            )
             assert page.evaluate(
                 """() => {
                   const canvas = document.querySelector('canvas');
@@ -244,6 +278,7 @@ def _browser_mouse(
     color: tuple[int, int, int],
     *,
     semantic: bool = False,
+    stain: bool = False,
 ) -> dict[str, object]:
     mouse_assets = assets / mouse_id
     mouse_assets.mkdir()
@@ -280,6 +315,60 @@ def _browser_mouse(
             slide["semantic_textures"] = {"5": f"assets/{mouse_id}/{semantic_name}"}
             slide["semantic_texture"] = f"assets/{mouse_id}/{semantic_name}"
             slide["blend_texture"] = f"assets/{mouse_id}/{blend_name}"
+        if stain:
+            stain_image = image.copy()
+            stain_image[30:130, 45:195, :3] = (225, 179, 55)
+            overlay_image = (
+                image.astype(np.uint16) + stain_image.astype(np.uint16)
+            ) // 2
+            textures = {}
+            overlays = {}
+            for variant, offset in (("raw", 0), ("corrected", 15)):
+                stain_name = f"{index + 1:03d}-stain-{variant}.webp"
+                overlay_name = f"{index + 1:03d}-stain-{variant}-overlay.webp"
+                variant_image = stain_image.copy()
+                variant_image[..., :3] = np.clip(
+                    variant_image[..., :3].astype(np.int16) + offset,
+                    0,
+                    255,
+                ).astype(np.uint8)
+                Image.fromarray(variant_image).save(
+                    mouse_assets / stain_name,
+                    "WEBP",
+                )
+                Image.fromarray(overlay_image.astype(np.uint8)).save(
+                    mouse_assets / overlay_name,
+                    "WEBP",
+                )
+                textures[variant] = f"assets/{mouse_id}/{stain_name}"
+                overlays[variant] = f"assets/{mouse_id}/{overlay_name}"
+            probe_width, probe_height = 40, 30
+            raw = np.full(
+                (probe_height, probe_width),
+                700 + index * 100,
+                dtype="<u2",
+            )
+            corrected = np.full(
+                (probe_height, probe_width),
+                550 + index * 100,
+                dtype="<u2",
+            )
+            probe_name = f"{index + 1:03d}-stain-probe.bin"
+            np.stack([raw, corrected]).tofile(mouse_assets / probe_name)
+            slide["stain"] = {
+                "quantified": True,
+                "marker": f"Marker {index + 1}",
+                "family": "h-dab",
+                "textures": textures,
+                "overlay_textures": overlays,
+                "probe": f"assets/{mouse_id}/{probe_name}",
+                "probe_width": probe_width,
+                "probe_height": probe_height,
+                "probe_scale_od": 0.001,
+                "probe_nodata": 65535,
+                "positive_threshold_od": 0.4,
+                "qc": {"correction_accepted": True},
+            }
         slides.append(slide)
     return {
         "id": mouse_id,
@@ -300,6 +389,19 @@ def _browser_mouse(
                 "link_pair_count": 0,
             }
             if semantic
+            else None
+        ),
+        "stain": (
+            {
+                "display_max_od": 1.0,
+                "palette": ["#f6f7f4", "#27807e", "#eebe46", "#b53130"],
+                "review": {
+                    "approved": False,
+                    "fingerprint_matches": True,
+                },
+                "quantified_slides": slide_count,
+            }
+            if stain
             else None
         ),
     }

@@ -28,10 +28,11 @@ Install only the workflow dependencies you need:
 ```bash
 pip install "histopia[registration,wsi] @ git+https://github.com/oncologylab/histopia.git@main"
 pip install "histopia[semantic] @ git+https://github.com/oncologylab/histopia.git@main"
+pip install "histopia[stain] @ git+https://github.com/oncologylab/histopia.git@main"
 pip install "histopia[uni2h] @ git+https://github.com/oncologylab/histopia.git@main"
 pip install "histopia[uni2h-repro] @ git+https://github.com/oncologylab/histopia.git@main"
 pip install "histopia[qupath] @ git+https://github.com/oncologylab/histopia.git@main"
-pip install "histopia[registration-repro,uni2h-repro,qupath] @ git+https://github.com/oncologylab/histopia.git@main"
+pip install "histopia[registration-repro,stain-repro,uni2h-repro,qupath] @ git+https://github.com/oncologylab/histopia.git@main"
 ```
 
 ## Workflows
@@ -40,15 +41,19 @@ pip install "histopia[registration-repro,uni2h-repro,qupath] @ git+https://githu
   order, hybrid serial/reference affine alignment, QC, and resumable WSI export.
 - **Semantic atlas:** globally fitted UNI2-h morphology regions, guarded slide
   correction, automatic K evaluation, and cross-section topology.
-- **Visualization:** interactive 3D histology/semantic stacks with quantitative
-  QC and adjacent-section correspondence links.
+- **Stain profiling:** source-space relative optical density for H-DAB,
+  Sirius Red, PAS, and Alcian Blue with guarded background correction.
+- **Visualization:** interactive 3D histology, semantic, and stain stacks with
+  quantitative QC, linked ROI probes, and adjacent-section correspondence
+  links.
 - **QuPath:** extension-launched registration and semantic jobs, fail-closed
   workflow integrity audits, compact checksummed GeoJSON regions, dynamic K
   selection, and native WSI coordinates.
   Install the [QuPath 0.7 extension release](https://github.com/oncologylab/qupath-extension-histopia/releases/latest).
 
 Start with [registration](docs/registration.md),
-[semantic atlas](docs/semantic_atlas.md), or
+[semantic atlas](docs/semantic_atlas.md),
+[stain quantification](docs/stain_quantification.md), or
 [QuPath integration](docs/qupath.md). Installation profiles and reproducible
 constraints are documented in
 [dependency management](docs/dependency_management.md).

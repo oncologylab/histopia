@@ -330,7 +330,7 @@ def test_viewer_rerenders_mouse_from_stale_encoder_cache_schema(
     )
 
     report = json.loads((output / "build-report.json").read_text())
-    assert report["mouse_cache_version"] == 4
+    assert report["mouse_cache_version"] == 5
     assert report["mice_reused"] == 0
     assert report["mice_rendered"] == 1
 
@@ -438,7 +438,7 @@ def test_parallel_viewer_encoding_matches_serial_output(tmp_path: Path) -> None:
     report = json.loads((parallel / "build-report.json").read_text())
     assert report["workers"] == 4
     assert report["compute_backend"] == "cpu"
-    assert report["mouse_cache_version"] == 4
+    assert report["mouse_cache_version"] == 5
     assert report["lossy_webp_method"] == 5
     assert report["lossless_webp_method"] == 6
     assert report["peak_pending_assets"] == 8

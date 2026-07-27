@@ -25,7 +25,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install package
-        run: python -m pip install -e ".[dev,registration,semantic,wsi]"
+        run: python -m pip install -e ".[dev,registration,semantic,stain,wsi]"
 
       - name: Run Ruff
         run: python -m ruff check . && python -m ruff format --check .
@@ -46,7 +46,7 @@ jobs:
 
       - name: Install package and browser
         run: |
-          python -m pip install -e ".[browser-test,registration,semantic,wsi]"
+          python -m pip install -e ".[browser-test,registration,semantic,stain,wsi]"
           python -m playwright install --with-deps chromium
 
       - name: Run browser checks
@@ -69,7 +69,7 @@ jobs:
       - name: Install exact CPU workflow profiles
         run: >-
           python -m pip install -e
-          ".[dev,registration-repro,semantic-repro,qupath]"
+          ".[dev,registration-repro,semantic-repro,stain-repro,qupath]"
 
       - name: Verify exact versions and workflow contracts
         env:

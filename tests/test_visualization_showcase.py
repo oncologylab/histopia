@@ -48,6 +48,13 @@ def _write_viewer(root: Path) -> None:
                                 "fingerprint_matches": True,
                             },
                         },
+                        "stain": {
+                            "fingerprint": "approved-stain-fingerprint",
+                            "review": {
+                                "approved": True,
+                                "fingerprint_matches": True,
+                            },
+                        },
                     },
                     {
                         "id": "4943",
@@ -84,6 +91,16 @@ def test_export_static_showcase_copies_only_selected_mice(tmp_path: Path) -> Non
     assert inventory["semantic_results"] == {
         "5997": {
             "fingerprint": "approved-fingerprint",
+            "approved": True,
+        },
+        "4257": {
+            "fingerprint": None,
+            "approved": False,
+        },
+    }
+    assert inventory["stain_results"] == {
+        "5997": {
+            "fingerprint": "approved-stain-fingerprint",
             "approved": True,
         },
         "4257": {
@@ -170,3 +187,17 @@ def test_export_static_showcase_requires_matching_semantic_approval(
 
     with pytest.raises(ValueError, match="not fingerprint-approved"):
         export_static_showcase(source, tmp_path / "showcase", ("4257", "5997"))
+
+
+def test_export_static_showcase_requires_matching_stain_approval(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    _write_viewer(source)
+    manifest_path = source / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["mice"][1]["stain"]["review"]["fingerprint_matches"] = False
+    manifest_path.write_text(json.dumps(manifest))
+
+    with pytest.raises(ValueError, match="stain showcase result"):
+        export_static_showcase(source, tmp_path / "showcase", "5997")

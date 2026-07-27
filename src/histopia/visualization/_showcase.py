@@ -56,6 +56,7 @@ def export_static_showcase(
     }
     _reject_local_paths(static_manifest)
     semantic_results: dict[str, dict[str, bool | str | None]] = {}
+    stain_results: dict[str, dict[str, bool | str | None]] = {}
     for mouse_id, mouse in zip(selected_ids, selected, strict=True):
         semantic = mouse.get("semantic")
         semantic = semantic if isinstance(semantic, dict) else {}
@@ -71,6 +72,21 @@ def export_static_showcase(
         semantic_results[mouse_id] = {
             "fingerprint": semantic.get("fingerprint"),
             "approved": semantic_approved,
+        }
+        stain = mouse.get("stain")
+        stain = stain if isinstance(stain, dict) else {}
+        stain_review = stain.get("review")
+        stain_review = stain_review if isinstance(stain_review, dict) else {}
+        stain_approved = bool(
+            stain_review.get("approved") and stain_review.get("fingerprint_matches")
+        )
+        if stain and not stain_approved:
+            raise ValueError(
+                f"stain showcase result is not fingerprint-approved: {mouse_id}"
+            )
+        stain_results[mouse_id] = {
+            "fingerprint": stain.get("fingerprint"),
+            "approved": stain_approved,
         }
         assets = source / "assets" / mouse_id
         if not assets.is_dir():
@@ -93,9 +109,10 @@ def export_static_showcase(
     (output / ".nojekyll").touch()
 
     inventory = {
-        "schema_version": 2,
+        "schema_version": 3,
         "mouse_ids": list(selected_ids),
         "semantic_results": semantic_results,
+        "stain_results": stain_results,
         "files": _file_inventory(output),
     }
     (output / "showcase.json").write_text(json.dumps(inventory, indent=2) + "\n")

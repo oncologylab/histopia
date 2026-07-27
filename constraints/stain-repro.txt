@@ -1,0 +1,18 @@
+# Reproducible dependency set for quantitative stain validation.
+#
+# Tested locally on Python 3.10 with libvips 8.15.1.
+# Install with:
+#
+#   python -m pip install -e ".[dev,stain]" \
+#       -c constraints/stain-repro.txt
+#
+numpy==2.2.6
+opencv-contrib-python-headless==5.0.0.93
+packaging==26.2
+pillow==12.3.0
+pyvips==2.2.3
+scikit-learn==1.7.2
+scipy==1.15.3
+threadpoolctl==3.6.0
+tifffile==2025.5.10
+tomli==2.4.1; python_version < "3.11"
