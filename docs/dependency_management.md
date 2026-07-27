@@ -118,7 +118,7 @@ python -m pip install -e \
     -c constraints/semantic-repro.txt \
     -c constraints/topology-repro.txt \
     -c constraints/stain-repro.txt
-histopia-qupath --doctor --workflow full --device auto --require-api 1
+histopia-qupath --doctor --workflow full --device auto --require-api 2
 ```
 
 The QuPath doctor checks only the selected workflow's imports, validates their

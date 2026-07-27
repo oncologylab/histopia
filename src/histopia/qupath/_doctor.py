@@ -16,7 +16,7 @@ from packaging.version import InvalidVersion, Version
 
 from histopia import __version__
 
-QUPATH_WORKFLOW_API_VERSION: Final[int] = 1
+QUPATH_WORKFLOW_API_VERSION: Final[int] = 2
 QUPATH_WORKFLOWS: Final[tuple[str, ...]] = (
     "registration",
     "semantic",

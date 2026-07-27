@@ -23,7 +23,7 @@ histopia-qupath \
   --output /path/to/qupath-bundle
 
 # Validate the exact environment used by the extension:
-histopia-qupath --doctor --workflow full --device auto --require-api 1
+histopia-qupath --doctor --workflow full --device auto --require-api 2
 ```
 
 `--semantic-geometry regions` is the default. It losslessly coalesces
@@ -228,7 +228,7 @@ the Python environment rather than QuPath's JVM. Configure and test that
 environment independently with:
 
 ```bash
-histopia-qupath --doctor --workflow full --device auto --require-api 1
+histopia-qupath --doctor --workflow full --device auto --require-api 2
 ```
 
 The doctor imports only the selected workflow's dependencies, checks each

@@ -73,7 +73,7 @@ active machine before starting a long extraction:
 ```bash
 histopia-semantic doctor --device auto
 histopia-semantic doctor --device cuda:0
-histopia-qupath --doctor --workflow full --device auto --require-api 1
+histopia-qupath --doctor --workflow full --device auto --require-api 2
 ```
 
 Long extraction jobs can override compute settings without editing their
