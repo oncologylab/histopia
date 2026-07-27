@@ -354,15 +354,42 @@ def test_group_supported_pale_recovery_rejects_smooth_seeded_halo() -> None:
     assert np.array_equal(recovered, mask)
 
 
-def test_group_pale_recovery_requires_severe_area_undercoverage() -> None:
+def test_group_pale_recovery_recovers_open_moderate_undercoverage() -> None:
     typical = np.zeros((160, 160), dtype=bool)
     typical[40:120, 30:130] = True
     target = typical.copy()
-    target[40:70, 30:130] = False
+    target[40:70, 50:110] = False
     image = np.ones((160, 160, 3), dtype=np.float32)
     image[40:120, 30:130] = [0.72, 0.45, 0.40]
-    image[40:70, 30:130] = [0.91, 0.86, 0.82]
-    image[42:68:4, 32:128:4] = [0.80, 0.73, 0.68]
+    image[40:70, 50:110] = [0.91, 0.86, 0.82]
+    image[42:68:4, 52:108:4] = [0.80, 0.73, 0.68]
+
+    def result(mask: np.ndarray) -> TissueMaskResult:
+        return TissueMaskResult(mask, "synthetic", {}, True, [])
+
+    recovered = _recover_undercovered_pale_tissue(
+        {
+            "target": result(target),
+            "peer-1": result(typical),
+            "peer-2": result(typical),
+        },
+        {"target": image},
+        physical_pixel_areas=None,
+        normalized_shape=(160, 160),
+    )
+
+    assert recovered["target"].mask[45:65, 55:105].mean() > 0.85
+    assert recovered["target"].method == "synthetic+group_pale_recovery"
+
+
+def test_group_pale_recovery_rejects_smooth_open_boundary_halo() -> None:
+    typical = np.zeros((160, 160), dtype=bool)
+    typical[40:120, 30:130] = True
+    target = typical.copy()
+    target[40:52, 30:130] = False
+    image = np.ones((160, 160, 3), dtype=np.float32)
+    image[52:120, 30:130] = [0.72, 0.45, 0.40]
+    image[40:52, 30:130] = [0.91, 0.86, 0.82]
 
     def result(mask: np.ndarray) -> TissueMaskResult:
         return TissueMaskResult(mask, "synthetic", {}, True, [])
@@ -380,6 +407,84 @@ def test_group_pale_recovery_requires_severe_area_undercoverage() -> None:
 
     assert np.array_equal(recovered["target"].mask, target)
     assert recovered["target"].method == "synthetic"
+
+
+def test_group_pale_recovery_rejects_small_concavity_on_smaller_section() -> None:
+    typical = np.zeros((160, 160), dtype=bool)
+    typical[40:120, 30:130] = True
+    target = np.zeros_like(typical)
+    target[50:120, 30:130] = True
+    target[50:60, 60:100] = False
+    image = np.ones((160, 160, 3), dtype=np.float32)
+    image[40:120, 30:130] = [0.72, 0.45, 0.40]
+    image[50:60, 60:100] = [0.91, 0.86, 0.82]
+    image[51:59:2, 62:98:3] = [0.80, 0.73, 0.68]
+
+    def result(mask: np.ndarray) -> TissueMaskResult:
+        return TissueMaskResult(mask, "synthetic", {}, True, [])
+
+    recovered = _recover_undercovered_pale_tissue(
+        {
+            "target": result(target),
+            "peer-1": result(typical),
+            "peer-2": result(typical),
+        },
+        {"target": image},
+        physical_pixel_areas=None,
+        normalized_shape=(160, 160),
+    )
+
+    assert np.array_equal(recovered["target"].mask, target)
+    assert recovered["target"].method == "synthetic"
+
+
+def test_group_supported_open_recovery_rejects_detached_region() -> None:
+    mask = np.zeros((256, 256), dtype=bool)
+    mask[45:225, 55:170] = True
+    mask[45:130, 75:150] = False
+    image = np.ones((256, 256, 3), dtype=np.float32)
+    image[45:225, 55:170] = [0.72, 0.45, 0.40]
+    image[45:130, 75:150] = [0.91, 0.86, 0.82]
+    image[50:125:4, 80:145:4] = [0.80, 0.73, 0.68]
+    image[40:105, 195:245] = [0.91, 0.86, 0.82]
+    image[45:100:4, 200:240:4] = [0.80, 0.73, 0.68]
+    support = np.zeros((256, 256), dtype=float)
+    support[40:225, 50:175] = 0.9
+    support[35:110, 190:250] = 0.9
+
+    recovered = _recover_supported_pale_pixels(
+        mask,
+        image,
+        support,
+        allow_detached=False,
+        allow_open_boundary=True,
+        minimum_support=0.45,
+    )
+
+    assert recovered[55:120, 85:140].mean() > 0.85
+    assert not recovered[45:100, 200:240].any()
+
+
+def test_group_supported_open_recovery_rejects_smooth_concavity() -> None:
+    mask = np.zeros((256, 256), dtype=bool)
+    mask[45:225, 55:170] = True
+    mask[45:130, 75:150] = False
+    image = np.ones((256, 256, 3), dtype=np.float32)
+    image[45:225, 55:170] = [0.72, 0.45, 0.40]
+    image[45:130, 75:150] = [0.91, 0.86, 0.82]
+    support = np.zeros((256, 256), dtype=float)
+    support[40:225, 50:175] = 0.9
+
+    recovered = _recover_supported_pale_pixels(
+        mask,
+        image,
+        support,
+        allow_detached=False,
+        allow_open_boundary=True,
+        minimum_support=0.45,
+    )
+
+    assert np.array_equal(recovered, mask)
 
 
 def test_pale_recovery_reference_uses_stable_upper_coverage_cluster() -> None:

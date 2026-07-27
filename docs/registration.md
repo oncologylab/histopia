@@ -354,6 +354,13 @@ Mask scoring also reuses each canonical morphology metric set, and group
 consensus reuses target-specific peer translations across its broad, direct,
 and adjacent support radii.
 
+Moderately undercovered sections can recover open, pale tissue only when
+strong cohort support, attachment to an existing tissue component, containment
+within that component's convex envelope, pervasive fine-scale texture, and
+material mask growth all agree. Detached-object recovery remains a separate,
+more conservative path. These checks preserve pale tissue while rejecting
+smooth scanner-frame whitespace, narrow glass gaps, and unsupported debris.
+
 Group refinement additionally reuses independent candidate metrics,
 target-specific dominant-object centroids, and candidate-independent
 augmentation geometry. On a representative 20-slide stack, these

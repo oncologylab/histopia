@@ -914,17 +914,20 @@ def _recover_undercovered_pale_tissue(
             dilation_iterations=5,
         )
         severe_undercoverage = area_ratio < (0.70 if upper_coverage_reference else 0.60)
+        moderate_undercoverage = area_ratio < 0.90
         missing_group_support = _unrepresented_group_components(
             normalized[key],
             support,
         )
         missing_group_object = bool(np.any(missing_group_support))
+        detached_recovery = severe_undercoverage or missing_group_object
         candidate = _recover_supported_pale_pixels(
             result.mask,
             image,
             support,
-            allow_detached=severe_undercoverage or missing_group_object,
-            minimum_support=0.20,
+            allow_detached=detached_recovery,
+            allow_open_boundary=moderate_undercoverage and not detached_recovery,
+            minimum_support=0.20 if detached_recovery else 0.45,
             detached_seed=(
                 missing_group_support
                 if missing_group_object and not severe_undercoverage
@@ -933,7 +936,13 @@ def _recover_undercovered_pale_tissue(
         )
         if upper_coverage_reference:
             candidate = _restrict_far_detached_recovery(result.mask, candidate)
-        if np.count_nonzero(candidate) <= np.count_nonzero(result.mask) * 1.02:
+        minimum_growth_ratio = (
+            1.08 if moderate_undercoverage and not detached_recovery else 1.02
+        )
+        if (
+            np.count_nonzero(candidate)
+            <= np.count_nonzero(result.mask) * minimum_growth_ratio
+        ):
             return result
         if expected_physical_area is not None and key in physical_areas:
             pixel_area = (physical_pixel_areas or {}).get(key)
@@ -1020,6 +1029,7 @@ def _recover_supported_pale_pixels(
     peer_support: np.ndarray,
     *,
     allow_detached: bool = True,
+    allow_open_boundary: bool = False,
     minimum_support: float = 0.20,
     detached_seed: np.ndarray | None = None,
 ) -> np.ndarray:
@@ -1037,6 +1047,15 @@ def _recover_supported_pale_pixels(
         mode="nearest",
     )
     local_std = np.sqrt(np.maximum(local_square_mean - local_mean * local_mean, 0))
+    fine_local_mean = ndi.uniform_filter(brightness, size=5, mode="nearest")
+    fine_local_square_mean = ndi.uniform_filter(
+        brightness * brightness,
+        size=5,
+        mode="nearest",
+    )
+    fine_local_std = np.sqrt(
+        np.maximum(fine_local_square_mean - fine_local_mean * fine_local_mean, 0)
+    )
     support = _resize_float(peer_support, mask.shape)
     evidence = (color_delta > 0.025) | (local_std > 0.014) | (dark_delta > 0.020)
     proposal = (support >= minimum_support) & evidence & (brightness < 0.98)
@@ -1067,10 +1086,22 @@ def _recover_supported_pale_pixels(
             if native_seed_envelope is not None:
                 unmasked &= native_seed_envelope
             seeded_addition |= unmasked
+    dilated_mask = ndi.binary_dilation(mask, iterations=3)
+    open_boundary = np.zeros_like(mask, dtype=bool)
+    if allow_open_boundary:
+        unmasked_labels, unmasked_count = ndi.label(proposal & ~mask)
+        if unmasked_count:
+            touching_labels = np.unique(
+                unmasked_labels[dilated_mask & ~mask],
+            )
+            touching_labels = touching_labels[touching_labels != 0]
+            if touching_labels.size:
+                open_boundary = np.isin(unmasked_labels, touching_labels)
+                open_boundary &= _substantial_component_convex_envelope(mask)
     if allow_detached:
-        novel = proposal & (~ndi.binary_dilation(mask, iterations=3) | enclosed)
+        novel = proposal & (~dilated_mask | enclosed)
     else:
-        novel = proposal & enclosed
+        novel = (proposal & enclosed) | open_boundary
     labels, count = ndi.label(novel)
     if count == 0:
         return mask
@@ -1093,6 +1124,13 @@ def _recover_supported_pale_pixels(
         short_axis = min(row_span / mask.shape[0], col_span / mask.shape[1])
         bbox_fill = area / max(row_span * col_span, 1)
         enclosed_fraction = float(np.mean(enclosed[component]))
+        open_boundary_fraction = float(np.mean(open_boundary[component]))
+        if (
+            open_boundary_fraction >= 0.50
+            and enclosed_fraction < 0.50
+            and float(np.mean(fine_local_std[component] > 0.008)) < 0.55
+        ):
+            continue
         if long_axis > 0.08 and short_axis < 0.025:
             continue
         if enclosed_fraction < 0.50:
@@ -1125,6 +1163,31 @@ def _recover_supported_pale_pixels(
         max_area=max(64, int(recovered.size * 0.004)),
     )
     return _remove_straight_border_rails(_remove_hollow_detached_artifacts(recovered))
+
+
+def _substantial_component_convex_envelope(mask: np.ndarray) -> np.ndarray:
+    """Return convex envelopes for tissue components large enough to trust."""
+
+    import cv2
+
+    labels, count = ndi.label(mask)
+    if count == 0:
+        return np.zeros_like(mask, dtype=bool)
+    sizes = np.bincount(labels.ravel())
+    largest = int(sizes[1:].max(initial=0))
+    minimum_area = max(64, int(largest * 0.02))
+    envelope = np.zeros(mask.shape, dtype=np.uint8)
+    for label in range(1, count + 1):
+        if sizes[label] < minimum_area:
+            continue
+        component = labels == label
+        boundary = component & ~ndi.binary_erosion(component)
+        rows, cols = np.nonzero(boundary)
+        if rows.size < 3:
+            continue
+        points = np.column_stack((cols, rows)).astype(np.int32)
+        cv2.fillConvexPoly(envelope, cv2.convexHull(points), 1)
+    return envelope.astype(bool)
 
 
 def _has_unrepresented_group_component(
