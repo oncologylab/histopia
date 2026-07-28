@@ -116,19 +116,31 @@ def test_topology_viewer_defaults_to_centered_connected_volume(
                 )
                 assert not overflow["x"]
                 assert not overflow["y"]
-                assert overflow["aside"]["width"] <= 351
-                screenshot = page.locator("canvas").screenshot()
+                expected_aside_width = min(max(360, 0.22 * width), 520)
+                assert abs(overflow["aside"]["width"] - expected_aside_width) < 1
+                viewport = page.locator("#viewport").bounding_box()
+                assert viewport is not None
+                screenshot = page.screenshot()
                 pixels = np.asarray(Image.open(io.BytesIO(screenshot)).convert("RGB"))
-                assert np.ptp(pixels.reshape(-1, 3), axis=0).max() > 20
+                left = round(viewport["x"])
+                top = round(viewport["y"])
+                right = round(viewport["x"] + viewport["width"])
+                bottom = round(viewport["y"] + viewport["height"])
+                plot = pixels[top:bottom, left:right]
+                assert np.ptp(plot.reshape(-1, 3), axis=0).max() > 20
                 non_background = np.any(
-                    pixels > np.array([20, 24, 29]),
+                    plot > np.array([20, 24, 29]),
                     axis=2,
                 )
                 rows, columns = np.nonzero(non_background)
-                x_center = float(columns.min() + columns.max()) / (2 * pixels.shape[1])
-                y_center = float(rows.min() + rows.max()) / (2 * pixels.shape[0])
-                assert abs(x_center - 0.5) < 0.025
-                assert abs(y_center - 0.5) < 0.025
+                x_center = left + float(columns.min() + columns.max()) / 2
+                y_center = top + float(rows.min() + rows.max()) / 2
+                x_center /= pixels.shape[1]
+                y_center /= pixels.shape[0]
+                expected_x = (viewport["x"] + viewport["width"] / 2) / width
+                expected_y = (viewport["y"] + viewport["height"] / 2) / height
+                assert abs(x_center - expected_x) < 0.025
+                assert abs(y_center - expected_y) < 0.025
             browser.close()
     finally:
         server.shutdown()

@@ -21,7 +21,7 @@ from histopia.topology._model import ObservedSection
 
 _FLOW_CONFIDENCE_GATE = 0.45
 _VIEWER_FACE_TARGET = 200_000
-_MAX_VIEWER_COMPONENTS_PER_CLASS = 8
+_MAX_VIEWER_COMPONENTS_PER_CLASS = 6
 _MIN_VIEWER_COMPONENT_FRACTION = 0.01
 
 
@@ -549,11 +549,11 @@ def write_connected_meshes(
     scientific_labels[~support | ~scientific_membership] = -1
     semantic_z_sigma = max(
         1.0,
-        1.6 * section_thickness_um / z_spacing_um,
+        2.0 * section_thickness_um / z_spacing_um,
     )
     semantic_xy_sigma = max(
         1.0,
-        0.65 * source_patch_width_um / spacing_um,
+        0.8 * source_patch_width_um / spacing_um,
     )
     display_membership = gaussian_filter(
         volume.membership,
@@ -758,6 +758,13 @@ def _write_scalar_mesh(
         z_origin_um=z_origin_um,
         z_spacing_um=z_spacing_um,
     )
+    if role == "semantic_region":
+        viewer_vertices = _smooth_viewer_mesh(
+            viewer_vertices,
+            viewer_faces,
+            z_scale=12.0,
+            iterations=5,
+        )
     _write_mesh_binary(viewer_path, viewer_vertices, viewer_faces)
     return {
         "role": role,
@@ -811,6 +818,51 @@ def _viewer_mesh(
         ]
     ).astype(np.float32)
     return viewer_vertices, np.asarray(viewer_faces, dtype=np.uint32), factor
+
+
+def _smooth_viewer_mesh(
+    vertices: np.ndarray,
+    faces: np.ndarray,
+    *,
+    z_scale: float,
+    iterations: int,
+) -> np.ndarray:
+    """Apply volume-preserving display smoothing in the review-view metric."""
+
+    from scipy.sparse import csr_matrix
+
+    if iterations < 1 or len(vertices) == 0 or len(faces) == 0:
+        return np.asarray(vertices, dtype=np.float32)
+    edges = np.concatenate(
+        (
+            faces[:, (0, 1)],
+            faces[:, (1, 2)],
+            faces[:, (2, 0)],
+        )
+    )
+    directed = np.concatenate((edges, edges[:, ::-1]))
+    adjacency = csr_matrix(
+        (
+            np.ones(len(directed), dtype=np.float32),
+            (directed[:, 0], directed[:, 1]),
+        ),
+        shape=(len(vertices), len(vertices)),
+    )
+    adjacency.sum_duplicates()
+    adjacency.data.fill(1.0)
+    degree = np.asarray(adjacency.sum(axis=1)).ravel()
+    movable = degree > 0
+    coordinates = np.asarray(vertices, dtype=np.float64).copy()
+    coordinates[:, 2] *= z_scale
+    for _ in range(iterations):
+        for factor in (0.5, -0.53):
+            neighbor_mean = adjacency @ coordinates
+            neighbor_mean[movable] /= degree[movable, None]
+            coordinates[movable] += factor * (
+                neighbor_mean[movable] - coordinates[movable]
+            )
+    coordinates[:, 2] /= z_scale
+    return coordinates.astype(np.float32)
 
 
 def _flow_sdf(

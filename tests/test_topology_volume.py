@@ -9,6 +9,7 @@ from PIL import Image
 
 from histopia.topology._model import ObservedSection
 from histopia.topology._volume import (
+    _smooth_viewer_mesh,
     benchmark_envelope_methods,
     filter_persistent_components,
     load_registered_mask_stack,
@@ -144,6 +145,38 @@ def test_viewer_component_filter_caps_scattered_regions_by_volume() -> None:
     assert after == 3
     assert not filtered[:, 2:4, 2:4].any()
     assert filtered[:, 12:17, 12:17].all()
+
+
+def test_viewer_mesh_smoothing_reduces_display_surface_roughness() -> None:
+    vertices = np.asarray(
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 2.0],
+        ],
+        dtype=np.float32,
+    )
+    faces = np.asarray(
+        [
+            [0, 1, 2],
+            [0, 1, 3],
+            [0, 2, 3],
+            [1, 2, 3],
+        ],
+        dtype=np.uint32,
+    )
+
+    smoothed = _smooth_viewer_mesh(
+        vertices,
+        faces,
+        z_scale=12,
+        iterations=5,
+    )
+
+    assert smoothed.shape == vertices.shape
+    assert np.all(np.isfinite(smoothed))
+    assert np.ptp(smoothed[:, 2]) < np.ptp(vertices[:, 2])
 
 
 def _section(offset: int) -> ObservedSection:
