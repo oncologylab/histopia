@@ -15,6 +15,7 @@ from histopia.topology._pipeline import _write_meshes, _write_planes
 from histopia.topology._result import write_topology_result
 from histopia.visualization import build_topology_review
 from histopia.visualization._server import create_viewer_server
+from histopia.visualization._topology_review import _region_review_score
 
 
 def test_topology_feedback_requires_every_current_pair(tmp_path: Path) -> None:
@@ -69,6 +70,37 @@ def test_topology_viewer_builds_section_assets_and_gates_surfaces(
     assert "projectedGeometryBounds(envelope)" in javascript
 
 
+def test_topology_default_region_prefers_supported_compact_core() -> None:
+    peripheral_wall = {
+        "class_index": 0,
+        "viewer_core_volume_fraction_of_tissue": 0.13,
+        "surface_area_mm2": 20.0,
+        "component_count_after_filter": 2,
+    }
+    compact_core = {
+        "class_index": 4,
+        "viewer_core_volume_fraction_of_tissue": 0.08,
+        "surface_area_mm2": 7.0,
+        "component_count_after_filter": 3,
+    }
+    tiny_fragment = {
+        "class_index": 3,
+        "viewer_core_volume_fraction_of_tissue": 0.01,
+        "surface_area_mm2": 0.2,
+        "component_count_after_filter": 1,
+    }
+
+    selected = min(
+        (peripheral_wall, compact_core, tiny_fragment),
+        key=lambda row: _region_review_score(
+            row,
+            total_scientific_volume=2.1,
+        ),
+    )
+
+    assert selected["class_index"] == 4
+
+
 @pytest.mark.browser
 def test_topology_viewer_defaults_to_centered_connected_volume(
     tmp_path: Path,
@@ -116,8 +148,10 @@ def test_topology_viewer_defaults_to_centered_connected_volume(
                 )
                 assert not overflow["x"]
                 assert not overflow["y"]
-                expected_aside_width = min(max(360, 0.22 * width), 520)
+                expected_aside_width = min(max(400, 0.25 * width), 720)
                 assert abs(overflow["aside"]["width"] - expected_aside_width) < 1
+                assert abs(overflow["aside"]["y"]) < 1
+                assert abs(overflow["aside"]["height"] - height) < 1
                 viewport = page.locator("#viewport").bounding_box()
                 assert viewport is not None
                 screenshot = page.screenshot()
@@ -141,6 +175,7 @@ def test_topology_viewer_defaults_to_centered_connected_volume(
                 expected_y = (viewport["y"] + viewport["height"] / 2) / height
                 assert abs(x_center - expected_x) < 0.025
                 assert abs(y_center - expected_y) < 0.025
+                assert x_center < 0.42
             browser.close()
     finally:
         server.shutdown()

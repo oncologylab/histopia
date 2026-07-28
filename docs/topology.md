@@ -45,12 +45,13 @@ provenance, display meshes, quantitative class summaries, and source
 fingerprints. Display-only smoothing and component filtering never change the
 stored measurements.
 
-Semantic viewer meshes use the dominant smoothed class field and retain only
-components with cross-section persistence or substantial class volume, up to
-six components per class. A global morphology class can legitimately occupy
-several disconnected tissue regions. The component limit prevents isolated
-patches from dominating the 3D view; it does not alter the dense semantic field
-or quantitative class volume.
+Semantic viewer meshes show high-confidence cores from the dominant smoothed
+class field. A displayed component must meet both cross-section-persistence and
+minimum-volume gates, and at most three components are retained per class.
+Sub-patch gaps are closed in the review-space physical metric before a smooth
+signed-distance surface is extracted. A global morphology class can
+legitimately occupy several disconnected tissue regions. These review-surface
+operations do not alter the dense semantic field or quantitative class volume.
 
 Build a fixed-viewport review:
 

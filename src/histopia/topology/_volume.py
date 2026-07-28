@@ -21,8 +21,12 @@ from histopia.topology._model import ObservedSection
 
 _FLOW_CONFIDENCE_GATE = 0.45
 _VIEWER_FACE_TARGET = 200_000
-_MAX_VIEWER_COMPONENTS_PER_CLASS = 6
+_MAX_VIEWER_COMPONENTS_PER_CLASS = 3
 _MIN_VIEWER_COMPONENT_FRACTION = 0.01
+_MIN_ENVELOPE_COMPONENT_FRACTION = 0.005
+_SEMANTIC_CORE_QUANTILE = 0.35
+_SEMANTIC_CORE_MINIMUM = 0.48
+_REVIEW_Z_SCALE = 12.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -521,11 +525,35 @@ def write_connected_meshes(
     from scipy.ndimage import gaussian_filter
 
     support = volume.support
+    observed_dense = np.flatnonzero(volume.observed_section_indices >= 0)
+    minimum_observed_sections = min(
+        len(observed_dense),
+        max(2, math.ceil(len(observed_dense) * 0.2)),
+    )
     z_sigma = max(1.0, section_thickness_um / z_spacing_um * 1.25)
     display_envelope = gaussian_filter(
         volume.envelope_sdf,
         sigma=(z_sigma, 0.55, 0.55),
         mode="nearest",
+    )
+    envelope_support, envelope_components_before, envelope_components_after = (
+        filter_persistent_components(
+            display_envelope >= 0,
+            observed_dense_indices=observed_dense,
+            voxel_volume_um3=spacing_um**2 * z_spacing_um,
+            minimum_component_volume_um3=(
+                16.0 * source_patch_width_um**2 * section_thickness_um
+            ),
+            minimum_observed_sections=minimum_observed_sections,
+            minimum_component_fraction=_MIN_ENVELOPE_COMPONENT_FRACTION,
+            max_components=4,
+        )
+    )
+    epsilon = np.finfo(np.float32).eps
+    display_envelope = np.where(
+        envelope_support,
+        np.maximum(display_envelope, epsilon),
+        np.minimum(display_envelope, -epsilon),
     )
     envelope = _write_scalar_mesh(
         root,
@@ -542,6 +570,10 @@ def write_connected_meshes(
     envelope["viewer_regularization"] = {
         "z_sigma_um": z_sigma * z_spacing_um,
         "xy_sigma_um": 0.55 * spacing_um,
+        "component_count_before_filter": envelope_components_before,
+        "component_count_after_filter": envelope_components_after,
+        "minimum_observed_sections": minimum_observed_sections,
+        "minimum_component_fraction": _MIN_ENVELOPE_COMPONENT_FRACTION,
         "changes_measurement": False,
     }
     scientific_labels = np.argmax(volume.membership, axis=1).astype(np.int16)
@@ -560,7 +592,7 @@ def write_connected_meshes(
         sigma=(semantic_z_sigma, 0, semantic_xy_sigma, semantic_xy_sigma),
         mode="nearest",
     )
-    display_support = display_envelope >= 0
+    display_support = envelope_support
     display_total = display_membership.sum(axis=1)
     np.divide(
         display_membership,
@@ -573,15 +605,25 @@ def write_connected_meshes(
     classes: list[dict[str, object]] = []
     voxel_volume_um3 = spacing_um**2 * z_spacing_um
     minimum_component_volume = 4.0 * source_patch_width_um**2 * section_thickness_um
-    observed_dense = np.flatnonzero(volume.observed_section_indices >= 0)
-    minimum_observed_sections = max(3, math.ceil(len(observed_dense) * 0.1))
-    display_level = 0.4
     for class_index, color in enumerate(palette):
         scientific = scientific_labels == class_index
-        display = (
+        assigned = (
             (display_labels == class_index)
-            & (display_membership[:, class_index] >= display_level)
             & display_support
+            & (display_total > np.finfo(np.float32).eps)
+        )
+        assigned_values = display_membership[:, class_index][assigned]
+        display_level = (
+            max(
+                _SEMANTIC_CORE_MINIMUM,
+                float(np.quantile(assigned_values, _SEMANTIC_CORE_QUANTILE)),
+            )
+            if len(assigned_values)
+            else 1.0
+        )
+        display = (
+            assigned
+            & (display_membership[:, class_index] >= display_level)
         )
         displayed, before, after = filter_persistent_components(
             display,
@@ -591,17 +633,32 @@ def write_connected_meshes(
             minimum_observed_sections=minimum_observed_sections,
             minimum_component_fraction=_MIN_VIEWER_COMPONENT_FRACTION,
             max_components=_MAX_VIEWER_COMPONENTS_PER_CLASS,
+            keep_largest_if_empty=False,
+        )
+        displayed = regularize_semantic_core(
+            displayed,
+            spacing_um=spacing_um,
+            z_spacing_um=z_spacing_um,
+            source_patch_width_um=source_patch_width_um,
+        )
+        displayed_fraction = (
+            float(np.count_nonzero(displayed))
+            / max(float(np.count_nonzero(display_support)), 1.0)
         )
         if np.any(displayed):
-            display_field = display_membership[:, class_index].copy()
-            display_field[~displayed] = 0
+            display_field = _smooth_display_signed_distance(
+                displayed,
+                spacing_um=spacing_um,
+                z_spacing_um=z_spacing_um,
+                source_patch_width_um=source_patch_width_um,
+            )
             region = _write_scalar_mesh(
                 root,
                 display_field,
                 stem=f"region-{class_index:02d}",
                 role="semantic_region",
                 color=color,
-                level=display_level,
+                level=0.0,
                 origin_um_xy=origin_um_xy,
                 spacing_um=spacing_um,
                 z_origin_um=float(volume.z_positions_um[0]),
@@ -610,10 +667,13 @@ def write_connected_meshes(
             region["class_index"] = class_index
             region["component_count_before_filter"] = before
             region["component_count_after_filter"] = after
+            region["viewer_core_volume_fraction_of_tissue"] = displayed_fraction
             region["viewer_regularization"] = {
                 "z_sigma_um": semantic_z_sigma * z_spacing_um,
                 "xy_sigma_um": semantic_xy_sigma * spacing_um,
                 "membership_level": display_level,
+                "semantic_core_quantile": _SEMANTIC_CORE_QUANTILE,
+                "subpatch_closing_radius_um": 0.5 * source_patch_width_um,
                 "requires_dominant_class": True,
                 "minimum_observed_sections": minimum_observed_sections,
                 "minimum_component_fraction": _MIN_VIEWER_COMPONENT_FRACTION,
@@ -630,6 +690,8 @@ def write_connected_meshes(
                 ),
                 "viewer_component_count_before_filter": before,
                 "viewer_component_count_after_filter": after,
+                "viewer_core_membership_level": display_level,
+                "viewer_core_volume_fraction_of_tissue": displayed_fraction,
                 "viewer_filter_changes_measurement": False,
             }
         )
@@ -662,8 +724,15 @@ def filter_persistent_components(
     minimum_observed_sections: int = 2,
     minimum_component_fraction: float = 0.0,
     max_components: int | None = None,
+    keep_largest_if_empty: bool = True,
 ) -> tuple[np.ndarray, int, int]:
-    """Keep coherent display components without changing scientific occupancy."""
+    """Keep cross-section-persistent display components.
+
+    Eligibility requires both sufficient observed-section support and sufficient
+    volume. The optional largest-component fallback is useful for tissue
+    envelopes, but semantic review surfaces disable it so isolated classes are
+    not presented as coherent volumes.
+    """
 
     from scipy.ndimage import label
 
@@ -688,20 +757,17 @@ def filter_persistent_components(
         volume_um3 = float(np.count_nonzero(selected)) * voxel_volume_um3
         records.append((component, observed_hits, volume_um3))
     total_volume_um3 = sum(row[2] for row in records)
-    substantial_volume_um3 = max(
-        4.0 * minimum_component_volume_um3,
+    required_volume_um3 = max(
+        minimum_component_volume_um3,
         minimum_component_fraction * total_volume_um3,
     )
     eligible = [
         row
         for row in records
-        if (
-            row[1] >= minimum_observed_sections
-            and row[2] >= minimum_component_volume_um3
-        )
-        or row[2] >= substantial_volume_um3
+        if row[1] >= minimum_observed_sections
+        and row[2] >= required_volume_um3
     ]
-    if not eligible and records:
+    if not eligible and records and keep_largest_if_empty:
         eligible = [max(records, key=lambda row: row[2])]
     eligible.sort(key=lambda row: (row[2], row[1]), reverse=True)
     if max_components is not None:
@@ -709,6 +775,62 @@ def filter_persistent_components(
     kept_components = np.asarray([row[0] for row in eligible], dtype=np.int32)
     filtered = np.isin(components, kept_components)
     return filtered, int(count), len(eligible)
+
+
+def regularize_semantic_core(
+    occupancy: np.ndarray,
+    *,
+    spacing_um: float,
+    z_spacing_um: float,
+    source_patch_width_um: float,
+) -> np.ndarray:
+    """Close gaps below source-patch resolution in the review-space metric."""
+
+    from scipy.ndimage import binary_closing
+
+    selected = np.asarray(occupancy, dtype=bool)
+    if not np.any(selected):
+        return selected.copy()
+    radius_um = 0.5 * source_patch_width_um
+    z_radius = max(1, round(radius_um / (z_spacing_um * _REVIEW_Z_SCALE)))
+    xy_radius = max(1, round(radius_um / spacing_um))
+    zz, yy, xx = np.ogrid[
+        -z_radius : z_radius + 1,
+        -xy_radius : xy_radius + 1,
+        -xy_radius : xy_radius + 1,
+    ]
+    structure = (
+        (zz / z_radius) ** 2
+        + (yy / xy_radius) ** 2
+        + (xx / xy_radius) ** 2
+        <= 1
+    )
+    closed = binary_closing(selected, structure=structure, border_value=0)
+    return selected | closed
+
+
+def _smooth_display_signed_distance(
+    occupancy: np.ndarray,
+    *,
+    spacing_um: float,
+    z_spacing_um: float,
+    source_patch_width_um: float,
+) -> np.ndarray:
+    """Return a rounded signed-distance field in the 12x review metric."""
+
+    from scipy.ndimage import distance_transform_edt, gaussian_filter
+
+    sampling = (z_spacing_um * _REVIEW_Z_SCALE, spacing_um, spacing_um)
+    field = distance_transform_edt(occupancy, sampling=sampling) - (
+        distance_transform_edt(~occupancy, sampling=sampling)
+    )
+    smoothing_um = 0.25 * source_patch_width_um
+    sigma = (
+        max(0.5, smoothing_um / sampling[0]),
+        max(0.5, smoothing_um / sampling[1]),
+        max(0.5, smoothing_um / sampling[2]),
+    )
+    return gaussian_filter(field.astype(np.float32), sigma=sigma, mode="nearest")
 
 
 def _write_scalar_mesh(
@@ -762,7 +884,14 @@ def _write_scalar_mesh(
         viewer_vertices = _smooth_viewer_mesh(
             viewer_vertices,
             viewer_faces,
-            z_scale=12.0,
+            z_scale=_REVIEW_Z_SCALE,
+            iterations=8,
+        )
+    elif role == "envelope":
+        viewer_vertices = _smooth_viewer_mesh(
+            viewer_vertices,
+            viewer_faces,
+            z_scale=_REVIEW_Z_SCALE,
             iterations=5,
         )
     _write_mesh_binary(viewer_path, viewer_vertices, viewer_faces)

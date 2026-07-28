@@ -50,7 +50,7 @@ from histopia.topology._volume import (
 )
 
 Progress = Callable[[str], None]
-TOPOLOGY_ALGORITHM_VERSION = 10
+TOPOLOGY_ALGORITHM_VERSION = 12
 _LINK_COVERAGE_GATE = 0.05
 _LINK_CONFIDENCE_GATE = 0.45
 _VIEWER_FACE_TARGET = 200_000

@@ -14,6 +14,7 @@ from histopia.topology._volume import (
     filter_persistent_components,
     load_registered_mask_stack,
     reconstruct_dense_volume,
+    regularize_semantic_core,
 )
 
 
@@ -104,7 +105,7 @@ def test_envelope_benchmark_prefers_guarded_baseline_for_smooth_change() -> None
     assert result["status"] == "passed"
 
 
-def test_viewer_component_filter_keeps_persistent_or_large_regions() -> None:
+def test_viewer_component_filter_rejects_large_single_section_regions() -> None:
     occupancy = np.zeros((5, 14, 14), dtype=bool)
     occupancy[0:5, 2:5, 2:5] = True
     occupancy[2, 13, 0] = True
@@ -119,10 +120,28 @@ def test_viewer_component_filter_keeps_persistent_or_large_regions() -> None:
     )
 
     assert before == 3
-    assert after == 2
+    assert after == 1
     assert filtered[2, 3, 3]
-    assert filtered[2, 9, 9]
+    assert not filtered[2, 9, 9]
     assert not filtered[2, 13, 0]
+
+
+def test_viewer_component_filter_can_omit_unsupported_semantic_region() -> None:
+    occupancy = np.zeros((5, 14, 14), dtype=bool)
+    occupancy[2, 3:11, 3:11] = True
+
+    filtered, before, after = filter_persistent_components(
+        occupancy,
+        observed_dense_indices=np.asarray([0, 2, 4]),
+        voxel_volume_um3=1,
+        minimum_component_volume_um3=5,
+        minimum_observed_sections=2,
+        keep_largest_if_empty=False,
+    )
+
+    assert before == 1
+    assert after == 0
+    assert not filtered.any()
 
 
 def test_viewer_component_filter_caps_scattered_regions_by_volume() -> None:
@@ -177,6 +196,23 @@ def test_viewer_mesh_smoothing_reduces_display_surface_roughness() -> None:
     assert smoothed.shape == vertices.shape
     assert np.all(np.isfinite(smoothed))
     assert np.ptp(smoothed[:, 2]) < np.ptp(vertices[:, 2])
+
+
+def test_semantic_core_regularization_closes_only_subpatch_gaps() -> None:
+    occupancy = np.zeros((25, 15, 24), dtype=bool)
+    occupancy[3:22, 3:12, 2:9] = True
+    occupancy[3:22, 3:12, 10:17] = True
+    occupancy[3:22, 3:12, 21:24] = True
+
+    regularized = regularize_semantic_core(
+        occupancy,
+        spacing_um=56,
+        z_spacing_um=0.625,
+        source_patch_width_um=112,
+    )
+
+    assert regularized[12, 7, 9]
+    assert not regularized[12, 7, 18:21].any()
 
 
 def _section(offset: int) -> ObservedSection:
