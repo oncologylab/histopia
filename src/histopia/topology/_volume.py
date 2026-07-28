@@ -21,6 +21,8 @@ from histopia.topology._model import ObservedSection
 
 _FLOW_CONFIDENCE_GATE = 0.45
 _VIEWER_FACE_TARGET = 200_000
+_MAX_VIEWER_COMPONENTS_PER_CLASS = 8
+_MIN_VIEWER_COMPONENT_FRACTION = 0.01
 
 
 @dataclass(frozen=True, slots=True)
@@ -545,25 +547,50 @@ def write_connected_meshes(
     scientific_labels = np.argmax(volume.membership, axis=1).astype(np.int16)
     scientific_membership = volume.membership.sum(axis=1) > 0
     scientific_labels[~support | ~scientific_membership] = -1
+    semantic_z_sigma = max(
+        1.0,
+        1.6 * section_thickness_um / z_spacing_um,
+    )
+    semantic_xy_sigma = max(
+        1.0,
+        0.65 * source_patch_width_um / spacing_um,
+    )
     display_membership = gaussian_filter(
         volume.membership,
-        sigma=(1.1 * z_sigma, 0, 0.8, 0.8),
+        sigma=(semantic_z_sigma, 0, semantic_xy_sigma, semantic_xy_sigma),
         mode="nearest",
     )
     display_support = display_envelope >= 0
+    display_total = display_membership.sum(axis=1)
+    np.divide(
+        display_membership,
+        np.maximum(display_total[:, None], np.finfo(np.float32).eps),
+        out=display_membership,
+        where=display_total[:, None] > np.finfo(np.float32).eps,
+    )
+    display_labels = np.argmax(display_membership, axis=1)
     regions: list[dict[str, object]] = []
     classes: list[dict[str, object]] = []
     voxel_volume_um3 = spacing_um**2 * z_spacing_um
     minimum_component_volume = 4.0 * source_patch_width_um**2 * section_thickness_um
     observed_dense = np.flatnonzero(volume.observed_section_indices >= 0)
+    minimum_observed_sections = max(3, math.ceil(len(observed_dense) * 0.1))
+    display_level = 0.4
     for class_index, color in enumerate(palette):
         scientific = scientific_labels == class_index
-        display = (display_membership[:, class_index] >= 0.35) & display_support
+        display = (
+            (display_labels == class_index)
+            & (display_membership[:, class_index] >= display_level)
+            & display_support
+        )
         displayed, before, after = filter_persistent_components(
             display,
             observed_dense_indices=observed_dense,
             voxel_volume_um3=voxel_volume_um3,
             minimum_component_volume_um3=minimum_component_volume,
+            minimum_observed_sections=minimum_observed_sections,
+            minimum_component_fraction=_MIN_VIEWER_COMPONENT_FRACTION,
+            max_components=_MAX_VIEWER_COMPONENTS_PER_CLASS,
         )
         if np.any(displayed):
             display_field = display_membership[:, class_index].copy()
@@ -574,7 +601,7 @@ def write_connected_meshes(
                 stem=f"region-{class_index:02d}",
                 role="semantic_region",
                 color=color,
-                level=0.35,
+                level=display_level,
                 origin_um_xy=origin_um_xy,
                 spacing_um=spacing_um,
                 z_origin_um=float(volume.z_positions_um[0]),
@@ -584,8 +611,13 @@ def write_connected_meshes(
             region["component_count_before_filter"] = before
             region["component_count_after_filter"] = after
             region["viewer_regularization"] = {
-                "z_sigma_um": 1.1 * z_sigma * z_spacing_um,
-                "xy_sigma_um": 0.8 * spacing_um,
+                "z_sigma_um": semantic_z_sigma * z_spacing_um,
+                "xy_sigma_um": semantic_xy_sigma * spacing_um,
+                "membership_level": display_level,
+                "requires_dominant_class": True,
+                "minimum_observed_sections": minimum_observed_sections,
+                "minimum_component_fraction": _MIN_VIEWER_COMPONENT_FRACTION,
+                "maximum_components": _MAX_VIEWER_COMPONENTS_PER_CLASS,
                 "changes_measurement": False,
             }
             regions.append(region)
@@ -627,16 +659,25 @@ def filter_persistent_components(
     observed_dense_indices: np.ndarray,
     voxel_volume_um3: float,
     minimum_component_volume_um3: float,
+    minimum_observed_sections: int = 2,
+    minimum_component_fraction: float = 0.0,
+    max_components: int | None = None,
 ) -> tuple[np.ndarray, int, int]:
-    """Suppress viewer speckles while retaining scientific occupancy unchanged."""
+    """Keep coherent display components without changing scientific occupancy."""
 
     from scipy.ndimage import label
 
+    if minimum_observed_sections < 1:
+        raise ValueError("minimum_observed_sections must be positive")
+    if not 0 <= minimum_component_fraction <= 1:
+        raise ValueError("minimum_component_fraction must be between 0 and 1")
+    if max_components is not None and max_components < 1:
+        raise ValueError("max_components must be positive")
     components, count = label(
         occupancy,
         structure=np.ones((3, 3, 3), dtype=np.uint8),
     )
-    keep = np.zeros(count + 1, dtype=bool)
+    records: list[tuple[int, int, float]] = []
     for component in range(1, count + 1):
         selected = components == component
         observed_hits = sum(
@@ -645,11 +686,29 @@ def filter_persistent_components(
             if 0 <= index < len(selected)
         )
         volume_um3 = float(np.count_nonzero(selected)) * voxel_volume_um3
-        keep[component] = (
-            observed_hits >= 2 or volume_um3 >= minimum_component_volume_um3
+        records.append((component, observed_hits, volume_um3))
+    total_volume_um3 = sum(row[2] for row in records)
+    substantial_volume_um3 = max(
+        4.0 * minimum_component_volume_um3,
+        minimum_component_fraction * total_volume_um3,
+    )
+    eligible = [
+        row
+        for row in records
+        if (
+            row[1] >= minimum_observed_sections
+            and row[2] >= minimum_component_volume_um3
         )
-    filtered = keep[components]
-    return filtered, int(count), int(np.count_nonzero(keep))
+        or row[2] >= substantial_volume_um3
+    ]
+    if not eligible and records:
+        eligible = [max(records, key=lambda row: row[2])]
+    eligible.sort(key=lambda row: (row[2], row[1]), reverse=True)
+    if max_components is not None:
+        eligible = eligible[:max_components]
+    kept_components = np.asarray([row[0] for row in eligible], dtype=np.int32)
+    filtered = np.isin(components, kept_components)
+    return filtered, int(count), len(eligible)
 
 
 def _write_scalar_mesh(

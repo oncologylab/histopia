@@ -104,23 +104,46 @@ def test_envelope_benchmark_prefers_guarded_baseline_for_smooth_change() -> None
 
 
 def test_viewer_component_filter_keeps_persistent_or_large_regions() -> None:
-    occupancy = np.zeros((5, 12, 12), dtype=bool)
+    occupancy = np.zeros((5, 14, 14), dtype=bool)
     occupancy[0:5, 2:5, 2:5] = True
-    occupancy[2, 11, 0] = True
-    occupancy[2, 7:10, 7:10] = True
+    occupancy[2, 13, 0] = True
+    occupancy[2, 7:12, 7:12] = True
 
     filtered, before, after = filter_persistent_components(
         occupancy,
         observed_dense_indices=np.asarray([0, 2, 4]),
         voxel_volume_um3=1,
         minimum_component_volume_um3=5,
+        minimum_observed_sections=2,
     )
 
     assert before == 3
     assert after == 2
     assert filtered[2, 3, 3]
-    assert filtered[2, 8, 8]
-    assert not filtered[2, 11, 0]
+    assert filtered[2, 9, 9]
+    assert not filtered[2, 13, 0]
+
+
+def test_viewer_component_filter_caps_scattered_regions_by_volume() -> None:
+    occupancy = np.zeros((5, 36, 36), dtype=bool)
+    anchors = ((2, 2), (2, 12), (2, 22), (12, 2), (12, 12))
+    for index, (row, column) in enumerate(anchors):
+        size = index + 2
+        occupancy[:, row : row + size, column : column + size] = True
+
+    filtered, before, after = filter_persistent_components(
+        occupancy,
+        observed_dense_indices=np.asarray([0, 2, 4]),
+        voxel_volume_um3=1,
+        minimum_component_volume_um3=1,
+        minimum_observed_sections=3,
+        max_components=3,
+    )
+
+    assert before == 5
+    assert after == 3
+    assert not filtered[:, 2:4, 2:4].any()
+    assert filtered[:, 12:17, 12:17].all()
 
 
 def _section(offset: int) -> ObservedSection:

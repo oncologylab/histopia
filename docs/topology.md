@@ -45,6 +45,13 @@ provenance, display meshes, quantitative class summaries, and source
 fingerprints. Display-only smoothing and component filtering never change the
 stored measurements.
 
+Semantic viewer meshes use the dominant smoothed class field and retain only
+components with cross-section persistence or substantial class volume, up to
+eight components per class. A global morphology class can legitimately occupy
+several disconnected tissue regions. The component limit prevents isolated
+patches from dominating the 3D view; it does not alter the dense semantic field
+or quantitative class volume.
+
 Build a fixed-viewport review:
 
 ```bash
@@ -56,8 +63,10 @@ The reviewer opens with a translucent connected tissue envelope and one
 selectable semantic region. Physical, 12x review, and 25x strong z modes are
 explicit display choices; 12x is the default. Camera presets, a cutaway plane,
 uncertainty overlay, and observed-section locator support inspection without
-changing reconstruction geometry. The same application is used by the
-standalone topology route and the workflow review hub.
+changing reconstruction geometry. Camera fitting is anchored to the anatomical
+envelope, and semantic-region visibility can be toggled independently. The same
+application is used by the standalone topology route and the workflow review
+hub.
 
 For morphology-aware inspection, use a section viewer built from both the
 registration and semantic runs. Its histology, semantic blend, adjacent-pair,

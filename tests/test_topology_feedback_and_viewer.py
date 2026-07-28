@@ -66,6 +66,7 @@ def test_topology_viewer_builds_section_assets_and_gates_surfaces(
     javascript = (index.parent / "topology-review.js").read_text()
     assert "zScale=12" in javascript
     assert "Loading tissue envelope" in javascript
+    assert "projectedGeometryBounds(envelope)" in javascript
 
 
 @pytest.mark.browser
@@ -102,6 +103,7 @@ def test_topology_viewer_defaults_to_centered_connected_volume(
             assert page.locator("[data-z='12']").get_attribute("class") == "active"
             assert page.locator(".metric").count() == 4
             assert page.locator("#qc-status").get_attribute("class") == "pass"
+            page.locator("#show-region").uncheck()
             for width, height in ((1920, 1080), (3840, 2160)):
                 page.set_viewport_size({"width": width, "height": height})
                 page.wait_for_timeout(300)
