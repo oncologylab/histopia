@@ -40,6 +40,7 @@ def summarize_topology_run(run_dir: Path | str) -> TopologyRunQc:
         else [
             payload.get("envelope"),
             *payload.get("semantic_regions", []),
+            *payload.get("semantic_partition_regions", []),
         ]
     )
     benchmark = json.loads((Path(run_dir) / str(payload["benchmark"])).read_text())

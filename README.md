@@ -43,9 +43,9 @@ Exact validation environments use the checked-in constraint files described in
   order, hybrid serial/reference affine alignment, QC, and resumable WSI export.
 - **Semantic atlas:** globally fitted UNI2-h morphology regions, guarded slide
   correction, automatic K evaluation, and cross-section topology.
-- **Semantic topology:** registered-mask tissue envelopes, selected-K semantic
-  regions, held-out reconstruction validation, explicit physical z spacing,
-  and uncertainty-aware connected-volume review.
+- **Semantic topology:** registered-mask tissue envelopes, confidence-core and
+  exhaustive selected-K semantic surfaces, held-out reconstruction validation,
+  explicit physical z spacing, and uncertainty-aware connected-volume review.
 - **Stain profiling:** source-space relative optical density for H-DAB,
   Sirius Red, PAS, and Alcian Blue with guarded background correction.
 - **Visualization:** interactive 3D histology, semantic, and stain stacks with

@@ -84,6 +84,7 @@ def _referenced_artifacts(
         else [
             payload.get("envelope"),
             *payload.get("semantic_regions", []),
+            *payload.get("semantic_partition_regions", []),
             payload.get("uncertainty"),
         ]
     )

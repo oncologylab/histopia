@@ -41,12 +41,14 @@ def build_topology_review(
             legacy_meshes = payload.get("meshes", [])
             envelope_source = legacy_meshes[0] if legacy_meshes else None
             region_sources = legacy_meshes
+            partition_sources = []
             uncertainty_source = None
             reconstruction_qc = _legacy_surface_qc(payload, benchmark["summary"])
             numerical_samples = len(payload.get("planes", []))
         else:
             envelope_source = payload["envelope"]
             region_sources = payload["semantic_regions"]
+            partition_sources = payload.get("semantic_partition_regions", [])
             uncertainty_source = payload.get("uncertainty")
             reconstruction_qc = payload["reconstruction_qc"]
             numerical_samples = payload["reconstruction_grid"]["numerical_sample_count"]
@@ -68,6 +70,16 @@ def build_topology_review(
             )
             for index, row in enumerate(region_sources)
         ]
+        partitions = [
+            _copy_mesh(
+                root,
+                output,
+                cohort_assets,
+                row,
+                f"partition-{index:02d}.bin",
+            )
+            for index, row in enumerate(partition_sources)
+        ]
         uncertainty = _copy_mesh(
             root,
             output,
@@ -79,12 +91,10 @@ def build_topology_review(
             (index, row)
             for index, row in enumerate(regions)
             if row is not None
-            and float(row.get("viewer_core_volume_fraction_of_tissue", 0.0))
-            >= 0.015
+            and float(row.get("viewer_core_volume_fraction_of_tissue", 0.0)) >= 0.015
         ]
         total_scientific_volume = sum(
-            float(row.get("estimated_volume_mm3", 0.0))
-            for row in payload["classes"]
+            float(row.get("estimated_volume_mm3", 0.0)) for row in payload["classes"]
         )
         default_region_index = min(
             meaningful_regions or list(enumerate(regions)),
@@ -102,6 +112,25 @@ def build_topology_review(
             for row in payload.get("planes", [])
             if row.get("observed")
         ]
+        transition_qc = [
+            {
+                "id": (
+                    f"{int(decision['source_section']):03d}-"
+                    f"{int(decision['target_section']):03d}"
+                ),
+                "flags": _transition_outlier_flags(
+                    (
+                        payload["pair_evidence"][index]
+                        if index < len(payload.get("pair_evidence", []))
+                        else {}
+                    ),
+                    decision,
+                ),
+            }
+            for index, decision in enumerate(payload["gap_decisions"])
+        ]
+        for row in transition_qc:
+            row["outlier"] = bool(row["flags"])
         cohorts.append(
             {
                 "id": cohort,
@@ -118,9 +147,11 @@ def build_topology_review(
                 "numerical_sample_count": numerical_samples,
                 "gap_decisions": payload["gap_decisions"],
                 "pair_evidence": payload["pair_evidence"],
+                "transition_qc": transition_qc,
                 "observed_sections": observed,
                 "envelope": envelope,
                 "semantic_regions": regions,
+                "semantic_partition_regions": partitions,
                 "default_region_index": default_region_index,
                 "uncertainty": uncertainty,
                 "classes": payload["classes"],
@@ -128,7 +159,7 @@ def build_topology_review(
                 "reconstruction_qc": reconstruction_qc,
             }
         )
-    manifest = {"schema_version": 3, "cohorts": cohorts}
+    manifest = {"schema_version": 4, "cohorts": cohorts}
     output.mkdir(parents=True, exist_ok=True)
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     encoded = json.dumps(manifest, separators=(",", ":"))
@@ -167,6 +198,41 @@ def _region_review_score(
         size_penalty = 10.0 * abs(fraction - 0.10)
     score = compactness + 7.0 * max(components - 1, 0) + size_penalty
     return (score, int(row.get("class_index", 1_000_000)))
+
+
+def _transition_outlier_flags(
+    evidence: object,
+    decision: object,
+) -> list[str]:
+    """Return deterministic review flags for one reconstructed transition."""
+
+    if not isinstance(evidence, dict):
+        evidence = {}
+    if not isinstance(decision, dict):
+        decision = {}
+    flags: list[str] = []
+    status = decision.get("status")
+    if status in {"inferred", "unresolved"}:
+        flags.append(f"{status}_z_spacing")
+    lower_gates = {
+        "support_dice": 0.85,
+        "matched_label_agreement": 0.50,
+        "correspondence_coverage": 0.50,
+        "median_confidence": 0.55,
+    }
+    upper_gates = {
+        "semantic_js": 0.20,
+        "displacement_strain": 0.75,
+    }
+    for name, threshold in lower_gates.items():
+        value = evidence.get(name)
+        if isinstance(value, (int, float)) and float(value) < threshold:
+            flags.append(f"low_{name}")
+    for name, threshold in upper_gates.items():
+        value = evidence.get(name)
+        if isinstance(value, (int, float)) and float(value) > threshold:
+            flags.append(f"high_{name}")
+    return flags
 
 
 def _copy_mesh(
@@ -254,7 +320,11 @@ _HTML = """<!doctype html>
         <output id="qc-status"></output>
       </section>
       <section class="controls">
-        <label>Semantic core <select id="region"></select></label>
+        <div class="segments representation" aria-label="Semantic representation">
+          <button data-surface="core" class="active">Core</button>
+          <button data-surface="full">Full</button>
+        </div>
+        <label>Semantic class <select id="region"></select></label>
         <label>Region opacity <input id="region-opacity" type="range" min="10" max="100" value="82"></label>
         <label>Envelope opacity <input id="envelope-opacity" type="range" min="5" max="70" value="18"></label>
         <label class="check"><input id="show-region" type="checkbox" checked> Semantic region</label>
@@ -268,6 +338,7 @@ _HTML = """<!doctype html>
       <section class="review">
         <h2>Scientific review</h2>
         <select id="review-target" aria-label="Review target"></select>
+        <output id="transition-summary"></output>
         <div class="credentials">
           <input id="token" type="password" placeholder="Access key" autocomplete="off">
           <input id="reviewer" placeholder="Reviewer">
@@ -280,6 +351,9 @@ _HTML = """<!doctype html>
           <button data-decision="hold">Hold</button>
           <button data-decision="reject">Reject</button>
         </div>
+        <button id="accept-passing" type="button">
+          Accept passing transitions
+        </button>
         <output id="status"></output>
       </section>
     </aside>
@@ -294,7 +368,8 @@ _HTML = """<!doctype html>
 
 _CSS = """
 :root{color-scheme:dark;font-family:Inter,system-ui,sans-serif;background:#090d12;color:#e6edf3}
-*{box-sizing:border-box;letter-spacing:0}body{margin:0;height:100dvh;overflow:hidden}.app{height:100dvh;display:grid;grid-template-columns:minmax(0,1fr) clamp(400px,25vw,720px)}.workspace{min-width:0;min-height:0;display:grid;grid-template-rows:48px minmax(0,1fr)}header{display:flex;align-items:center;gap:8px;padding:0 12px;border-bottom:1px solid #30363d;background:#151a21}header strong{font-size:14px;white-space:nowrap;margin-right:auto}.view-controls{display:flex;gap:5px}button,select,input,textarea{font:inherit;color:inherit;background:#20262e;border:1px solid #48515c;border-radius:4px}button,select,input{height:30px;padding:0 8px}button{cursor:pointer}button:hover{border-color:#8c959f}.segments{display:flex}.segments button{border-radius:0;font-size:11px}.segments button:first-child{border-radius:4px 0 0 4px}.segments button:last-child{border-radius:0 4px 4px 0}.segments button.active{background:#236aa5;border-color:#58a6ff}#viewport{position:relative;min-width:0;min-height:0;overflow:hidden;background:#070a0e}#viewport canvas{display:block}#loading{position:absolute;left:16px;bottom:14px;padding:6px 9px;background:#151a21cc;border:1px solid #30363d;border-radius:4px;font-size:11px;color:#b9c3ce;z-index:2}aside{min-width:0;min-height:0;overflow:auto;border-left:1px solid #30363d;background:#0f141a}aside>section{padding:10px 12px;border-bottom:1px solid #30363d}.dataset{min-height:48px;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.7fr);align-items:center;gap:9px;background:#151a21}.dataset label{display:flex;align-items:center;gap:7px;font-size:11px}.dataset select{flex:1;min-width:0}.dataset output{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#9da7b3;font-size:10px}.metrics{display:grid;grid-template-columns:1fr 1fr;gap:5px}.metric{background:#181e25;padding:6px;border-radius:4px;font-size:10px;color:#9da7b3}.metric b{display:block;color:#e6edf3;font-size:14px}.metric.pass b,#qc-status.pass{color:#56d364}.metric.fail b,#qc-status.fail{color:#ff7b72}#qc-status{display:block;margin-top:7px;font-size:11px}.controls{display:grid;gap:7px;font-size:11px}.controls label{display:flex;align-items:center;gap:7px}.controls label>select,.controls label>input[type=range]{flex:1;min-width:0}.controls .check{justify-content:flex-start}.check input{height:auto}.review{display:grid;gap:7px}.review h2{margin:0;font-size:11px;text-transform:uppercase;color:#9da7b3}.review select,.review textarea{width:100%}.credentials{display:grid;grid-template-columns:1fr 1fr;gap:5px}.credentials input{min-width:0;width:100%}.review textarea{height:58px;padding:6px;resize:none}.review>label{font-size:11px;color:#9da7b3}.review>label input{width:58px;margin-left:5px}.decision{display:grid;grid-template-columns:repeat(3,1fr);gap:5px}.decision button:first-child{border-color:#3fb950}.decision button:last-child{border-color:#f85149}#issues{display:flex;flex-wrap:wrap;gap:4px;font-size:10px}#issues label{padding:3px 5px;background:#181e25;border-radius:3px;color:#b9c3ce}#issues input{height:auto}#status{min-height:14px;font-size:11px;color:#9da7b3}@media(max-width:1280px){.app{grid-template-columns:minmax(0,1fr) 360px}.view-controls button:not([data-view=home]){display:none}.dataset{grid-template-columns:1fr}.dataset output{display:none}}@media(max-height:760px){aside>section{padding:7px 10px}.controls{gap:4px}.review{gap:4px}.review textarea{height:38px}}
+*{box-sizing:border-box;letter-spacing:0}body{margin:0;height:100dvh;overflow:hidden}.app{height:100dvh;display:grid;grid-template-columns:minmax(0,1fr) clamp(400px,25vw,720px)}.workspace{min-width:0;min-height:0;display:grid;grid-template-rows:48px minmax(0,1fr)}header{display:flex;align-items:center;gap:8px;padding:0 12px;border-bottom:1px solid #30363d;background:#151a21}header strong{font-size:14px;white-space:nowrap;margin-right:auto}.view-controls{display:flex;gap:5px}button,select,input,textarea{font:inherit;color:inherit;background:#20262e;border:1px solid #48515c;border-radius:4px}button,select,input{height:30px;padding:0 8px}button{cursor:pointer}button:hover{border-color:#8c959f}.segments{display:flex}.segments button{border-radius:0;font-size:11px}.segments button:first-child{border-radius:4px 0 0 4px}.segments button:last-child{border-radius:0 4px 4px 0}.segments button.active{background:#236aa5;border-color:#58a6ff}#viewport{position:relative;min-width:0;min-height:0;overflow:hidden;background:#070a0e}#viewport canvas{display:block}#loading{position:absolute;left:16px;bottom:14px;padding:6px 9px;background:#151a21cc;border:1px solid #30363d;border-radius:4px;font-size:11px;color:#b9c3ce;z-index:2}aside{min-width:0;min-height:0;overflow:auto;border-left:1px solid #30363d;background:#0f141a}aside>section{padding:10px 12px;border-bottom:1px solid #30363d}.dataset{min-height:48px;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.7fr);align-items:center;gap:9px;background:#151a21}.dataset label{display:flex;align-items:center;gap:7px;font-size:11px}.dataset select{flex:1;min-width:0}.dataset output{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#9da7b3;font-size:10px}.metrics{display:grid;grid-template-columns:1fr 1fr;gap:5px}.metric{background:#181e25;padding:6px;border-radius:4px;font-size:10px;color:#9da7b3}.metric b{display:block;color:#e6edf3;font-size:14px}.metric.pass b,#qc-status.pass{color:#56d364}.metric.fail b,#qc-status.fail{color:#ff7b72}#qc-status{display:block;margin-top:7px;font-size:11px}.controls{display:grid;gap:7px;font-size:11px}.controls label{display:flex;align-items:center;gap:7px}.controls label>select,.controls label>input[type=range]{flex:1;min-width:0}.controls .check{justify-content:flex-start}.representation{width:100%}.representation button{flex:1}.check input{height:auto}.review{display:grid;gap:7px}.review h2{margin:0;font-size:11px;text-transform:uppercase;color:#9da7b3}.review select,.review textarea{width:100%}.credentials{display:grid;grid-template-columns:1fr 1fr;gap:5px}.credentials input{min-width:0;width:100%}.review textarea{height:58px;padding:6px;resize:none}.review>label{font-size:11px;color:#9da7b3}.review>label input{width:58px;margin-left:5px}.decision{display:grid;grid-template-columns:repeat(3,1fr);gap:5px}.decision button:first-child{border-color:#3fb950}.decision button:last-child{border-color:#f85149}#issues{display:flex;flex-wrap:wrap;gap:4px;font-size:10px}#issues label{padding:3px 5px;background:#181e25;border-radius:3px;color:#b9c3ce}#issues input{height:auto}#status{min-height:14px;font-size:11px;color:#9da7b3}@media(max-width:1280px){.app{grid-template-columns:minmax(0,1fr) 360px}.view-controls button:not([data-view=home]){display:none}.dataset{grid-template-columns:1fr}.dataset output{display:none}}@media(max-height:760px){aside>section{padding:7px 10px}.controls{gap:4px}.review{gap:4px}.review textarea{height:38px}}
+#transition-summary{font-size:10px;color:#9da7b3}#accept-passing{border-color:#3fb950}
 """
 
 
@@ -310,11 +385,11 @@ let contextLost=false;renderer.domElement.style.visibility="hidden";renderer.dom
 const controls=new OrbitControls(camera,renderer.domElement);controls.enableDamping=true;controls.screenSpacePanning=true;
 scene.add(new THREE.HemisphereLight(0xffffff,0x23303c,2.5));const key=new THREE.DirectionalLight(0xffffff,2.4);key.position.set(1,2,2);scene.add(key);const fill=new THREE.DirectionalLight(0x9fc5e8,1.1);fill.position.set(-2,.5,-1);scene.add(fill);
 const root=new THREE.Group();scene.add(root);const clipping=new THREE.Plane(new THREE.Vector3(1,0,0),1e9);
-let current=null,generation=0,physicalCenter=new THREE.Vector3(),physicalSize=new THREE.Vector3(),envelope=null,uncertainty=null,locator=null,activeRegion=null,zScale=12;
+let current=null,generation=0,physicalCenter=new THREE.Vector3(),physicalSize=new THREE.Vector3(),envelope=null,uncertainty=null,locator=null,activeRegions=[],surfaceMode="core",zScale=12;
 const regionCache=new Map();
 function resize(){const rect=el("viewport").getBoundingClientRect();renderer.setSize(rect.width,rect.height,false);camera.aspect=Math.max(rect.width,1)/Math.max(rect.height,1);camera.updateProjectionMatrix()}addEventListener("resize",()=>{resize();fit("home")});
 function disposeObject(object){if(!object)return;root.remove(object);object.geometry?.dispose();object.material?.dispose()}
-function clear(){for(const item of [...root.children])disposeObject(item);regionCache.clear();envelope=uncertainty=locator=activeRegion=null}
+function clear(){for(const item of [...root.children])disposeObject(item);regionCache.clear();envelope=uncertainty=locator=null;activeRegions=[]}
 async function binaryMesh(row,role,loadId){
  const response=await fetch(row.viewer_asset);if(!response.ok)throw Error(`Could not load ${role}`);const buffer=await response.arrayBuffer();if(loadId!==generation)return null;
  const view=new DataView(buffer);if(String.fromCharCode(...new Uint8Array(buffer,0,4))!=="HTM1")throw Error(`Invalid ${role} mesh`);
@@ -333,13 +408,15 @@ async function selectCohort(id){
  const qc=current.reconstruction_qc,chosen=qc.candidates?.find(row=>row.method===qc.selected_method)||qc;
  el("metrics").innerHTML=`<div class="metric"><b>${current.observed_section_count}</b>observed sections</div><div class="metric"><b>${current.numerical_sample_count}</b>numerical samples</div><div class="metric"><b>${pct(chosen.median_tissue_dice||0)}</b>held-out tissue Dice</div><div class="metric ${qc.status==="passed"?"pass":"fail"}"><b>${qc.status}</b>envelope QC</div>`;
  el("qc-status").className=qc.status==="passed"?"pass":"fail";el("qc-status").textContent=current.legacy_diagnostic?"Legacy sparse diagnostic surface":`${qc.selected_method} | boundary F1 ${pct(chosen.median_boundary_f1||0)}`;
- const available=current.semantic_regions.filter(Boolean);el("region").innerHTML=available.map((row,index)=>`<option value="${index}">Class ${row.class_index??index} · ${pct(row.viewer_core_volume_fraction_of_tissue||0)} core</option>`).join("");el("region").value=String(Math.min(current.default_region_index,available.length-1));
+ updateRegionOptions();
  el("section").innerHTML=current.observed_sections.map((row,index)=>`<option value="${index}">${String(index+1).padStart(2,"0")} ${escapeHtml(row.slide_id||"Section")}</option>`).join("");
- el("review-target").innerHTML=`<option value="volume">Connected volume</option>`+current.gap_decisions.map((row,index)=>`<option value="${index}">Transition ${row.source_section+1} to ${row.target_section+1}</option>`).join("");
- updateReviewTarget();try{envelope=await binaryMesh(current.envelope,"envelope",loadId);if(!envelope)return;root.scale.y=zScale;await selectRegion(+el("region").value,loadId);if(loadId!==generation)return;updateCutaway();updateLocator();fit("home");await settleRenderer(loadId)}catch(error){el("loading").textContent=error.message}
+ const flagged=new Set(current.transition_qc.filter(row=>row.outlier).map(row=>row.id));el("review-target").innerHTML=`<option value="volume">Connected volume</option>`+current.gap_decisions.map((row,index)=>{const id=`${String(row.source_section).padStart(3,"0")}-${String(row.target_section).padStart(3,"0")}`;return `<option value="${index}">${flagged.has(id)?"Review · ":""}Transition ${row.source_section+1} to ${row.target_section+1}</option>`}).join("");el("transition-summary").textContent=`${flagged.size} flagged · ${current.gap_decisions.length-flagged.size} passing transitions`;
+ updateReviewTarget();try{envelope=await binaryMesh(current.envelope,"envelope",loadId);if(!envelope)return;root.scale.y=zScale;await selectRegion(el("region").value,loadId);if(loadId!==generation)return;updateCutaway();updateLocator();fit("home");await settleRenderer(loadId)}catch(error){el("loading").textContent=error.message}
 }
 async function settleRenderer(loadId){let stableFrames=0;while(stableFrames<4){await new Promise(resolve=>setTimeout(resolve,120));if(loadId!==generation)return;if(contextLost){stableFrames=0;continue}renderer.render(scene,camera);stableFrames++}renderer.domElement.style.visibility="visible";el("loading").hidden=true}
-async function selectRegion(index,loadId=generation){if(activeRegion)activeRegion.visible=false;const row=current.semantic_regions.filter(Boolean)[index];if(!row)return;let mesh=regionCache.get(index);if(!mesh){el("loading").hidden=false;el("loading").textContent=`Loading semantic region ${row.class_index??index}...`;mesh=await binaryMesh(row,"region",loadId);if(!mesh)return;regionCache.set(index,mesh)}activeRegion=mesh;mesh.visible=el("show-region").checked}
+function surfaceRows(){return (surfaceMode==="full"?current.semantic_partition_regions:current.semantic_regions).filter(Boolean)}
+function updateRegionOptions(){const rows=surfaceRows(),metric=surfaceMode==="full"?"viewer_partition_volume_fraction_of_tissue":"viewer_core_volume_fraction_of_tissue";el("region").innerHTML=`<option value="all">All classes</option>`+rows.map((row,index)=>`<option value="${index}">Class ${row.class_index??index} · ${pct(row[metric]||0)}</option>`).join("");el("region").value=surfaceMode==="full"?"all":String(Math.min(current.default_region_index,Math.max(rows.length-1,0)))}
+async function selectRegion(value,loadId=generation){for(const mesh of activeRegions)mesh.visible=false;activeRegions=[];const rows=surfaceRows(),indices=value==="all"?rows.map((_,index)=>index):[+value];for(const index of indices){const row=rows[index];if(!row)continue;const key=`${surfaceMode}:${index}`;let mesh=regionCache.get(key);if(!mesh){el("loading").hidden=false;el("loading").textContent=`Loading ${surfaceMode} class ${row.class_index??index}...`;mesh=await binaryMesh(row,"region",loadId);if(!mesh)return;regionCache.set(key,mesh)}mesh.visible=el("show-region").checked;activeRegions.push(mesh)}}
 async function toggleUncertainty(){if(!current.uncertainty){el("show-uncertainty").checked=false;return}if(!uncertainty)uncertainty=await binaryMesh(current.uncertainty,"uncertainty",generation);if(uncertainty)uncertainty.visible=el("show-uncertainty").checked}
 function updateLocator(){if(locator){root.remove(locator);locator.geometry.dispose();locator.material.dispose();locator=null}el("section-row").style.display=el("show-locator").checked?"flex":"none";if(!el("show-locator").checked||!current.observed_sections.length)return;const row=current.observed_sections[+el("section").value||0],x=physicalSize.x/2,z=physicalSize.z/2,y=row.z_um-physicalCenter.y,points=[-x,y,-z,x,y,-z,x,y,z,-x,y,z,-x,y,-z],geometry=new THREE.BufferGeometry().setFromPoints(Array.from({length:5},(_,i)=>new THREE.Vector3(points[3*i],points[3*i+1],points[3*i+2]))),material=new THREE.LineBasicMaterial({color:0xffffff,transparent:true,opacity:.85,depthTest:false});locator=new THREE.Line(geometry,material);locator.renderOrder=5;root.add(locator)}
 function updateCutaway(){const enabled=el("cutaway").checked;el("cut-row").style.display=enabled?"flex":"none";clipping.constant=enabled?-(+el("cut-position").value/100)*(physicalSize.x/2):1e9;for(const mesh of root.children)if(mesh.material)mesh.material.needsUpdate=true}
@@ -351,9 +428,12 @@ function pct(value){return `${(100*value).toFixed(1)}%`}function escapeHtml(valu
 el("cohort").innerHTML=data.cohorts.map(row=>`<option>${row.id}</option>`).join("");el("cohort").onchange=()=>selectCohort(el("cohort").value);
 document.querySelectorAll("[data-z]").forEach(button=>button.onclick=()=>{zScale=+button.dataset.z;root.scale.y=zScale;document.querySelectorAll("[data-z]").forEach(item=>item.classList.toggle("active",item===button));updateLocator();fit("home")});
 document.querySelectorAll("[data-view]").forEach(button=>button.onclick=()=>fit(button.dataset.view));
-el("region").onchange=async()=>{const loadId=generation;await selectRegion(+el("region").value,loadId);fit("home");await settleRenderer(loadId)};el("region-opacity").oninput=()=>{if(activeRegion)activeRegion.material.opacity=+el("region-opacity").value/100};el("envelope-opacity").oninput=()=>{if(envelope)envelope.material.opacity=+el("envelope-opacity").value/100};el("show-region").onchange=()=>{if(activeRegion)activeRegion.visible=el("show-region").checked};el("show-envelope").onchange=()=>{if(envelope)envelope.visible=el("show-envelope").checked};el("show-uncertainty").onchange=toggleUncertainty;el("show-locator").onchange=updateLocator;el("section").onchange=updateLocator;el("cutaway").onchange=updateCutaway;el("cut-position").oninput=updateCutaway;el("review-target").onchange=updateReviewTarget;
+document.querySelectorAll("[data-surface]").forEach(button=>button.onclick=async()=>{surfaceMode=button.dataset.surface;document.querySelectorAll("[data-surface]").forEach(item=>item.classList.toggle("active",item===button));updateRegionOptions();const loadId=generation;await selectRegion(el("region").value,loadId);fit("home");await settleRenderer(loadId)});
+el("region").onchange=async()=>{const loadId=generation;await selectRegion(el("region").value,loadId);fit("home");await settleRenderer(loadId)};el("region-opacity").oninput=()=>{for(const mesh of activeRegions)mesh.material.opacity=+el("region-opacity").value/100};el("envelope-opacity").oninput=()=>{if(envelope)envelope.material.opacity=+el("envelope-opacity").value/100};el("show-region").onchange=()=>{for(const mesh of activeRegions)mesh.visible=el("show-region").checked};el("show-envelope").onchange=()=>{if(envelope)envelope.visible=el("show-envelope").checked};el("show-uncertainty").onchange=toggleUncertainty;el("show-locator").onchange=updateLocator;el("section").onchange=updateLocator;el("cutaway").onchange=updateCutaway;el("cut-position").oninput=updateCutaway;el("review-target").onchange=updateReviewTarget;
 const labels=["envelope_shape","missing_component","spurious_component","semantic_discontinuity","excess_uncertainty","wrong_z_spacing","framing","performance","other"];el("issues").innerHTML=labels.map(value=>`<label><input type="checkbox" value="${value}">${value.replaceAll("_"," ")}</label>`).join("");
 document.querySelectorAll("[data-decision]").forEach(button=>button.onclick=()=>save(button.dataset.decision));
-async function save(decision){const target=el("review-target").value,isVolume=target==="volume",row=isVolume?null:current.gap_decisions[+target],body={cohort:current.id,stage:"topology",fingerprint:current.fingerprint,slide_id:isVolume?"volume":`${String(row.source_section).padStart(3,"0")}-${String(row.target_section).padStart(3,"0")}`,decision,labels:[...el("issues").querySelectorAll("input:checked")].map(input=>input.value),comment:el("comment").value,reviewer:el("reviewer").value};if(!isVolume)body.suggested_intervals=+el("intervals").value;if(decision==="accept")body.labels=[];el("status").textContent="Saving...";try{const response=await fetch("/api/reviews/feedback",{method:"POST",headers:{"Content-Type":"application/json","Authorization":`Bearer ${el("token").value}`},body:JSON.stringify(body)}),payload=await response.json();if(!response.ok)throw Error(payload.error||"Review save failed");el("status").textContent=`Saved ${decision}`}catch(error){el("status").textContent=error.message}}
+async function postFeedback(body){const response=await fetch("/api/reviews/feedback",{method:"POST",headers:{"Content-Type":"application/json","Authorization":`Bearer ${el("token").value}`},body:JSON.stringify(body)}),payload=await response.json();if(!response.ok)throw Error(payload.error||"Review save failed");return payload}
+async function save(decision){const target=el("review-target").value,isVolume=target==="volume",row=isVolume?null:current.gap_decisions[+target],body={cohort:current.id,stage:"topology",fingerprint:current.fingerprint,slide_id:isVolume?"volume":`${String(row.source_section).padStart(3,"0")}-${String(row.target_section).padStart(3,"0")}`,decision,labels:[...el("issues").querySelectorAll("input:checked")].map(input=>input.value),comment:el("comment").value,reviewer:el("reviewer").value};if(!isVolume)body.suggested_intervals=+el("intervals").value;if(decision==="accept")body.labels=[];el("status").textContent="Saving...";try{await postFeedback(body);el("status").textContent=`Saved ${decision}`}catch(error){el("status").textContent=error.message}}
+el("accept-passing").onclick=async()=>{const reviewer=el("reviewer").value.trim(),passing=new Set(current.transition_qc.filter(row=>!row.outlier).map(row=>row.id));if(!reviewer){el("status").textContent="Reviewer is required";return}if(!confirm(`Accept ${passing.size} quantitatively passing transitions for ${current.id}?`))return;el("status").textContent=`Saving 0 of ${passing.size}...`;let saved=0;try{for(const row of current.gap_decisions){const id=`${String(row.source_section).padStart(3,"0")}-${String(row.target_section).padStart(3,"0")}`;if(!passing.has(id))continue;await postFeedback({cohort:current.id,stage:"topology",fingerprint:current.fingerprint,slide_id:id,decision:"accept",labels:[],comment:"Quantitative transition gates passed; accepted with cohort volume review.",reviewer,suggested_intervals:row.intervals});saved++;el("status").textContent=`Saving ${saved} of ${passing.size}...`}el("status").textContent=`Accepted ${saved} passing transitions`}catch(error){el("status").textContent=`Saved ${saved}; ${error.message}`}}
 function animate(){requestAnimationFrame(animate);controls.update();renderer.render(scene,camera)}resize();el("section-row").style.display="none";el("cut-row").style.display="none";selectCohort(data.cohorts[0].id);animate();
 """

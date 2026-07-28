@@ -45,13 +45,17 @@ provenance, display meshes, quantitative class summaries, and source
 fingerprints. Display-only smoothing and component filtering never change the
 stored measurements.
 
-Semantic viewer meshes show high-confidence cores from the dominant smoothed
-class field. A displayed component must meet both cross-section-persistence and
-minimum-volume gates, and at most three components are retained per class.
-Sub-patch gaps are closed in the review-space physical metric before a smooth
-signed-distance surface is extracted. A global morphology class can
-legitimately occupy several disconnected tissue regions. These review-surface
-operations do not alter the dense semantic field or quantitative class volume.
+Semantic viewer meshes provide two complementary representations. **Core**
+surfaces grow from high-confidence dominant-class seeds and retain every
+component that meets cross-section-persistence and minimum-volume gates.
+Sub-patch gaps and protrusions are regularized in the review-space physical
+metric before a smooth signed-distance surface is extracted. **Full** surfaces
+form an exhaustive, mutually exclusive partition of the tissue envelope.
+Tiny or interpolation-only partition components are reassigned to their
+next-best class instead of being shown as unsupported islands. A global
+morphology class can legitimately occupy several disconnected tissue regions.
+These review-surface operations do not alter the dense semantic field or
+quantitative class volume.
 
 Build a fixed-viewport review:
 
@@ -61,11 +65,15 @@ histopia-visualize topology-review /path/to/review \
 ```
 
 The reviewer opens with a translucent connected tissue envelope and one
-selectable semantic region. Physical, 12x review, and 25x strong z modes are
-explicit display choices; 12x is the default. Camera presets, a cutaway plane,
-uncertainty overlay, and observed-section locator support inspection without
-changing reconstruction geometry. Camera fitting is anchored to the anatomical
-envelope, and semantic-region visibility can be toggled independently. The same
+selectable confidence core. Core and Full controls switch representations, and
+Full can display all classes as a complete tissue partition. Physical, 12x
+review, and 25x strong z modes are explicit display choices; 12x is the
+default. Camera presets, a cutaway plane, uncertainty overlay, and
+observed-section locator support inspection without changing reconstruction
+geometry. Camera fitting is anchored to the anatomical envelope, and
+semantic-region visibility can be toggled independently. Quantitatively
+flagged transitions remain individual review targets; passing transitions can
+be accepted as a batch after the connected volume is inspected. The same
 application is used by the standalone topology route and the workflow review
 hub.
 

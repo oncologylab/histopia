@@ -50,7 +50,7 @@ from histopia.topology._volume import (
 )
 
 Progress = Callable[[str], None]
-TOPOLOGY_ALGORITHM_VERSION = 12
+TOPOLOGY_ALGORITHM_VERSION = 13
 _LINK_COVERAGE_GATE = 0.05
 _LINK_CONFIDENCE_GATE = 0.45
 _VIEWER_FACE_TARGET = 200_000
@@ -288,7 +288,13 @@ def build_topology(
     )
     dense_row = write_dense_volume(output, dense)
     report("Extracting connected envelope and semantic-region surfaces")
-    envelope_row, region_rows, class_rows, uncertainty_row = write_connected_meshes(
+    (
+        envelope_row,
+        region_rows,
+        partition_rows,
+        class_rows,
+        uncertainty_row,
+    ) = write_connected_meshes(
         output,
         palette=tuple(str(value) for value in semantic["palette"][:selected_k]),
         origin_um_xy=origin,
@@ -327,6 +333,7 @@ def build_topology(
         "planes": plane_rows,
         "envelope": envelope_row,
         "semantic_regions": region_rows,
+        "semantic_partition_regions": partition_rows,
         "uncertainty": uncertainty_row,
         "classes": class_rows,
         "reconstruction_grid": {
@@ -351,6 +358,7 @@ def build_topology(
             "reconstruction_uncertainty": "unit_interval",
             "full_resolution_images_synthesized": False,
             "viewer_component_filter_changes_measurement": False,
+            "viewer_partition_changes_measurement": False,
         },
     }
     result = write_topology_result(output, core)

@@ -9,12 +9,15 @@ from PIL import Image
 
 from histopia.topology._model import ObservedSection
 from histopia.topology._volume import (
+    DenseVolume,
     _smooth_viewer_mesh,
     benchmark_envelope_methods,
     filter_persistent_components,
     load_registered_mask_stack,
     reconstruct_dense_volume,
     regularize_semantic_core,
+    regularize_semantic_partition,
+    write_connected_meshes,
 )
 
 
@@ -213,6 +216,73 @@ def test_semantic_core_regularization_closes_only_subpatch_gaps() -> None:
 
     assert regularized[12, 7, 9]
     assert not regularized[12, 7, 18:21].any()
+
+
+def test_connected_meshes_include_persistent_cores_and_complete_partitions(
+    tmp_path: Path,
+) -> None:
+    support = np.zeros((9, 20, 24), dtype=bool)
+    support[:, 2:18, 2:22] = True
+    membership = np.zeros((9, 2, 20, 24), dtype=np.float32)
+    membership[:, 0, 2:18, 2:12] = 0.86
+    membership[:, 0, 2:18, 12:22] = 0.14
+    membership[:, 1, 2:18, 2:12] = 0.14
+    membership[:, 1, 2:18, 12:22] = 0.86
+    volume = DenseVolume(
+        envelope_sdf=np.where(support, 1.0, -1.0).astype(np.float32),
+        membership=membership,
+        uncertainty=np.zeros_like(support, dtype=np.float32),
+        z_positions_um=np.arange(9, dtype=float),
+        observed_section_indices=np.asarray([0, -1, -1, -1, 1, -1, -1, -1, 2]),
+        segments=np.zeros(9, dtype=np.int16),
+    )
+
+    envelope, cores, partitions, classes, uncertainty = write_connected_meshes(
+        tmp_path,
+        volume,
+        palette=("#d73027", "#4575b4"),
+        origin_um_xy=(0, 0),
+        spacing_um=8,
+        z_spacing_um=1,
+        source_patch_width_um=16,
+        section_thickness_um=4,
+    )
+
+    assert envelope["role"] == "envelope"
+    assert uncertainty is None
+    assert {row["class_index"] for row in cores} == {0, 1}
+    assert {row["class_index"] for row in partitions} == {0, 1}
+    assert sum(
+        row["viewer_partition_volume_fraction_of_tissue"] for row in classes
+    ) == pytest.approx(1.0)
+    assert all(
+        row["viewer_regularization"]["partition_is_exhaustive"] for row in partitions
+    )
+    assert all((tmp_path / row["viewer_asset"]).is_file() for row in partitions)
+
+
+def test_semantic_partition_reassigns_only_small_unobserved_components() -> None:
+    support = np.ones((3, 6, 7), dtype=bool)
+    membership = np.zeros((3, 2, 6, 7), dtype=np.float32)
+    membership[:, 0] = 0.8
+    membership[:, 1] = 0.2
+    membership[:, 1, 2:5, 4:7] = 0.9
+    membership[:, 0, 2:5, 4:7] = 0.1
+    membership[1, 1, 0, 0] = 0.95
+    membership[1, 0, 0, 0] = 0.05
+
+    labels, removed = regularize_semantic_partition(
+        membership,
+        support,
+        observed_dense_indices=np.asarray([0, 2]),
+        voxel_volume_um3=1,
+        minimum_component_volume_um3=2,
+    )
+
+    assert np.all(labels[:, 2:5, 4:7] == 1)
+    assert labels[1, 0, 0] == 0
+    assert removed == (0, 1)
+    assert np.all(labels >= 0)
 
 
 def _section(offset: int) -> ObservedSection:

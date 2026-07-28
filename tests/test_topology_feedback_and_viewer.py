@@ -15,7 +15,10 @@ from histopia.topology._pipeline import _write_meshes, _write_planes
 from histopia.topology._result import write_topology_result
 from histopia.visualization import build_topology_review
 from histopia.visualization._server import create_viewer_server
-from histopia.visualization._topology_review import _region_review_score
+from histopia.visualization._topology_review import (
+    _region_review_score,
+    _transition_outlier_flags,
+)
 
 
 def test_topology_feedback_requires_every_current_pair(tmp_path: Path) -> None:
@@ -52,7 +55,7 @@ def test_topology_viewer_builds_section_assets_and_gates_surfaces(
     index = build_topology_review({"sample": run}, tmp_path / "viewer")
 
     manifest = json.loads((index.parent / "manifest.json").read_text())
-    assert manifest["schema_version"] == 3
+    assert manifest["schema_version"] == 4
     cohort = manifest["cohorts"][0]
     assert cohort["id"] == "sample"
     assert cohort["envelope"]["viewer_asset"] == "assets/sample/envelope.bin"
@@ -62,12 +65,17 @@ def test_topology_viewer_builds_section_assets_and_gates_surfaces(
     assert cohort["semantic_regions"][0]["viewer_asset"].startswith(
         "assets/sample/region-"
     )
+    assert cohort["semantic_partition_regions"][0]["viewer_asset"].startswith(
+        "assets/sample/partition-"
+    )
     assert cohort["reconstruction_qc"]["status"] == "passed"
     assert (index.parent / "vendor" / "three.module.min.js").is_file()
     javascript = (index.parent / "topology-review.js").read_text()
     assert "zScale=12" in javascript
     assert "Loading tissue envelope" in javascript
     assert "projectedGeometryBounds(envelope)" in javascript
+    assert 'data-surface="core"' in (index.parent / "index.html").read_text()
+    assert 'surfaceMode==="full"' in javascript
 
 
 def test_topology_default_region_prefers_supported_compact_core() -> None:
@@ -99,6 +107,25 @@ def test_topology_default_region_prefers_supported_compact_core() -> None:
     )
 
     assert selected["class_index"] == 4
+
+
+def test_topology_transition_flags_only_abnormal_evidence() -> None:
+    passing = {
+        "support_dice": 0.91,
+        "matched_label_agreement": 0.72,
+        "correspondence_coverage": 0.83,
+        "median_confidence": 0.70,
+        "semantic_js": 0.08,
+        "displacement_strain": 0.30,
+    }
+    failing = {**passing, "support_dice": 0.70, "semantic_js": 0.31}
+
+    assert _transition_outlier_flags(passing, {"status": "assumed"}) == []
+    assert _transition_outlier_flags(failing, {"status": "inferred"}) == [
+        "inferred_z_spacing",
+        "low_support_dice",
+        "high_semantic_js",
+    ]
 
 
 @pytest.mark.browser
@@ -135,6 +162,11 @@ def test_topology_viewer_defaults_to_centered_connected_volume(
             assert page.locator("[data-z='12']").get_attribute("class") == "active"
             assert page.locator(".metric").count() == 4
             assert page.locator("#qc-status").get_attribute("class") == "pass"
+            page.locator("[data-surface='full']").click()
+            page.wait_for_function("() => document.querySelector('#loading').hidden")
+            assert page.locator("#region").input_value() == "all"
+            page.locator("[data-surface='core']").click()
+            page.wait_for_function("() => document.querySelector('#loading').hidden")
             page.locator("#show-region").uncheck()
             for width, height in ((1920, 1080), (3840, 2160)):
                 page.set_viewport_size({"width": width, "height": height})
@@ -268,12 +300,31 @@ def _topology_run(root: Path, *, schema_version: int = 1) -> Path:
             volume / "dense-fields.npz",
             envelope_sdf=np.zeros((2, 8, 9), dtype=np.float16),
         )
+        partition_rows = []
+        for index, row in enumerate(mesh_rows[1:]):
+            artifact = Path(str(row["artifact"]))
+            viewer_asset = Path(str(row["viewer_asset"]))
+            partition_artifact = artifact.with_name(f"partition-{index:02d}.npz")
+            partition_viewer = viewer_asset.with_name(f"partition-{index:02d}.bin")
+            (root / partition_artifact).write_bytes((root / artifact).read_bytes())
+            (root / partition_viewer).write_bytes((root / viewer_asset).read_bytes())
+            partition_rows.append(
+                {
+                    **row,
+                    "role": "semantic_partition",
+                    "class_index": index,
+                    "artifact": partition_artifact.as_posix(),
+                    "viewer_asset": partition_viewer.as_posix(),
+                    "viewer_partition_volume_fraction_of_tissue": 0.5,
+                }
+            )
         core.pop("meshes")
         core.update(
             {
                 "source_patch_width_um": 10,
                 "envelope": mesh_rows[0],
                 "semantic_regions": mesh_rows[1:],
+                "semantic_partition_regions": partition_rows,
                 "uncertainty": None,
                 "reconstruction_grid": {
                     "artifact": "volume/dense-fields.npz",

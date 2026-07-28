@@ -21,11 +21,13 @@ from histopia.topology._model import ObservedSection
 
 _FLOW_CONFIDENCE_GATE = 0.45
 _VIEWER_FACE_TARGET = 200_000
-_MAX_VIEWER_COMPONENTS_PER_CLASS = 3
+_PARTITION_VIEWER_FACE_BUDGET = 600_000
 _MIN_VIEWER_COMPONENT_FRACTION = 0.01
 _MIN_ENVELOPE_COMPONENT_FRACTION = 0.005
-_SEMANTIC_CORE_QUANTILE = 0.35
-_SEMANTIC_CORE_MINIMUM = 0.48
+_SEMANTIC_CORE_SEED_PROBABILITY = 0.60
+_SEMANTIC_CORE_GROW_PROBABILITY = 0.40
+_SEMANTIC_CORE_SEED_MARGIN = 0.08
+_SEMANTIC_CORE_GROW_MARGIN = 0.02
 _REVIEW_Z_SCALE = 12.0
 
 
@@ -518,11 +520,12 @@ def write_connected_meshes(
     dict[str, object],
     list[dict[str, object]],
     list[dict[str, object]],
+    list[dict[str, object]],
     dict[str, object] | None,
 ]:
-    """Write one envelope, selected semantic regions, and uncertainty surface."""
+    """Write the envelope, semantic cores, full partitions, and uncertainty."""
 
-    from scipy.ndimage import gaussian_filter
+    from scipy.ndimage import binary_propagation, gaussian_filter
 
     support = volume.support
     observed_dense = np.flatnonzero(volume.observed_section_indices >= 0)
@@ -601,10 +604,29 @@ def write_connected_meshes(
         where=display_total[:, None] > np.finfo(np.float32).eps,
     )
     display_labels = np.argmax(display_membership, axis=1)
-    regions: list[dict[str, object]] = []
+    core_regions: list[dict[str, object]] = []
+    partition_regions: list[dict[str, object]] = []
     classes: list[dict[str, object]] = []
     voxel_volume_um3 = spacing_um**2 * z_spacing_um
     minimum_component_volume = 4.0 * source_patch_width_um**2 * section_thickness_um
+    display_labels, removed_partition_components = regularize_semantic_partition(
+        display_membership,
+        display_support,
+        observed_dense_indices=observed_dense,
+        voxel_volume_um3=voxel_volume_um3,
+        minimum_component_volume_um3=(source_patch_width_um**2 * section_thickness_um),
+    )
+    partition_face_target = max(
+        30_000,
+        _PARTITION_VIEWER_FACE_BUDGET // max(len(palette), 1),
+    )
+    sorted_membership = np.sort(display_membership, axis=1)
+    winner_margin = sorted_membership[:, -1] - sorted_membership[:, -2]
+    partition_counts = np.bincount(
+        display_labels[display_support],
+        minlength=len(palette),
+    )
+    partition_total = max(int(np.count_nonzero(display_support)), 1)
     for class_index, color in enumerate(palette):
         scientific = scientific_labels == class_index
         assigned = (
@@ -612,27 +634,33 @@ def write_connected_meshes(
             & display_support
             & (display_total > np.finfo(np.float32).eps)
         )
-        assigned_values = display_membership[:, class_index][assigned]
-        display_level = (
-            max(
-                _SEMANTIC_CORE_MINIMUM,
-                float(np.quantile(assigned_values, _SEMANTIC_CORE_QUANTILE)),
-            )
-            if len(assigned_values)
-            else 1.0
-        )
-        display = (
+        class_membership = display_membership[:, class_index]
+        seeds = (
             assigned
-            & (display_membership[:, class_index] >= display_level)
+            & (class_membership >= _SEMANTIC_CORE_SEED_PROBABILITY)
+            & (winner_margin >= _SEMANTIC_CORE_SEED_MARGIN)
+        )
+        growth = (
+            assigned
+            & (class_membership >= _SEMANTIC_CORE_GROW_PROBABILITY)
+            & (winner_margin >= _SEMANTIC_CORE_GROW_MARGIN)
+        )
+        seeded = (
+            binary_propagation(
+                seeds,
+                structure=np.ones((3, 3, 3), dtype=np.uint8),
+                mask=growth,
+            )
+            if np.any(seeds)
+            else np.zeros_like(growth)
         )
         displayed, before, after = filter_persistent_components(
-            display,
+            seeded,
             observed_dense_indices=observed_dense,
             voxel_volume_um3=voxel_volume_um3,
             minimum_component_volume_um3=minimum_component_volume,
             minimum_observed_sections=minimum_observed_sections,
             minimum_component_fraction=_MIN_VIEWER_COMPONENT_FRACTION,
-            max_components=_MAX_VIEWER_COMPONENTS_PER_CLASS,
             keep_largest_if_empty=False,
         )
         displayed = regularize_semantic_core(
@@ -641,9 +669,9 @@ def write_connected_meshes(
             z_spacing_um=z_spacing_um,
             source_patch_width_um=source_patch_width_um,
         )
-        displayed_fraction = (
-            float(np.count_nonzero(displayed))
-            / max(float(np.count_nonzero(display_support)), 1.0)
+        displayed &= display_support
+        displayed_fraction = float(np.count_nonzero(displayed)) / max(
+            float(np.count_nonzero(display_support)), 1.0
         )
         if np.any(displayed):
             display_field = _smooth_display_signed_distance(
@@ -671,16 +699,60 @@ def write_connected_meshes(
             region["viewer_regularization"] = {
                 "z_sigma_um": semantic_z_sigma * z_spacing_um,
                 "xy_sigma_um": semantic_xy_sigma * spacing_um,
-                "membership_level": display_level,
-                "semantic_core_quantile": _SEMANTIC_CORE_QUANTILE,
+                "seed_probability": _SEMANTIC_CORE_SEED_PROBABILITY,
+                "grow_probability": _SEMANTIC_CORE_GROW_PROBABILITY,
+                "seed_winner_margin": _SEMANTIC_CORE_SEED_MARGIN,
+                "grow_winner_margin": _SEMANTIC_CORE_GROW_MARGIN,
                 "subpatch_closing_radius_um": 0.5 * source_patch_width_um,
                 "requires_dominant_class": True,
                 "minimum_observed_sections": minimum_observed_sections,
                 "minimum_component_fraction": _MIN_VIEWER_COMPONENT_FRACTION,
-                "maximum_components": _MAX_VIEWER_COMPONENTS_PER_CLASS,
+                "maximum_components": None,
                 "changes_measurement": False,
             }
-            regions.append(region)
+            core_regions.append(region)
+        partition = assigned
+        partition_before = _component_count_3d(partition)
+        partition_fraction = float(partition_counts[class_index]) / partition_total
+        if np.any(partition):
+            partition_field = _smooth_display_signed_distance(
+                partition,
+                spacing_um=spacing_um,
+                z_spacing_um=z_spacing_um,
+                source_patch_width_um=source_patch_width_um,
+            )
+            partition_region = _write_scalar_mesh(
+                root,
+                partition_field,
+                stem=f"partition-{class_index:02d}",
+                role="semantic_partition",
+                color=color,
+                level=0.0,
+                origin_um_xy=origin_um_xy,
+                spacing_um=spacing_um,
+                z_origin_um=float(volume.z_positions_um[0]),
+                z_spacing_um=z_spacing_um,
+                viewer_face_target=partition_face_target,
+            )
+            partition_region.update(
+                {
+                    "class_index": class_index,
+                    "component_count": partition_before,
+                    "viewer_partition_volume_fraction_of_tissue": (partition_fraction),
+                    "viewer_regularization": {
+                        "z_sigma_um": semantic_z_sigma * z_spacing_um,
+                        "xy_sigma_um": semantic_xy_sigma * spacing_um,
+                        "assignment": "maximum_regularized_membership",
+                        "removed_small_or_unobserved_components": (
+                            removed_partition_components[class_index]
+                        ),
+                        "partition_is_exhaustive": True,
+                        "partition_is_mutually_exclusive": True,
+                        "changes_measurement": False,
+                    },
+                }
+            )
+            partition_regions.append(partition_region)
         classes.append(
             {
                 "class_index": class_index,
@@ -690,8 +762,14 @@ def write_connected_meshes(
                 ),
                 "viewer_component_count_before_filter": before,
                 "viewer_component_count_after_filter": after,
-                "viewer_core_membership_level": display_level,
+                "viewer_core_seed_probability": _SEMANTIC_CORE_SEED_PROBABILITY,
+                "viewer_core_grow_probability": _SEMANTIC_CORE_GROW_PROBABILITY,
                 "viewer_core_volume_fraction_of_tissue": displayed_fraction,
+                "viewer_partition_component_count": partition_before,
+                "viewer_partition_removed_component_count": (
+                    removed_partition_components[class_index]
+                ),
+                "viewer_partition_volume_fraction_of_tissue": partition_fraction,
                 "viewer_filter_changes_measurement": False,
             }
         )
@@ -712,7 +790,68 @@ def write_connected_meshes(
         if np.any(uncertain) and np.any(~uncertain)
         else None
     )
-    return envelope, regions, classes, uncertainty_mesh
+    return envelope, core_regions, partition_regions, classes, uncertainty_mesh
+
+
+def _component_count_3d(occupancy: np.ndarray) -> int:
+    """Return the number of 26-connected components in a binary volume."""
+
+    from scipy.ndimage import label
+
+    return int(
+        label(
+            np.asarray(occupancy, dtype=bool),
+            structure=np.ones((3, 3, 3), dtype=np.uint8),
+        )[1]
+    )
+
+
+def regularize_semantic_partition(
+    membership: np.ndarray,
+    support: np.ndarray,
+    *,
+    observed_dense_indices: np.ndarray,
+    voxel_volume_um3: float,
+    minimum_component_volume_um3: float,
+) -> tuple[np.ndarray, tuple[int, ...]]:
+    """Reassign tiny or interpolation-only components to their next-best class."""
+
+    from scipy.ndimage import label
+
+    scores = np.asarray(membership, dtype=np.float32).copy()
+    if scores.ndim != 4 or scores.shape[0] != len(support):
+        raise ValueError("semantic partition membership has an invalid shape")
+    if scores.shape[2:] != support.shape[1:]:
+        raise ValueError("semantic partition support differs from membership")
+    classes = scores.shape[1]
+    removed = np.zeros(classes, dtype=np.int64)
+    for _ in range(2):
+        labels = np.argmax(scores, axis=1)
+        changed = False
+        for class_index in range(classes):
+            components, count = label(
+                (labels == class_index) & support,
+                structure=np.ones((3, 3, 3), dtype=np.uint8),
+            )
+            for component in range(1, count + 1):
+                selected = components == component
+                volume_um3 = float(np.count_nonzero(selected)) * voxel_volume_um3
+                observed_hits = sum(
+                    bool(np.any(selected[index]))
+                    for index in observed_dense_indices
+                    if 0 <= index < len(selected)
+                )
+                if observed_hits and volume_um3 >= minimum_component_volume_um3:
+                    continue
+                class_scores = scores[:, class_index]
+                class_scores[selected] = -1.0
+                removed[class_index] += 1
+                changed = True
+        if not changed:
+            break
+    labels = np.argmax(scores, axis=1).astype(np.int16)
+    labels[~support] = -1
+    return labels, tuple(int(value) for value in removed)
 
 
 def filter_persistent_components(
@@ -764,8 +903,7 @@ def filter_persistent_components(
     eligible = [
         row
         for row in records
-        if row[1] >= minimum_observed_sections
-        and row[2] >= required_volume_um3
+        if row[1] >= minimum_observed_sections and row[2] >= required_volume_um3
     ]
     if not eligible and records and keep_largest_if_empty:
         eligible = [max(records, key=lambda row: row[2])]
@@ -784,14 +922,38 @@ def regularize_semantic_core(
     z_spacing_um: float,
     source_patch_width_um: float,
 ) -> np.ndarray:
-    """Close gaps below source-patch resolution in the review-space metric."""
+    """Remove protrusions and close gaps below source-patch resolution."""
 
-    from scipy.ndimage import binary_closing
+    from scipy.ndimage import binary_closing, binary_opening
 
     selected = np.asarray(occupancy, dtype=bool)
     if not np.any(selected):
         return selected.copy()
-    radius_um = 0.5 * source_patch_width_um
+    closing_radius_um = 0.5 * source_patch_width_um
+    closing_structure = _review_metric_structure(
+        closing_radius_um,
+        spacing_um=spacing_um,
+        z_spacing_um=z_spacing_um,
+    )
+    closed = binary_closing(selected, structure=closing_structure, border_value=0)
+    opening_radius_um = 0.25 * source_patch_width_um
+    opening_structure = _review_metric_structure(
+        opening_radius_um,
+        spacing_um=spacing_um,
+        z_spacing_um=z_spacing_um,
+    )
+    opened = binary_opening(closed, structure=opening_structure, border_value=0)
+    return opened if np.any(opened) else closed
+
+
+def _review_metric_structure(
+    radius_um: float,
+    *,
+    spacing_um: float,
+    z_spacing_um: float,
+) -> np.ndarray:
+    """Create an ellipsoid that is isotropic at the default review Z scale."""
+
     z_radius = max(1, round(radius_um / (z_spacing_um * _REVIEW_Z_SCALE)))
     xy_radius = max(1, round(radius_um / spacing_um))
     zz, yy, xx = np.ogrid[
@@ -799,14 +961,10 @@ def regularize_semantic_core(
         -xy_radius : xy_radius + 1,
         -xy_radius : xy_radius + 1,
     ]
-    structure = (
-        (zz / z_radius) ** 2
-        + (yy / xy_radius) ** 2
-        + (xx / xy_radius) ** 2
-        <= 1
-    )
-    closed = binary_closing(selected, structure=structure, border_value=0)
-    return selected | closed
+    structure = (zz / z_radius) ** 2 + (yy / xy_radius) ** 2 + (
+        xx / xy_radius
+    ) ** 2 <= 1
+    return structure
 
 
 def _smooth_display_signed_distance(
@@ -824,7 +982,7 @@ def _smooth_display_signed_distance(
     field = distance_transform_edt(occupancy, sampling=sampling) - (
         distance_transform_edt(~occupancy, sampling=sampling)
     )
-    smoothing_um = 0.25 * source_patch_width_um
+    smoothing_um = 0.40 * source_patch_width_um
     sigma = (
         max(0.5, smoothing_um / sampling[0]),
         max(0.5, smoothing_um / sampling[1]),
@@ -845,6 +1003,7 @@ def _write_scalar_mesh(
     spacing_um: float,
     z_origin_um: float,
     z_spacing_um: float,
+    viewer_face_target: int = _VIEWER_FACE_TARGET,
 ) -> dict[str, object]:
     from skimage.measure import marching_cubes, mesh_surface_area
 
@@ -879,8 +1038,9 @@ def _write_scalar_mesh(
         spacing_um=spacing_um,
         z_origin_um=z_origin_um,
         z_spacing_um=z_spacing_um,
+        face_target=viewer_face_target,
     )
-    if role == "semantic_region":
+    if role in {"semantic_region", "semantic_partition"}:
         viewer_vertices = _smooth_viewer_mesh(
             viewer_vertices,
             viewer_faces,
@@ -901,6 +1061,7 @@ def _write_scalar_mesh(
         "vertex_count": len(vertices),
         "face_count": len(faces),
         "viewer_face_count": len(viewer_faces),
+        "viewer_face_target": viewer_face_target,
         "viewer_downsample_xy": downsample,
         "surface_area_mm2": float(mesh_surface_area(vertices, faces)) / 1e6,
         "artifact": full_path.relative_to(root).as_posix(),
@@ -918,14 +1079,15 @@ def _viewer_mesh(
     spacing_um: float,
     z_origin_um: float,
     z_spacing_um: float,
+    face_target: int,
 ) -> tuple[np.ndarray, np.ndarray, int]:
-    if len(faces) <= _VIEWER_FACE_TARGET:
+    if len(faces) <= face_target:
         return vertices, faces, 1
     from skimage.measure import marching_cubes
 
     initial = max(
         2,
-        int(math.ceil(math.sqrt(len(faces) / _VIEWER_FACE_TARGET))),
+        int(math.ceil(math.sqrt(len(faces) / face_target))),
     )
     for factor in range(initial, 9):
         reduced = np.asarray(field)[:, ::factor, ::factor]
@@ -936,7 +1098,7 @@ def _viewer_mesh(
             spacing=(z_spacing_um, spacing_um * factor, spacing_um * factor),
             allow_degenerate=False,
         )
-        if len(viewer_faces) <= _VIEWER_FACE_TARGET or factor == 8:
+        if len(viewer_faces) <= face_target or factor == 8:
             break
     viewer_spacing = spacing_um * factor
     viewer_vertices = np.column_stack(

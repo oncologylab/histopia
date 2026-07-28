@@ -110,6 +110,45 @@ def test_stale_topology_review_is_reset(tmp_path: Path) -> None:
     assert review["fingerprint"] != "old"
 
 
+def test_topology_result_seals_optional_partition_surfaces(tmp_path: Path) -> None:
+    (tmp_path / "preflight.json").write_text("{}")
+    volume = tmp_path / "volume"
+    volume.mkdir()
+    np.savez_compressed(volume / "dense-fields.npz", field=np.zeros(1))
+    meshes = tmp_path / "meshes"
+    meshes.mkdir()
+    np.savez_compressed(meshes / "partition.npz", vertices=np.zeros((3, 3)))
+    (meshes / "partition.bin").write_bytes(b"HTM1")
+    partition = {
+        "artifact": "meshes/partition.npz",
+        "viewer_asset": "meshes/partition.bin",
+    }
+
+    write_topology_result(
+        tmp_path,
+        {
+            "schema_version": 2,
+            "preflight": "preflight.json",
+            "selected_k": 1,
+            "observed_section_count": 2,
+            "virtual_section_count": 0,
+            "segment_count": 1,
+            "gap_decisions": [],
+            "planes": [],
+            "envelope": None,
+            "semantic_regions": [],
+            "semantic_partition_regions": [partition],
+            "uncertainty": None,
+            "classes": [],
+            "reconstruction_grid": {"artifact": "volume/dense-fields.npz"},
+        },
+    )
+
+    result = validate_topology_result(tmp_path)
+    assert "meshes/partition.npz" in result["artifacts"]
+    assert "meshes/partition.bin" in result["artifacts"]
+
+
 def test_topology_approval_rejects_unbound_legacy_inputs(tmp_path: Path) -> None:
     (tmp_path / "preflight.json").write_text('{"semantic_approval":null}')
     write_topology_result(
