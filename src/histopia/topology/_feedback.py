@@ -13,6 +13,12 @@ from histopia._atomic import write_json_atomic
 from histopia.topology._result import validate_topology_result
 
 TOPOLOGY_FEEDBACK_LABELS = (
+    "envelope_shape",
+    "missing_component",
+    "spurious_component",
+    "semantic_discontinuity",
+    "framing",
+    "performance",
     "wrong_gap_count",
     "unsupported_interpolation",
     "surface_fragmentation",
@@ -174,6 +180,18 @@ def topology_feedback_evidence(topology_run: Path | str) -> dict[str, object]:
     if not isinstance(decisions, list) or not decisions:
         raise ValueError("topology result contains no pair decisions")
     pairs = []
+    if payload.get("schema_version") == 2:
+        pairs.append(
+            {
+                "id": "volume",
+                "order": 0,
+                "source_section": None,
+                "target_section": None,
+                "status": payload.get("reconstruction_qc", {}).get("status", "unknown"),
+                "intervals": None,
+                "kind": "volume",
+            }
+        )
     for order, row in enumerate(decisions, start=1):
         source = int(row["source_section"])
         target = int(row["target_section"])
@@ -185,6 +203,7 @@ def topology_feedback_evidence(topology_run: Path | str) -> dict[str, object]:
                 "target_section": target,
                 "status": row["status"],
                 "intervals": int(row["intervals"]),
+                "kind": "transition",
             }
         )
     return {

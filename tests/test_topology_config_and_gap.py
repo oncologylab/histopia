@@ -24,6 +24,8 @@ section_thickness_um = 5.0
 
     assert config.section_thickness_um == 5.0
     assert config.max_inferred_missing == 3
+    assert config.reconstruction_samples_per_interval == 8
+    assert config.envelope_max_xy_dim_px == 384
     with pytest.raises(ValueError, match="positive"):
         TopologyConfig(
             registration_run=tmp_path,

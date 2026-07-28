@@ -41,9 +41,16 @@ from histopia.topology._result import (
     validate_topology_result,
     write_topology_result,
 )
+from histopia.topology._volume import (
+    benchmark_envelope_methods,
+    load_registered_mask_stack,
+    reconstruct_dense_volume,
+    write_connected_meshes,
+    write_dense_volume,
+)
 
 Progress = Callable[[str], None]
-TOPOLOGY_ALGORITHM_VERSION = 4
+TOPOLOGY_ALGORITHM_VERSION = 8
 _LINK_COVERAGE_GATE = 0.05
 _LINK_CONFIDENCE_GATE = 0.45
 _VIEWER_FACE_TARGET = 200_000
@@ -93,7 +100,7 @@ def preflight_topology(config: TopologyConfig) -> dict[str, object]:
         raise ValueError("semantic sections contain duplicate IDs")
     manifest = _load_z_manifest(config, tuple(slide_ids))
     core = {
-        "schema_version": 1,
+        "schema_version": 2,
         "algorithm_version": TOPOLOGY_ALGORITHM_VERSION,
         "registration_result_sha256": _sha256_file(registration_path),
         "semantic_result_sha256": _sha256_file(semantic_path),
@@ -110,6 +117,10 @@ def preflight_topology(config: TopologyConfig) -> dict[str, object]:
         "controls": {
             "calibration_max_span": config.calibration_max_span,
             "max_inferred_missing": config.max_inferred_missing,
+            "reconstruction_samples_per_interval": (
+                config.reconstruction_samples_per_interval
+            ),
+            "envelope_max_xy_dim_px": config.envelope_max_xy_dim_px,
         },
     }
     return {**core, "fingerprint": _json_sha256(core)}
@@ -148,16 +159,29 @@ def build_topology(
         semantic,
         selected_k,
     )
-    origin, grid_shape = _common_reference_grid(raw_sections, patch_width_um)
+    report("Resampling approved tissue masks into reference physical coordinates")
+    mask_stack = load_registered_mask_stack(
+        config.registration_run,
+        tuple(str(row["id"]) for row in raw_sections),
+        target_spacing_um=0.5 * patch_width_um,
+        max_xy_dim_px=config.envelope_max_xy_dim_px,
+        require_review=config.require_approvals,
+    )
+    origin = mask_stack.origin_um_xy
+    grid_shape = tuple(int(value) for value in mask_stack.masks.shape[1:])
     sections = tuple(
-        _rasterize_section(
-            row,
-            origin_um_xy=origin,
-            grid_shape=grid_shape,
-            spacing_um=patch_width_um,
-            classes=selected_k,
+        _apply_registered_mask(
+            _rasterize_section(
+                row,
+                origin_um_xy=origin,
+                grid_shape=grid_shape,
+                spacing_um=mask_stack.spacing_um,
+                classes=selected_k,
+                acceptance_um=0.8 * patch_width_um,
+            ),
+            mask_stack.masks[index],
         )
-        for row in raw_sections
+        for index, row in enumerate(raw_sections)
     )
     links = _load_links(semantic_root, semantic)
     evidence = tuple(
@@ -185,7 +209,7 @@ def build_topology(
         evidence,
         preflight_fingerprint=str(preflight["fingerprint"]),
         origin_um_xy=origin,
-        spacing_um=patch_width_um,
+        spacing_um=mask_stack.spacing_um,
         max_hidden_sections=config.max_inferred_missing,
     )
     benchmark_path = output / "benchmark.json"
@@ -230,25 +254,54 @@ def build_topology(
         decisions,
         z_positions,
         origin_um_xy=origin,
-        spacing_um=patch_width_um,
+        spacing_um=mask_stack.spacing_um,
     )
     report(
         f"Writing {sum(plane.observed for plane in planes)} observed and "
         f"{sum(not plane.observed for plane in planes)} virtual semantic planes"
     )
     plane_rows = _write_planes(output, planes)
-    report("Extracting selected-K class surfaces")
-    mesh_rows, class_rows = _write_meshes(
-        output,
-        planes,
-        class_count=selected_k,
-        palette=tuple(str(value) for value in semantic["palette"]),
+    report("Benchmarking registered-mask envelope reconstruction")
+    envelope_qc = benchmark_envelope_methods(
+        mask_stack.masks,
+        sections,
+        z_positions,
         origin_um_xy=origin,
-        spacing_um=patch_width_um,
-        thickness_um=config.section_thickness_um,
+        spacing_um=mask_stack.spacing_um,
+    )
+    selected_envelope_method = str(envelope_qc["selected_method"])
+    report(f"Envelope method: {selected_envelope_method} ({envelope_qc['status']})")
+    section_segments = _section_segments(decisions)
+    report("Reconstructing dense numerical topology fields")
+    dense = reconstruct_dense_volume(
+        mask_stack.masks,
+        sections,
+        links,
+        z_positions,
+        tuple(row.intervals for row in decisions),
+        section_segments,
+        origin_um_xy=origin,
+        spacing_um=mask_stack.spacing_um,
+        section_thickness_um=config.section_thickness_um,
+        samples_per_interval=config.reconstruction_samples_per_interval,
+        envelope_method=selected_envelope_method,
+    )
+    dense_row = write_dense_volume(output, dense)
+    report("Extracting connected envelope and semantic-region surfaces")
+    envelope_row, region_rows, class_rows, uncertainty_row = write_connected_meshes(
+        output,
+        palette=tuple(str(value) for value in semantic["palette"][:selected_k]),
+        origin_um_xy=origin,
+        spacing_um=mask_stack.spacing_um,
+        z_spacing_um=(
+            config.section_thickness_um / config.reconstruction_samples_per_interval
+        ),
+        source_patch_width_um=patch_width_um,
+        section_thickness_um=config.section_thickness_um,
+        volume=dense,
     )
     core = {
-        "schema_version": 1,
+        "schema_version": 2,
         "algorithm_version": TOPOLOGY_ALGORITHM_VERSION,
         "preflight": preflight_path.relative_to(output).as_posix(),
         "benchmark": benchmark_path.relative_to(output).as_posix(),
@@ -264,7 +317,7 @@ def build_topology(
         "reference_grid": {
             "origin_um_xy": list(origin),
             "shape_rc": list(grid_shape),
-            "spacing_um": patch_width_um,
+            "spacing_um": mask_stack.spacing_um,
         },
         "observed_section_count": len(sections),
         "virtual_section_count": sum(not plane.observed for plane in planes),
@@ -272,15 +325,32 @@ def build_topology(
         "pair_evidence": [asdict(row) for row in evidence],
         "gap_decisions": [asdict(row) for row in decisions],
         "planes": plane_rows,
-        "meshes": mesh_rows,
+        "envelope": envelope_row,
+        "semantic_regions": region_rows,
+        "uncertainty": uncertainty_row,
         "classes": class_rows,
+        "reconstruction_grid": {
+            **dense_row,
+            "origin_um_xy": list(origin),
+            "spacing_um_xy": mask_stack.spacing_um,
+            "spacing_um_z": (
+                config.section_thickness_um / config.reconstruction_samples_per_interval
+            ),
+            "samples_per_physical_interval": (
+                config.reconstruction_samples_per_interval
+            ),
+            "sample_semantics": "numerical_reconstruction_not_biological_sections",
+        },
+        "reconstruction_qc": envelope_qc,
+        "registered_masks": list(mask_stack.provenance),
         "measurement": {
             "z_geometry": (
                 "measured" if z_source == "manifest_measured" else "estimated"
             ),
-            "membership": "interpolated_selected_k_one_hot",
+            "membership": "correspondence_interpolated_selected_k_soft_field",
             "reconstruction_uncertainty": "unit_interval",
             "full_resolution_images_synthesized": False,
+            "viewer_component_filter_changes_measurement": False,
         },
     }
     result = write_topology_result(output, core)
@@ -440,6 +510,7 @@ def _rasterize_section(
     grid_shape: tuple[int, int],
     spacing_um: float,
     classes: int,
+    acceptance_um: float | None = None,
 ) -> ObservedSection:
     try:
         from scipy.spatial import cKDTree
@@ -456,7 +527,9 @@ def _rasterize_section(
         ]
     )
     distances, nearest = cKDTree(coordinates).query(centers, k=1)
-    accepted = distances <= 0.80 * spacing_um
+    accepted = distances <= (
+        float(acceptance_um) if acceptance_um is not None else 0.80 * spacing_um
+    )
     dense_labels = np.full(centers.shape[0], -1, dtype=np.int16)
     dense_tissue = np.zeros(centers.shape[0], dtype=np.float32)
     dense_labels[accepted] = labels[nearest[accepted]]
@@ -475,6 +548,40 @@ def _rasterize_section(
         tissue_fraction=dense_tissue,
         sparse_labels=labels,
     )
+
+
+def _apply_registered_mask(
+    section: ObservedSection,
+    mask: np.ndarray,
+) -> ObservedSection:
+    """Use approved morphology support without changing sparse semantic evidence."""
+
+    support = np.asarray(mask, dtype=bool)
+    if support.shape != section.support.shape:
+        raise ValueError("registered mask and semantic grid shapes differ")
+    membership = np.asarray(section.membership, dtype=np.float32).copy()
+    membership[:, ~support] = 0
+    labels = np.asarray(section.labels, dtype=np.int16).copy()
+    labels[~support] = -1
+    return replace(
+        section,
+        labels=labels,
+        membership=membership,
+        support=support,
+        tissue_fraction=support.astype(np.float32),
+    )
+
+
+def _section_segments(
+    decisions: tuple[GapDecision, ...],
+) -> tuple[int, ...]:
+    segment = 0
+    values = [segment]
+    for decision in decisions:
+        if decision.status == "unresolved":
+            segment += 1
+        values.append(segment)
+    return tuple(values)
 
 
 def _load_links(

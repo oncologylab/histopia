@@ -10,4 +10,6 @@ section_thickness_um = 5.0
 
 calibration_max_span = 4
 max_inferred_missing = 3
+reconstruction_samples_per_interval = 8
+envelope_max_xy_dim_px = 384
 require_approvals = true

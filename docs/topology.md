@@ -1,10 +1,10 @@
 # Semantic Topology Reconstruction
 
-Histopia reconstructs a compact selected-K semantic volume from a completed
-registration run and its bound semantic atlas. It does not synthesize
-full-resolution histology. Observed semantic planes remain unchanged; optional
-virtual planes contain interpolated membership weights and explicit
-uncertainty.
+Histopia reconstructs a continuous tissue envelope and compact selected-K
+semantic fields from a completed registration run and its bound semantic
+atlas. The anatomical envelope comes from the approved registration masks;
+semantic patches do not define the outer tissue boundary. It does not
+synthesize full-resolution histology.
 
 Install the workflow dependencies:
 
@@ -32,9 +32,18 @@ than adding unsupported virtual sections.
 
 The benchmark reports tissue Dice, macro semantic Dice, boundary F1, gap-count
 accuracy, and gains over zero-flow and nearest-section baselines. A topology
-result seals the benchmark, observed or virtual planes, full scientific meshes,
-smaller browser meshes, quantitative class summaries, and source
-fingerprints.
+result additionally compares linear signed-distance, guarded correspondence
+flow, and shape-preserving interpolation with leave-one-section-out approved
+mask tests. The selected envelope must meet the declared tissue Dice and
+boundary F1 gates.
+
+`reconstruction_samples_per_interval` controls numerical z sampling and
+defaults to 8. These samples make a continuous field; they are not inferred
+histology sections. `envelope_max_xy_dim_px` bounds the reconstruction grid and
+defaults to 384. The result seals the dense scientific fields, approved-mask
+provenance, display meshes, quantitative class summaries, and source
+fingerprints. Display-only smoothing and component filtering never change the
+stored measurements.
 
 Build a fixed-viewport review:
 
@@ -43,12 +52,12 @@ histopia-visualize topology-review /path/to/review \
   --run sample=/path/to/topology-run
 ```
 
-The reviewer opens in **Sections** mode. This renders each observed semantic
-field independently and preserves the registered section geometry. A
-**Diagnostic surface** mode is available only for troubleshooting. It is
-explicitly marked as failed when held-out semantic agreement, adjacent-section
-agreement, or surface fragmentation does not meet the display gate. A failed
-surface must not be interpreted as reconstructed anatomy.
+The reviewer opens with a translucent connected tissue envelope and one
+selectable semantic region. Physical, 12x review, and 25x strong z modes are
+explicit display choices; 12x is the default. Camera presets, a cutaway plane,
+uncertainty overlay, and observed-section locator support inspection without
+changing reconstruction geometry. The same application is used by the
+standalone topology route and the workflow review hub.
 
 For morphology-aware inspection, use a section viewer built from both the
 registration and semantic runs. Its histology, semantic blend, adjacent-pair,
@@ -60,9 +69,9 @@ histopia-visualize build /path/to/viewer-root \
   --semantic-run sample=/path/to/semantic-run
 ```
 
-Review every transition before approval. Pair feedback supports
-`accept`, `hold`, and `reject`, issue labels, comments, and a suggested interval
-count. Approval is fingerprint-bound:
+Review the connected volume and every transition before approval. Feedback
+supports `accept`, `hold`, and `reject`, structured issues, comments, and a
+suggested transition interval count. Approval is fingerprint-bound:
 
 ```bash
 histopia-topology approve \

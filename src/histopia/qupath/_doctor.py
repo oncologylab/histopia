@@ -58,7 +58,7 @@ _WORKFLOW_MODULES: Final[dict[str, frozenset[str]]] = {
             "huggingface_hub",
         )
     ),
-    "topology": frozenset(("numpy", "scipy", "sklearn", "skimage")),
+    "topology": frozenset(("numpy", "scipy", "PIL", "sklearn", "skimage")),
     "interchange": frozenset(("numpy",)),
 }
 _WORKFLOW_MODULES["full"] = frozenset().union(*_WORKFLOW_MODULES.values())

@@ -47,38 +47,33 @@ def test_topology_feedback_requires_every_current_pair(tmp_path: Path) -> None:
 def test_topology_viewer_builds_section_assets_and_gates_surfaces(
     tmp_path: Path,
 ) -> None:
-    run = _topology_run(tmp_path / "run")
+    run = _topology_run(tmp_path / "run", schema_version=2)
     index = build_topology_review({"sample": run}, tmp_path / "viewer")
 
     manifest = json.loads((index.parent / "manifest.json").read_text())
-    assert manifest["schema_version"] == 2
+    assert manifest["schema_version"] == 3
     cohort = manifest["cohorts"][0]
     assert cohort["id"] == "sample"
-    assert cohort["planes"][0]["viewer_asset"].startswith("assets/sample/")
-    plane_asset = index.parent / cohort["planes"][0]["viewer_asset"]
-    assert plane_asset.read_bytes()[:4] == b"HTP1"
-    assert cohort["meshes"][0]["viewer_asset"].startswith("assets/sample/")
-    assert (index.parent / cohort["meshes"][0]["viewer_asset"]).is_file()
-    assert cohort["surface_qc"] == {
-        "status": "failed",
-        "reasons": [
-            "median_adjacent_agreement_below_0.75",
-        ],
-        "median_adjacent_agreement": 0.0,
-        "component_count": 1,
-    }
+    assert cohort["envelope"]["viewer_asset"] == "assets/sample/envelope.bin"
+    assert (index.parent / cohort["envelope"]["viewer_asset"]).read_bytes()[:4] == (
+        b"HTM1"
+    )
+    assert cohort["semantic_regions"][0]["viewer_asset"].startswith(
+        "assets/sample/region-"
+    )
+    assert cohort["reconstruction_qc"]["status"] == "passed"
     assert (index.parent / "vendor" / "three.module.min.js").is_file()
     javascript = (index.parent / "topology-review.js").read_text()
-    assert 'mode="sections"' in javascript
-    assert "Diagnostic surfaces failed continuity QC" in javascript
+    assert "zScale=12" in javascript
+    assert "Loading tissue envelope" in javascript
 
 
 @pytest.mark.browser
-def test_topology_viewer_defaults_to_section_faithful_rendering(
+def test_topology_viewer_defaults_to_centered_connected_volume(
     tmp_path: Path,
 ) -> None:
     playwright = pytest.importorskip("playwright.sync_api")
-    run = _topology_run(tmp_path / "run")
+    run = _topology_run(tmp_path / "run", schema_version=2)
     build_topology_review({"sample": run}, tmp_path / "viewer")
     server = create_viewer_server(
         tmp_path,
@@ -103,23 +98,17 @@ def test_topology_viewer_defaults_to_section_faithful_rendering(
                 f"http://127.0.0.1:{server.server_port}/viewer/",
                 wait_until="networkidle",
             )
-            page.wait_for_function(
-                "() => document.querySelector('#provenance').textContent"
-                ".includes('ready')"
-            )
-            assert (
-                page.locator("[data-mode='sections']").get_attribute("class")
-                == "active"
-            )
+            page.wait_for_function("() => document.querySelector('#loading').hidden")
+            assert page.locator("[data-z='12']").get_attribute("class") == "active"
             assert page.locator(".metric").count() == 4
-            assert page.locator("#surface-status").get_attribute("class") == "fail"
+            assert page.locator("#qc-status").get_attribute("class") == "pass"
             screenshot = page.locator("canvas").screenshot()
             pixels = np.asarray(Image.open(io.BytesIO(screenshot)).convert("RGB"))
             assert np.ptp(pixels.reshape(-1, 3), axis=0).max() > 20
-            page.locator(".pair").first.click()
-            assert page.locator(".pair.selected").count() == 1
-            page.locator("#reset").click()
-            assert page.locator(".pair.selected").count() == 0
+            non_background = np.any(pixels > np.array([20, 24, 29]), axis=2)
+            rows, columns = np.nonzero(non_background)
+            assert abs(float(np.mean(columns)) / pixels.shape[1] - 0.5) < 0.12
+            assert abs(float(np.mean(rows)) / pixels.shape[0] - 0.5) < 0.12
             for width, height in ((1920, 1080), (3840, 2160)):
                 page.set_viewport_size({"width": width, "height": height})
                 overflow = page.evaluate(
@@ -140,10 +129,11 @@ def test_topology_viewer_defaults_to_section_faithful_rendering(
     assert not errors
 
 
-def _topology_run(root: Path) -> Path:
+def _topology_run(root: Path, *, schema_version: int = 1) -> Path:
     root.mkdir()
     labels = np.full((8, 9), -1, dtype=np.int16)
     labels[2:6, 2:7] = 0
+    labels[3:5, 4:6] = 1
     membership = np.stack((labels == 0, labels == 1)).astype(np.float32)
     planes = tuple(
         ReconstructedPlane(
@@ -183,40 +173,70 @@ def _topology_run(root: Path) -> Path:
             }
         )
     )
-    write_topology_result(
-        root,
-        {
-            "schema_version": 1,
-            "preflight": "preflight.json",
-            "benchmark": "benchmark.json",
-            "selected_k": 2,
-            "palette": ["#ff0000", "#00ff00"],
-            "z_source": "manifest_measured",
-            "section_thickness_um": 5,
-            "reference_grid": {
-                "origin_um_xy": [0, 0],
-                "shape_rc": [8, 9],
-                "spacing_um": 10,
-            },
-            "observed_section_count": 2,
-            "virtual_section_count": 0,
-            "segment_count": 1,
-            "gap_decisions": [
-                {
-                    "source_section": 0,
-                    "target_section": 1,
-                    "intervals": 1,
-                    "missing_sections": 0,
-                    "status": "manifest",
-                    "confidence": 1,
-                    "score": 0.1,
-                    "reasons": [],
-                }
-            ],
-            "pair_evidence": [{}],
-            "planes": plane_rows,
-            "meshes": mesh_rows,
-            "classes": class_rows,
+    core = {
+        "schema_version": schema_version,
+        "preflight": "preflight.json",
+        "benchmark": "benchmark.json",
+        "selected_k": 2,
+        "palette": ["#ff0000", "#00ff00"],
+        "z_source": "manifest_measured",
+        "section_thickness_um": 5,
+        "reference_grid": {
+            "origin_um_xy": [0, 0],
+            "shape_rc": [8, 9],
+            "spacing_um": 10,
         },
-    )
+        "observed_section_count": 2,
+        "virtual_section_count": 0,
+        "segment_count": 1,
+        "gap_decisions": [
+            {
+                "source_section": 0,
+                "target_section": 1,
+                "intervals": 1,
+                "missing_sections": 0,
+                "status": "manifest",
+                "confidence": 1,
+                "score": 0.1,
+                "reasons": [],
+            }
+        ],
+        "pair_evidence": [{}],
+        "planes": plane_rows,
+        "meshes": mesh_rows,
+        "classes": class_rows,
+    }
+    if schema_version == 2:
+        volume = root / "volume"
+        volume.mkdir()
+        np.savez_compressed(
+            volume / "dense-fields.npz",
+            envelope_sdf=np.zeros((2, 8, 9), dtype=np.float16),
+        )
+        core.pop("meshes")
+        core.update(
+            {
+                "source_patch_width_um": 10,
+                "envelope": mesh_rows[0],
+                "semantic_regions": mesh_rows[1:],
+                "uncertainty": None,
+                "reconstruction_grid": {
+                    "artifact": "volume/dense-fields.npz",
+                    "numerical_sample_count": 9,
+                    "observed_sample_count": 2,
+                },
+                "reconstruction_qc": {
+                    "status": "passed",
+                    "selected_method": "linear_sdf",
+                    "candidates": [
+                        {
+                            "method": "linear_sdf",
+                            "median_tissue_dice": 0.95,
+                            "median_boundary_f1": 0.85,
+                        }
+                    ],
+                },
+            }
+        )
+    write_topology_result(root, core)
     return root

@@ -22,6 +22,8 @@ class TopologyConfig:
     z_manifest: Path | None = None
     calibration_max_span: int = 4
     max_inferred_missing: int = 3
+    reconstruction_samples_per_interval: int = 8
+    envelope_max_xy_dim_px: int = 384
     require_approvals: bool = True
 
     def __post_init__(self) -> None:
@@ -39,6 +41,16 @@ class TopologyConfig:
         self.max_inferred_missing = positive_int(
             "max_inferred_missing", self.max_inferred_missing
         )
+        self.reconstruction_samples_per_interval = positive_int(
+            "reconstruction_samples_per_interval",
+            self.reconstruction_samples_per_interval,
+        )
+        self.envelope_max_xy_dim_px = positive_int(
+            "envelope_max_xy_dim_px",
+            self.envelope_max_xy_dim_px,
+        )
+        if self.envelope_max_xy_dim_px < 32:
+            raise ValueError("envelope_max_xy_dim_px must be at least 32")
         require_bool("require_approvals", self.require_approvals)
 
 

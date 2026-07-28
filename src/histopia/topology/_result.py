@@ -36,8 +36,8 @@ def validate_topology_result(
         if payload is None
         else dict(payload)
     )
-    if loaded.get("schema_version") != 1:
-        raise ValueError("topology result must use schema version 1")
+    if loaded.get("schema_version") not in {1, 2}:
+        raise ValueError("topology result must use schema version 1 or 2")
     references = _referenced_artifacts(root, loaded)
     declared = loaded.get("artifacts")
     if not isinstance(declared, dict) or set(declared) != set(references):
@@ -78,7 +78,23 @@ def _referenced_artifacts(
         for row in payload.get("planes", [])
         if isinstance(row, dict)
     )
-    for row in payload.get("meshes", []):
+    mesh_rows = (
+        payload.get("meshes", [])
+        if payload.get("schema_version") == 1
+        else [
+            payload.get("envelope"),
+            *payload.get("semantic_regions", []),
+            payload.get("uncertainty"),
+        ]
+    )
+    if payload.get("schema_version") == 2:
+        grid = payload.get("reconstruction_grid")
+        if not isinstance(grid, dict):
+            raise ValueError("topology v2 result has no reconstruction grid")
+        raw_paths.append(grid.get("artifact"))
+    for row in mesh_rows:
+        if row is None:
+            continue
         if not isinstance(row, dict):
             raise ValueError("topology mesh rows must be objects")
         raw_paths.extend((row.get("artifact"), row.get("viewer_asset")))
