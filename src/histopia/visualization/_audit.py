@@ -1,4 +1,4 @@
-"""Portable integrity audit for registration, semantic, and viewer workflows."""
+"""Portable integrity audit for scientific workflows and generated viewers."""
 
 from __future__ import annotations
 

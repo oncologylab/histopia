@@ -730,8 +730,12 @@ function renderStages(){
 function renderDecision(){
   const stage=current()?.stages[selectedStage];
   title.textContent=selectedStage?labels[selectedStage]:"No prepared review";
-  state.textContent=stage?.approved?"Approved":"Review required";
-  approve.disabled=!stage||stage.approved;
+  state.textContent=stage?.approved?"Approved":
+    stage?.invalid?"Invalid artifacts":
+    stage?.approval_ready===false?"Upstream rebuild required":"Review required";
+  state.title=stage?.issue||"";
+  approve.disabled=!stage||stage.approved||stage.invalid||
+    stage.approval_ready===false;
   families.hidden=selectedStage!=="stain";
   families.querySelectorAll("label").forEach(element=>element.remove());
   if(selectedStage==="stain"){

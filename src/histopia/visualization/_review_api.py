@@ -440,17 +440,70 @@ def _stain_status(run: Path | None) -> dict[str, object]:
 
 def _topology_status(run: Path | None) -> dict[str, object]:
     if run is None:
-        return {"available": False, "approved": False}
+        return {
+            "available": False,
+            "approved": False,
+            "approval_ready": False,
+        }
+    result_path = run / "topology_result.json"
+    if not result_path.is_file():
+        return {
+            "available": False,
+            "approved": False,
+            "approval_ready": False,
+        }
     try:
-        from histopia.topology import validate_topology_approval
+        from histopia.topology import (
+            validate_topology_approval,
+            validate_topology_result,
+        )
 
-        validate_topology_approval(run)
+        result = validate_topology_result(run)
+        preflight_name = result.get("preflight")
+        if not isinstance(preflight_name, str) or not preflight_name:
+            raise ValueError("topology result preflight is missing")
+        preflight = _json_object(run / preflight_name)
+        snapshot = preflight.get("semantic_approval")
+        snapshot_ready = (
+            isinstance(snapshot, dict)
+            and snapshot.get("semantic_fingerprint")
+            == preflight.get("semantic_fingerprint")
+            and snapshot.get("registration_result_sha256")
+            == preflight.get("registration_result_sha256")
+            and isinstance(snapshot.get("semantic_reviewer"), str)
+            and bool(str(snapshot["semantic_reviewer"]).strip())
+        )
+        if not snapshot_ready:
+            return {
+                "available": True,
+                "approved": False,
+                "approval_ready": False,
+                "issue": "approval_bound_rebuild_required",
+            }
+        try:
+            validate_topology_approval(run)
+            approved = True
+        except FileNotFoundError:
+            approved = False
+        except ValueError:
+            review = _json_object(run / "topology_review.json")
+            approved = review.get("approved") is True
+            if approved:
+                raise
     except (FileNotFoundError, OSError, TypeError, ValueError):
         return {
-            "available": (run / "topology_result.json").is_file(),
+            "available": True,
             "approved": False,
+            "approval_ready": False,
+            "invalid": True,
+            "issue": "topology_result_or_approval_invalid",
         }
-    return {"available": True, "approved": True}
+    return {
+        "available": True,
+        "approved": approved,
+        "approval_ready": not approved,
+        "issue": None if approved else "topology_approval_required",
+    }
 
 
 def _json_object(path: Path) -> dict[str, object]:

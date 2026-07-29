@@ -114,4 +114,6 @@ histopia-visualize audit \
 
 The path-free report distinguishes an approved topology, a pending review, an
 older topology that must be rebuilt from approval-bound semantic inputs, and
-an invalid or stale source binding.
+an invalid or stale source binding. The web decisions panel disables topology
+approval and reports `Upstream rebuild required` when that binding is absent,
+rather than presenting an approval action that cannot succeed.
