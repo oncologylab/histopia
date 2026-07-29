@@ -208,6 +208,21 @@ def test_topology_viewer_defaults_to_centered_connected_volume(
                 assert abs(x_center - expected_x) < 0.025
                 assert abs(y_center - expected_y) < 0.025
                 assert x_center < 0.42
+            page.set_viewport_size({"width": 390, "height": 844})
+            page.wait_for_timeout(300)
+            assert page.evaluate(
+                "() => document.documentElement.scrollWidth === innerWidth"
+            )
+            assert page.locator("#panel-toggle").is_visible()
+            assert not page.locator("aside").is_visible()
+            page.locator("#panel-toggle").click()
+            assert page.locator("aside").is_visible()
+            panel = page.locator("aside").bounding_box()
+            assert panel is not None
+            assert abs(panel["width"] - 390) < 1
+            assert page.locator("#review-target").is_visible()
+            page.locator("#panel-toggle").click()
+            assert not page.locator("aside").is_visible()
             browser.close()
     finally:
         server.shutdown()
