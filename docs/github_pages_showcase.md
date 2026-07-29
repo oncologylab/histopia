@@ -23,13 +23,15 @@ semantic or stain results, and writes:
 - `showcase.json`, which records semantic and stain fingerprints plus the
   SHA-256 digest of every inventoried file.
 
-The current public artifact contains 16 reviewed registration stacks spanning
-401 serial sections. Seven stacks also contain fingerprint-reviewed semantic
-atlases created before final registration-approval binding was introduced.
-They remain demonstration artifacts rather than current schema-3 production
-approvals. The viewer permits specimen switching, slide-by-slide navigation,
-select-all/deselect-all visibility, histology/semantic/blended rendering, K=5
-through K=15 exploration, and adjacent-section topology links.
+The current public artifact contains 16 review-stage registration stacks
+spanning 401 serial sections. Nine carry current fingerprint-bound
+registration approvals; seven remain explicit review-gated demonstrations.
+Seven stacks also contain fingerprint-reviewed semantic atlases created before
+final registration-approval binding was introduced. They remain demonstration
+artifacts rather than current schema-3 production approvals. The viewer
+permits specimen switching, slide-by-slide navigation, select-all/deselect-all
+visibility, histology/semantic/blended rendering, K=5 through K=15 exploration,
+and adjacent-section topology links.
 
 The `mouse` query parameter creates a shareable link to a specimen, for example
 `?mouse=sample-a`. Changing the specimen updates the URL without reloading the
@@ -72,8 +74,10 @@ paths, and non-empty output directories.
 The current public portal covers the same 16 registration stacks and 401 serial
 sections as the atlas. Tissue-mask evidence is available for all 16 cohorts;
 13 cohorts also have a formal orientation/order review. For the three legacy
-cohorts without that record, the orientation/order control is disabled. A
-visible workflow stage does not itself confer scientific approval.
+cohorts without that record, the orientation/order control is disabled. Nine
+stacks have completed registration approval; the other seven remain review
+evidence only. A visible workflow stage does not itself confer scientific
+approval.
 
 QC portals accept shareable `mouse` and `stage` query parameters, for example
 `?mouse=sample-a&stage=order`. Changing the selected specimen or review stage

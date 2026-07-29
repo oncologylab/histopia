@@ -12,7 +12,7 @@ proteomic image analysis. It provides reviewed inter-section alignment,
 group-aware tissue masking, global morphology segmentation, spatial topology,
 and interactive 3D reconstruction across tissue sections.
 
-**[Launch the interactive 3D semantic atlas](https://oncologylab.github.io/histopia/)**
+**[Launch the interactive 3D research showcase](https://oncologylab.github.io/histopia/)**
 | **[Registration QC showcase](https://oncologylab.github.io/histopia/qc/)**
 | [QuPath extension](https://github.com/oncologylab/qupath-extension-histopia/releases/latest)
 | [PyPI](https://pypi.org/project/histopia/)
@@ -113,6 +113,8 @@ and topology binding to the exact registration and semantic results.
 Stable viewer builds publish approved results only. Use
 `histopia-visualize review` to generate a separate review hub containing
 pending registration, 3D, semantic, and stain evidence.
+The public GitHub Pages showcase includes both approved and visibly identified
+review-stage demonstration cohorts; it is not a production release manifest.
 
 ## Development
 
