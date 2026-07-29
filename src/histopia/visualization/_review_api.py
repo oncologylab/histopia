@@ -172,11 +172,18 @@ class ReviewDecisionService:
         elif stage == "topology":
             if runs.topology is None:
                 raise ValueError(f"cohort {cohort} has no topology review")
+            if runs.semantic is None:
+                raise ValueError(f"cohort {cohort} has no semantic review")
             if self._topology_feedback_store is not None:
                 self._topology_feedback_store.require_accepted(
                     cohort=cohort,
                     topology_run=runs.topology,
                 )
+            _validate_topology_for_approval(
+                runs.registration,
+                runs.semantic,
+                runs.topology,
+            )
             from histopia.topology import approve_topology_result
 
             approve_topology_result(
@@ -302,7 +309,11 @@ class ReviewDecisionService:
                 "order": _order_status(runs.registration),
                 "registration": _registration_status(runs.registration),
                 "semantic": _semantic_status(runs.registration, runs.semantic),
-                "topology": _topology_status(runs.topology),
+                "topology": _topology_status(
+                    runs.registration,
+                    runs.semantic,
+                    runs.topology,
+                ),
                 "stain": _stain_status(runs.registration, runs.stain),
             },
         }
@@ -526,7 +537,11 @@ def _stain_status(
     }
 
 
-def _topology_status(run: Path | None) -> dict[str, object]:
+def _topology_status(
+    registration_run: Path,
+    semantic_run: Path | None,
+    run: Path | None,
+) -> dict[str, object]:
     if run is None:
         return {
             "available": False,
@@ -573,6 +588,28 @@ def _topology_status(run: Path | None) -> dict[str, object]:
                 "approval_ready": False,
                 "issue": "approval_bound_rebuild_required",
             }
+        if semantic_run is None:
+            raise ValueError("topology semantic source is not configured")
+        semantic_state = _semantic_status(registration_run, semantic_run)
+        if semantic_state.get("approved") is not True:
+            raise ValueError("topology semantic approval is not current")
+        registration_bytes = (
+            registration_run / "registration_result.json"
+        ).read_bytes()
+        semantic_bytes = (semantic_run / "semantic_result.json").read_bytes()
+        semantic_result = json.loads(semantic_bytes)
+        semantic_review = _json_object(semantic_run / "semantic_review.json")
+        if (
+            not isinstance(semantic_result, dict)
+            or preflight.get("registration_result_sha256")
+            != hashlib.sha256(registration_bytes).hexdigest()
+            or preflight.get("semantic_result_sha256")
+            != hashlib.sha256(semantic_bytes).hexdigest()
+            or preflight.get("semantic_fingerprint")
+            != semantic_result.get("fingerprint")
+            or snapshot.get("semantic_reviewer") != semantic_review.get("reviewer")
+        ):
+            raise ValueError("topology current source binding is stale")
         review = _json_object(run / "topology_review.json")
         if (
             review.get("schema_version") != 1
@@ -694,4 +731,32 @@ def _validate_stain_for_approval(
     ):
         raise ValueError(
             "stain approval requires a result bound to the current registration"
+        )
+
+
+def _validate_topology_for_approval(
+    registration_run: Path,
+    semantic_run: Path,
+    topology_run: Path,
+) -> None:
+    from histopia.visualization._audit import audit_workflows
+
+    report = audit_workflows(
+        {"current": registration_run},
+        semantic_runs={"current": semantic_run},
+        topology_runs={"current": topology_run},
+    )
+    cohort = report.cohorts[0]
+    if cohort.registration.status != "approved":
+        raise ValueError("topology approval requires the current registration approval")
+    if cohort.semantic.status != "approved":
+        raise ValueError("topology approval requires the current semantic approval")
+    if cohort.topology.status not in {"approved", "review_required"} or (
+        cohort.topology.status == "review_required"
+        and cohort.topology.issue != "topology_approval_required"
+    ):
+        issue = cohort.topology.issue or cohort.topology.status
+        raise ValueError(
+            "topology approval requires a result bound to the current approved "
+            f"registration and semantic atlas ({issue})"
         )

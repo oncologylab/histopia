@@ -116,4 +116,7 @@ The path-free report distinguishes an approved topology, a pending review, an
 older topology that must be rebuilt from approval-bound semantic inputs, and
 an invalid or stale source binding. The web decisions panel disables topology
 approval and reports `Upstream rebuild required` when that binding is absent,
-rather than presenting an approval action that cannot succeed.
+rather than presenting an approval action that cannot succeed. The panel uses
+lightweight source-identity checks while browsing; submitting an approval runs
+the full workflow audit over the current registration, semantic, and topology
+artifacts before recording the decision.

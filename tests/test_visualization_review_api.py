@@ -11,6 +11,7 @@ from histopia.visualization._review_api import (
     _semantic_status,
     _stain_status,
     _topology_status,
+    _validate_topology_for_approval,
 )
 
 
@@ -83,6 +84,11 @@ def test_review_service_dispatches_existing_approval_functions(
             "histopia.visualization._review_api._validate_stain_for_approval",
             lambda *args: None,
         )
+    if stage == "topology":
+        monkeypatch.setattr(
+            "histopia.visualization._review_api._validate_topology_for_approval",
+            lambda *args: None,
+        )
 
     result = service.approve(request)
 
@@ -127,7 +133,7 @@ def test_topology_status_explains_approval_bound_rebuild(
         },
     )
 
-    assert _topology_status(run) == {
+    assert _topology_status(tmp_path / "registration", None, run) == {
         "available": True,
         "approved": False,
         "approval_ready": False,
@@ -322,18 +328,37 @@ def test_stain_status_validates_registration_binding_and_family_review(
 
 def test_topology_status_distinguishes_pending_and_approved(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    registration = tmp_path / "registration"
+    semantic = tmp_path / "semantic"
     run = tmp_path / "topology"
+    registration.mkdir()
+    semantic.mkdir()
     run.mkdir()
+    registration_bytes = b'{"slides":[{},{}]}'
+    semantic_bytes = b'{"fingerprint":"semantic"}'
+    (registration / "registration_result.json").write_bytes(registration_bytes)
+    (semantic / "semantic_result.json").write_bytes(semantic_bytes)
+    (semantic / "semantic_review.json").write_text(json.dumps({"reviewer": "Reviewer"}))
+    monkeypatch.setattr(
+        "histopia.visualization._review_api._semantic_status",
+        lambda *_args: {"available": True, "approved": True},
+    )
     preflight = _write_fingerprinted_json(
         run / "preflight.json",
         {
             "semantic_fingerprint": "semantic",
-            "registration_result_sha256": "registration",
+            "semantic_result_sha256": hashlib.sha256(semantic_bytes).hexdigest(),
+            "registration_result_sha256": hashlib.sha256(
+                registration_bytes
+            ).hexdigest(),
             "semantic_approval": {
                 "semantic_fingerprint": "semantic",
                 "semantic_reviewer": "Reviewer",
-                "registration_result_sha256": "registration",
+                "registration_result_sha256": hashlib.sha256(
+                    registration_bytes
+                ).hexdigest(),
             },
         },
     )
@@ -343,7 +368,9 @@ def test_topology_status_distinguishes_pending_and_approved(
             "preflight": "preflight.json",
             "preflight_fingerprint": preflight["fingerprint"],
             "semantic_fingerprint": "semantic",
-            "registration_result_sha256": "registration",
+            "registration_result_sha256": hashlib.sha256(
+                registration_bytes
+            ).hexdigest(),
             "artifacts": {},
         },
     )
@@ -357,7 +384,7 @@ def test_topology_status_distinguishes_pending_and_approved(
         )
     )
 
-    assert _topology_status(run) == {
+    assert _topology_status(registration, semantic, run) == {
         "available": True,
         "approved": False,
         "approval_ready": True,
@@ -375,12 +402,114 @@ def test_topology_status_distinguishes_pending_and_approved(
             }
         )
     )
-    assert _topology_status(run) == {
+    assert _topology_status(registration, semantic, run) == {
         "available": True,
         "approved": True,
         "approval_ready": False,
         "issue": None,
     }
+
+
+def test_topology_status_rejects_stale_current_semantic_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registration = tmp_path / "registration"
+    semantic = tmp_path / "semantic"
+    topology = tmp_path / "topology"
+    for path in (registration, semantic, topology):
+        path.mkdir()
+    registration_bytes = b'{"slides":[{},{}]}'
+    semantic_bytes = b'{"fingerprint":"semantic"}'
+    (registration / "registration_result.json").write_bytes(registration_bytes)
+    (semantic / "semantic_result.json").write_bytes(semantic_bytes)
+    (semantic / "semantic_review.json").write_text(
+        json.dumps({"reviewer": "Current reviewer"})
+    )
+    monkeypatch.setattr(
+        "histopia.visualization._review_api._semantic_status",
+        lambda *_args: {"available": True, "approved": True},
+    )
+    preflight = _write_fingerprinted_json(
+        topology / "preflight.json",
+        {
+            "semantic_fingerprint": "semantic",
+            "semantic_result_sha256": hashlib.sha256(semantic_bytes).hexdigest(),
+            "registration_result_sha256": hashlib.sha256(
+                registration_bytes
+            ).hexdigest(),
+            "semantic_approval": {
+                "semantic_fingerprint": "semantic",
+                "semantic_reviewer": "Stale reviewer",
+                "registration_result_sha256": hashlib.sha256(
+                    registration_bytes
+                ).hexdigest(),
+            },
+        },
+    )
+    _write_fingerprinted_json(
+        topology / "topology_result.json",
+        {
+            "preflight": "preflight.json",
+            "preflight_fingerprint": preflight["fingerprint"],
+            "semantic_fingerprint": "semantic",
+            "registration_result_sha256": hashlib.sha256(
+                registration_bytes
+            ).hexdigest(),
+            "artifacts": {},
+        },
+    )
+
+    assert _topology_status(registration, semantic, topology) == {
+        "available": True,
+        "approved": False,
+        "approval_ready": False,
+        "invalid": True,
+        "issue": "topology_result_or_approval_invalid",
+    }
+
+
+@pytest.mark.parametrize(
+    ("registration_status", "semantic_status", "topology_status", "issue", "match"),
+    (
+        ("review_required", "approved", "review_required", None, "registration"),
+        ("approved", "review_required", "review_required", None, "semantic"),
+        (
+            "approved",
+            "approved",
+            "review_required",
+            "topology_approval_bound_rebuild_required",
+            "approval_bound_rebuild_required",
+        ),
+    ),
+)
+def test_topology_full_approval_gate_rejects_noncurrent_inputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    registration_status: str,
+    semantic_status: str,
+    topology_status: str,
+    issue: str | None,
+    match: str,
+) -> None:
+    from types import SimpleNamespace
+
+    cohort = SimpleNamespace(
+        registration=SimpleNamespace(status=registration_status),
+        semantic=SimpleNamespace(status=semantic_status),
+        topology=SimpleNamespace(status=topology_status, issue=issue),
+    )
+    monkeypatch.setattr(
+        "histopia.visualization._audit.audit_workflows",
+        lambda *args, **kwargs: SimpleNamespace(cohorts=(cohort,)),
+    )
+
+    with pytest.raises(ValueError, match=match):
+        _validate_topology_for_approval(
+            tmp_path / "registration",
+            tmp_path / "semantic",
+            tmp_path / "topology",
+        )
 
 
 def test_review_service_rejects_unconfigured_or_incomplete_decisions(
