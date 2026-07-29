@@ -1,14 +1,15 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
 from histopia.visualization._review_api import (
     ReviewDecisionService,
     _semantic_status,
+    _stain_status,
     _topology_status,
 )
 
@@ -70,6 +71,18 @@ def test_review_service_dispatches_existing_approval_functions(
     }
     if stage == "stain":
         request["families"] = ["h-dab"]
+        monkeypatch.setattr(
+            "histopia.visualization._review_api._stain_status",
+            lambda *args: {
+                "available": True,
+                "approved": False,
+                "approval_ready": True,
+            },
+        )
+        monkeypatch.setattr(
+            "histopia.visualization._review_api._validate_stain_for_approval",
+            lambda *args: None,
+        )
 
     result = service.approve(request)
 
@@ -92,23 +105,26 @@ def test_review_service_dispatches_existing_approval_functions(
 
 def test_topology_status_explains_approval_bound_rebuild(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     run = tmp_path / "topology"
     run.mkdir()
-    (run / "topology_result.json").write_text("{}")
-    (run / "preflight.json").write_text(
-        json.dumps(
-            {
-                "semantic_fingerprint": "semantic",
-                "registration_result_sha256": "registration",
-                "semantic_approval": None,
-            }
-        )
+    preflight = _write_fingerprinted_json(
+        run / "preflight.json",
+        {
+            "semantic_fingerprint": "semantic",
+            "registration_result_sha256": "registration",
+            "semantic_approval": None,
+        },
     )
-    monkeypatch.setattr(
-        "histopia.topology.validate_topology_result",
-        lambda _run: {"preflight": "preflight.json"},
+    _write_fingerprinted_json(
+        run / "topology_result.json",
+        {
+            "preflight": "preflight.json",
+            "preflight_fingerprint": preflight["fingerprint"],
+            "semantic_fingerprint": "semantic",
+            "registration_result_sha256": "registration",
+            "artifacts": {},
+        },
     )
 
     assert _topology_status(run) == {
@@ -121,20 +137,30 @@ def test_topology_status_explains_approval_bound_rebuild(
 
 def test_semantic_status_rejects_legacy_approval_as_unbound(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     registration = tmp_path / "registration"
     semantic = tmp_path / "semantic"
     registration.mkdir()
     semantic.mkdir()
-    (semantic / "semantic_result.json").write_text("{}")
-    monkeypatch.setattr(
-        "histopia.semantic._result_validation.validate_semantic_result",
-        lambda _run: {"fingerprint": "semantic"},
+    registration_bytes = json.dumps({"slides": [{}, {}]}).encode()
+    (registration / "registration_result.json").write_bytes(registration_bytes)
+    (semantic / "preflight.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "fingerprint": "preflight",
+                "registration_result_sha256": hashlib.sha256(
+                    registration_bytes
+                ).hexdigest(),
+            }
+        )
     )
-    monkeypatch.setattr(
-        "histopia.semantic.validate_semantic_registration_binding",
-        lambda *args, **kwargs: SimpleNamespace(approval_bound=False),
+    _write_fingerprinted_json(
+        semantic / "semantic_result.json",
+        {
+            "feature_provenance": {"preflight_fingerprint": "preflight"},
+            "artifacts": {},
+        },
     )
 
     assert _semantic_status(registration, semantic) == {
@@ -153,27 +179,43 @@ def test_semantic_status_distinguishes_pending_and_approved(
     semantic = tmp_path / "semantic"
     registration.mkdir()
     semantic.mkdir()
-    (semantic / "semantic_result.json").write_text("{}")
+    registration_bytes = json.dumps({"slides": [{}, {}]}).encode()
+    (registration / "registration_result.json").write_bytes(registration_bytes)
+    approval = registration / "registration_approval.json"
+    approval.write_text("{}")
+    (semantic / "preflight.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "fingerprint": "preflight",
+                "registration_result_sha256": hashlib.sha256(
+                    registration_bytes
+                ).hexdigest(),
+                "registration_approval_sha256": hashlib.sha256(
+                    approval.read_bytes()
+                ).hexdigest(),
+            }
+        )
+    )
+    result = _write_fingerprinted_json(
+        semantic / "semantic_result.json",
+        {
+            "feature_provenance": {"preflight_fingerprint": "preflight"},
+            "artifacts": {},
+        },
+    )
     (semantic / "semantic_review.json").write_text(
         json.dumps(
             {
                 "schema_version": 3,
-                "fingerprint": "semantic",
+                "fingerprint": result["fingerprint"],
                 "approved": False,
             }
         )
     )
     monkeypatch.setattr(
-        "histopia.semantic._result_validation.validate_semantic_result",
-        lambda _run: {"fingerprint": "semantic"},
-    )
-    monkeypatch.setattr(
-        "histopia.semantic.validate_semantic_registration_binding",
-        lambda *args, **kwargs: SimpleNamespace(approval_bound=True),
-    )
-    monkeypatch.setattr(
-        "histopia.semantic.validate_semantic_approval",
-        lambda _run: (_ for _ in ()).throw(ValueError("not approved")),
+        "histopia.visualization._review_api._registration_status",
+        lambda _run: {"available": True, "approved": True},
     )
 
     assert _semantic_status(registration, semantic) == {
@@ -183,9 +225,16 @@ def test_semantic_status_distinguishes_pending_and_approved(
         "issue": "semantic_approval_required",
     }
 
-    monkeypatch.setattr(
-        "histopia.semantic.validate_semantic_approval",
-        lambda _run: object(),
+    (semantic / "semantic_review.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "fingerprint": result["fingerprint"],
+                "approved": True,
+                "reviewer": "Reviewer",
+                "notes": "Reviewed.",
+            }
+        )
     )
     assert _semantic_status(registration, semantic) == {
         "available": True,
@@ -195,36 +244,117 @@ def test_semantic_status_distinguishes_pending_and_approved(
     }
 
 
-def test_topology_status_distinguishes_pending_and_approved(
+def test_stain_status_validates_registration_binding_and_family_review(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    run = tmp_path / "topology"
-    run.mkdir()
-    (run / "topology_result.json").write_text("{}")
-    (run / "topology_review.json").write_text(
-        json.dumps({"schema_version": 1, "approved": False})
+    registration = tmp_path / "registration"
+    stain = tmp_path / "stain"
+    registration.mkdir()
+    stain.mkdir()
+    registration_bytes = json.dumps({"slides": [{}, {}]}).encode()
+    (registration / "registration_result.json").write_bytes(registration_bytes)
+    result = _write_fingerprinted_json(
+        stain / "stain_result.json",
+        {
+            "schema_version": 1,
+            "slides": [{}, {}],
+            "registration_result_sha256": hashlib.sha256(
+                registration_bytes
+            ).hexdigest(),
+            "families": {"h-dab": {}, "sirius-red": {}},
+            "artifacts": {},
+        },
     )
-    (run / "preflight.json").write_text(
+    (stain / "stain_review.json").write_text(
         json.dumps(
             {
-                "semantic_fingerprint": "semantic",
-                "registration_result_sha256": "registration",
-                "semantic_approval": {
-                    "semantic_fingerprint": "semantic",
-                    "semantic_reviewer": "Reviewer",
-                    "registration_result_sha256": "registration",
+                "schema_version": 2,
+                "fingerprint": result["fingerprint"],
+                "families": {
+                    "h-dab": {
+                        "approved": True,
+                        "reviewer": "Reviewer",
+                        "reviewed_at": "2026-07-29T12:00:00+00:00",
+                        "notes": "Reviewed.",
+                    },
+                    "sirius-red": {"approved": False},
                 },
             }
         )
     )
-    monkeypatch.setattr(
-        "histopia.topology.validate_topology_result",
-        lambda _run: {"preflight": "preflight.json"},
+
+    assert _stain_status(registration, stain) == {
+        "available": True,
+        "approved": False,
+        "approval_ready": True,
+        "issue": "stain_approval_required",
+        "families": [
+            {"id": "h-dab", "approved": True},
+            {"id": "sirius-red", "approved": False},
+        ],
+    }
+
+    (stain / "stain_review.json").unlink()
+    assert _stain_status(registration, stain) == {
+        "available": True,
+        "approved": False,
+        "approval_ready": True,
+        "issue": "stain_approval_required",
+        "families": [
+            {"id": "h-dab", "approved": False},
+            {"id": "sirius-red", "approved": False},
+        ],
+    }
+
+    result["registration_result_sha256"] = "stale"
+    core = {key: value for key, value in result.items() if key != "fingerprint"}
+    result["fingerprint"] = _json_fingerprint(core)
+    (stain / "stain_result.json").write_text(json.dumps(result))
+    assert _stain_status(registration, stain) == {
+        "available": True,
+        "approved": False,
+        "approval_ready": False,
+        "families": [],
+        "invalid": True,
+        "issue": "stain_result_binding_or_approval_invalid",
+    }
+
+
+def test_topology_status_distinguishes_pending_and_approved(
+    tmp_path: Path,
+) -> None:
+    run = tmp_path / "topology"
+    run.mkdir()
+    preflight = _write_fingerprinted_json(
+        run / "preflight.json",
+        {
+            "semantic_fingerprint": "semantic",
+            "registration_result_sha256": "registration",
+            "semantic_approval": {
+                "semantic_fingerprint": "semantic",
+                "semantic_reviewer": "Reviewer",
+                "registration_result_sha256": "registration",
+            },
+        },
     )
-    monkeypatch.setattr(
-        "histopia.topology.validate_topology_approval",
-        lambda _run: (_ for _ in ()).throw(ValueError("not approved")),
+    result = _write_fingerprinted_json(
+        run / "topology_result.json",
+        {
+            "preflight": "preflight.json",
+            "preflight_fingerprint": preflight["fingerprint"],
+            "semantic_fingerprint": "semantic",
+            "registration_result_sha256": "registration",
+            "artifacts": {},
+        },
+    )
+    (run / "topology_review.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "fingerprint": result["fingerprint"],
+                "approved": False,
+            }
+        )
     )
 
     assert _topology_status(run) == {
@@ -234,9 +364,16 @@ def test_topology_status_distinguishes_pending_and_approved(
         "issue": "topology_approval_required",
     }
 
-    monkeypatch.setattr(
-        "histopia.topology.validate_topology_approval",
-        lambda _run: object(),
+    (run / "topology_review.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "fingerprint": result["fingerprint"],
+                "approved": True,
+                "reviewer": "Reviewer",
+                "notes": "Reviewed.",
+            }
+        )
     )
     assert _topology_status(run) == {
         "available": True,
@@ -248,6 +385,7 @@ def test_topology_status_distinguishes_pending_and_approved(
 
 def test_review_service_rejects_unconfigured_or_incomplete_decisions(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     service, _ = _service(tmp_path)
 
@@ -260,6 +398,18 @@ def test_review_service_rejects_unconfigured_or_incomplete_decisions(
                 "notes": "Checked.",
             }
         )
+    monkeypatch.setattr(
+        "histopia.visualization._review_api._stain_status",
+        lambda *args: {
+            "available": True,
+            "approved": False,
+            "approval_ready": True,
+        },
+    )
+    monkeypatch.setattr(
+        "histopia.visualization._review_api._validate_stain_for_approval",
+        lambda *args: None,
+    )
     with pytest.raises(ValueError, match="at least one family"):
         service.approve(
             {
@@ -270,3 +420,18 @@ def test_review_service_rejects_unconfigured_or_incomplete_decisions(
                 "families": [],
             }
         )
+
+
+def _write_fingerprinted_json(
+    path: Path,
+    core: dict[str, object],
+) -> dict[str, object]:
+    payload = {**core, "fingerprint": _json_fingerprint(core)}
+    path.write_text(json.dumps(payload))
+    return payload
+
+
+def _json_fingerprint(value: object) -> str:
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()

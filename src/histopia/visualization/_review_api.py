@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass
@@ -186,6 +187,16 @@ class ReviewDecisionService:
         else:
             if runs.stain is None:
                 raise ValueError(f"cohort {cohort} has no stain review")
+            stain_status = _stain_status(runs.registration, runs.stain)
+            if (
+                stain_status.get("available") is not True
+                or stain_status.get("invalid") is True
+            ):
+                raise ValueError(
+                    "stain approval requires a valid result bound to the current "
+                    "registration"
+                )
+            _validate_stain_for_approval(runs.registration, runs.stain)
             families = request.get("families")
             if (
                 not isinstance(families, list)
@@ -292,7 +303,7 @@ class ReviewDecisionService:
                 "registration": _registration_status(runs.registration),
                 "semantic": _semantic_status(runs.registration, runs.semantic),
                 "topology": _topology_status(runs.topology),
-                "stain": _stain_status(runs.stain),
+                "stain": _stain_status(runs.registration, runs.stain),
             },
         }
 
@@ -386,41 +397,52 @@ def _semantic_status(
             "approval_ready": False,
         }
     try:
-        from histopia.semantic import (
-            validate_semantic_approval,
-            validate_semantic_registration_binding,
-        )
-        from histopia.semantic._result_validation import validate_semantic_result
-
-        result = validate_semantic_result(run)
-        binding = validate_semantic_registration_binding(
-            registration_run,
-            run,
-            semantic_payload=result,
-        )
-        if not binding.approval_bound:
+        result = _json_object(result_path)
+        _require_current_json_fingerprint(result, "semantic result")
+        registration_bytes = (
+            registration_run / "registration_result.json"
+        ).read_bytes()
+        preflight = _json_object(run / "preflight.json")
+        fingerprint = preflight.get("fingerprint")
+        provenance = result.get("feature_provenance")
+        if (
+            not isinstance(fingerprint, str)
+            or not fingerprint
+            or not isinstance(provenance, dict)
+            or provenance.get("preflight_fingerprint") != fingerprint
+            or preflight.get("registration_result_sha256")
+            != hashlib.sha256(registration_bytes).hexdigest()
+        ):
+            raise ValueError("semantic registration binding is stale")
+        if preflight.get("schema_version") != 3:
             return {
                 "available": True,
                 "approved": False,
                 "approval_ready": False,
                 "issue": "semantic_registration_approval_binding_required",
             }
-        try:
-            validate_semantic_approval(run)
-            approved = True
-        except ValueError:
-            review = _json_object(run / "semantic_review.json")
-            fingerprint = result.get("fingerprint")
-            current_pending = (
-                isinstance(fingerprint, str)
-                and bool(fingerprint)
-                and review.get("schema_version") == 3
-                and review.get("fingerprint") == fingerprint
-                and review.get("approved") is False
-            )
-            if not current_pending:
-                raise
-            approved = False
+        approval_path = registration_run / "registration_approval.json"
+        if (
+            preflight.get("registration_approval_sha256") != _sha256_file(approval_path)
+            or not _registration_status(registration_run)["approved"]
+        ):
+            raise ValueError("semantic registration approval binding is stale")
+        review = _json_object(run / "semantic_review.json")
+        semantic_fingerprint = result.get("fingerprint")
+        if (
+            review.get("schema_version") != 3
+            or review.get("fingerprint") != semantic_fingerprint
+            or not isinstance(review.get("approved"), bool)
+        ):
+            raise ValueError("semantic review is stale")
+        approved = review["approved"] is True
+        if approved and (
+            not isinstance(review.get("reviewer"), str)
+            or not str(review["reviewer"]).strip()
+            or not isinstance(review.get("notes"), str)
+            or not str(review["notes"]).strip()
+        ):
+            raise ValueError("semantic approval metadata is invalid")
     except (FileNotFoundError, OSError, TypeError, ValueError):
         return {
             "available": True,
@@ -437,45 +459,67 @@ def _semantic_status(
     }
 
 
-def _stain_status(run: Path | None) -> dict[str, object]:
+def _stain_status(
+    registration_run: Path,
+    run: Path | None,
+) -> dict[str, object]:
     if run is None:
-        return {"available": False, "approved": False, "families": []}
+        return {
+            "available": False,
+            "approved": False,
+            "approval_ready": False,
+            "families": [],
+        }
+    result_path = run / "stain_result.json"
+    if not result_path.is_file():
+        return {
+            "available": False,
+            "approved": False,
+            "approval_ready": False,
+            "families": [],
+        }
     try:
-        result = _json_object(run / "stain_result.json")
+        result = _json_object(result_path)
+        _require_current_json_fingerprint(result, "stain result")
+        registration_bytes = (
+            registration_run / "registration_result.json"
+        ).read_bytes()
+        registration = json.loads(registration_bytes)
+        registration_slides = (
+            registration.get("slides") if isinstance(registration, dict) else None
+        )
+        stain_slides = result.get("slides")
+        if (
+            not isinstance(registration_slides, list)
+            or not registration_slides
+            or not isinstance(stain_slides, list)
+            or len(stain_slides) != len(registration_slides)
+            or result.get("registration_result_sha256")
+            != hashlib.sha256(registration_bytes).hexdigest()
+        ):
+            raise ValueError("stain registration binding is stale")
         raw_families = result.get("families")
         if not isinstance(raw_families, dict) or not raw_families:
-            raise ValueError("stain result has no families")
-        family_names = sorted(str(family) for family in raw_families)
-        try:
-            review = _json_object(run / "stain_review.json")
-        except FileNotFoundError:
-            review = {}
-        matching = review.get("fingerprint") == result.get("fingerprint")
-        approved: set[str] = set()
-        if matching and review.get("schema_version") == 1:
-            if review.get("approved") is True:
-                approved.update(family_names)
-        elif matching and review.get("schema_version") == 2:
-            rows = review.get("families")
-            if isinstance(rows, dict):
-                approved.update(
-                    family
-                    for family in family_names
-                    if isinstance(rows.get(family), dict)
-                    and rows[family].get("approved") is True
-                )
+            raise ValueError("stain result has no quantified families")
+        family_names = tuple(sorted(str(family) for family in raw_families))
+        approved = _lightweight_stain_approvals(run, result, family_names)
+        pending = tuple(
+            family for family in family_names if family not in set(approved)
+        )
     except (FileNotFoundError, OSError, TypeError, ValueError):
-        if not (run / "stain_result.json").is_file():
-            return {"available": False, "approved": False, "families": []}
         return {
             "available": True,
             "approved": False,
+            "approval_ready": False,
             "families": [],
             "invalid": True,
+            "issue": "stain_result_binding_or_approval_invalid",
         }
     return {
         "available": True,
-        "approved": len(approved) == len(family_names),
+        "approved": not pending,
+        "approval_ready": bool(pending),
+        "issue": None if not pending else "stain_approval_required",
         "families": [
             {"id": family, "approved": family in approved} for family in family_names
         ],
@@ -497,16 +541,21 @@ def _topology_status(run: Path | None) -> dict[str, object]:
             "approval_ready": False,
         }
     try:
-        from histopia.topology import (
-            validate_topology_approval,
-            validate_topology_result,
-        )
-
-        result = validate_topology_result(run)
+        result = _json_object(result_path)
+        _require_current_json_fingerprint(result, "topology result")
         preflight_name = result.get("preflight")
         if not isinstance(preflight_name, str) or not preflight_name:
             raise ValueError("topology result preflight is missing")
         preflight = _json_object(run / preflight_name)
+        _require_current_json_fingerprint(preflight, "topology preflight")
+        if (
+            result.get("preflight_fingerprint") != preflight.get("fingerprint")
+            or result.get("registration_result_sha256")
+            != preflight.get("registration_result_sha256")
+            or result.get("semantic_fingerprint")
+            != preflight.get("semantic_fingerprint")
+        ):
+            raise ValueError("topology source binding is stale")
         snapshot = preflight.get("semantic_approval")
         snapshot_ready = (
             isinstance(snapshot, dict)
@@ -524,16 +573,21 @@ def _topology_status(run: Path | None) -> dict[str, object]:
                 "approval_ready": False,
                 "issue": "approval_bound_rebuild_required",
             }
-        try:
-            validate_topology_approval(run)
-            approved = True
-        except FileNotFoundError:
-            approved = False
-        except ValueError:
-            review = _json_object(run / "topology_review.json")
-            approved = review.get("approved") is True
-            if approved:
-                raise
+        review = _json_object(run / "topology_review.json")
+        if (
+            review.get("schema_version") != 1
+            or review.get("fingerprint") != result.get("fingerprint")
+            or not isinstance(review.get("approved"), bool)
+        ):
+            raise ValueError("topology review is stale")
+        approved = review["approved"] is True
+        if approved and (
+            not isinstance(review.get("reviewer"), str)
+            or not str(review["reviewer"]).strip()
+            or not isinstance(review.get("notes"), str)
+            or not str(review["notes"]).strip()
+        ):
+            raise ValueError("topology approval metadata is invalid")
     except (FileNotFoundError, OSError, TypeError, ValueError):
         return {
             "available": True,
@@ -555,3 +609,89 @@ def _json_object(path: Path) -> dict[str, object]:
     if not isinstance(payload, dict):
         raise ValueError(f"{path.name} must contain an object")
     return payload
+
+
+def _require_current_json_fingerprint(
+    payload: dict[str, object],
+    name: str,
+) -> None:
+    fingerprint = payload.get("fingerprint")
+    core = {key: value for key, value in payload.items() if key != "fingerprint"}
+    expected = hashlib.sha256(
+        json.dumps(core, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    if fingerprint != expected:
+        raise ValueError(f"{name} fingerprint is stale")
+
+
+def _sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _lightweight_stain_approvals(
+    run: Path,
+    result: dict[str, object],
+    families: tuple[str, ...],
+) -> tuple[str, ...]:
+    try:
+        review = _json_object(run / "stain_review.json")
+    except (FileNotFoundError, OSError, ValueError, json.JSONDecodeError):
+        return ()
+    if review.get("fingerprint") != result.get("fingerprint"):
+        return ()
+    if review.get("schema_version") == 1:
+        if review.get("approved") is not True:
+            return ()
+        _require_review_metadata(review, "stain approval")
+        return families
+    if review.get("schema_version") != 2:
+        return ()
+    rows = review.get("families")
+    if not isinstance(rows, dict):
+        return ()
+    approved: list[str] = []
+    for family in families:
+        row = rows.get(family)
+        if not isinstance(row, dict) or row.get("approved") is not True:
+            continue
+        _require_review_metadata(row, f"stain approval for {family}")
+        approved.append(family)
+    return tuple(approved)
+
+
+def _require_review_metadata(payload: dict[str, object], name: str) -> None:
+    if (
+        not isinstance(payload.get("reviewer"), str)
+        or not str(payload["reviewer"]).strip()
+        or not isinstance(payload.get("reviewed_at"), str)
+        or not str(payload["reviewed_at"]).strip()
+        or not isinstance(payload.get("notes"), str)
+        or not str(payload["notes"]).strip()
+    ):
+        raise ValueError(f"{name} metadata is invalid")
+
+
+def _validate_stain_for_approval(
+    registration_run: Path,
+    stain_run: Path,
+) -> None:
+    from histopia.stain import validate_stain_result
+
+    result = validate_stain_result(stain_run)
+    registration_bytes = (registration_run / "registration_result.json").read_bytes()
+    registration = json.loads(registration_bytes)
+    registration_slides = (
+        registration.get("slides") if isinstance(registration, dict) else None
+    )
+    stain_slides = result.get("slides")
+    if (
+        not isinstance(registration_slides, list)
+        or not registration_slides
+        or not isinstance(stain_slides, list)
+        or len(stain_slides) != len(registration_slides)
+        or result.get("registration_result_sha256")
+        != hashlib.sha256(registration_bytes).hexdigest()
+    ):
+        raise ValueError(
+            "stain approval requires a result bound to the current registration"
+        )

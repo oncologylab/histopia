@@ -168,6 +168,11 @@ Slide checks, notes, and draft accept/hold/reject decisions are stored in the
 browser under the exact stain fingerprint. They are review aids and do not
 write or imply scientific approval. Export the draft as JSON, then use
 `histopia-stain approve` only after the continuous-OD evidence is acceptable.
+The authenticated web decisions page validates result fingerprints, family
+review rows, section count, and the exact registration-result digest before
+enabling approval. The approval request then verifies every sealed stain
+artifact before writing the fingerprint-bound decision. A stale binding is
+shown as invalid rather than as a pending family review.
 Binary positivity, cross-antibody normalization, absolute concentration, and
 cell-level expression remain outside this approval scope.
 
