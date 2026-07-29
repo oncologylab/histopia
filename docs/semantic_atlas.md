@@ -490,7 +490,10 @@ stale, mismatched, or otherwise unverifiable.
 The audit treats semantic preflight schemas 1 and 2 as `legacy_unsealed`, even
 when their semantic review record is approved. A production `approved` result
 requires schema 3, which binds the semantic features to the exact final
-registration approval. Viewer entries must match the current registration
+registration approval. The approval API rejects legacy-unsealed results even
+when an older review record says approved, and the web decisions panel reports
+`Upstream rebuild required` instead of exposing an approval button. Viewer
+entries must match the current registration
 result digest, order fingerprint, semantic fingerprint, registration binding,
 review state, and section count.
 

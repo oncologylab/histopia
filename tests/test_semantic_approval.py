@@ -4,6 +4,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -26,6 +27,7 @@ def test_semantic_approval_is_fingerprint_bound_and_atomic(
 
     def validate_binding(registration_run, semantic_run, **kwargs):
         checked.append((Path(registration_run), Path(semantic_run)))
+        return SimpleNamespace(approval_bound=True)
 
     monkeypatch.setattr(
         approval_module,
@@ -52,6 +54,29 @@ def test_semantic_approval_is_fingerprint_bound_and_atomic(
     review = json.loads((tmp_path / "semantic_review.json").read_text())
     assert review["approved"] is True
     assert review["notes"] == "Reviewed overlays and K sensitivity."
+
+
+def test_semantic_approval_rejects_legacy_registration_binding(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_semantic_result(tmp_path)
+    monkeypatch.setattr(
+        approval_module,
+        "validate_semantic_registration_binding",
+        lambda *args, **kwargs: SimpleNamespace(approval_bound=False),
+    )
+
+    with pytest.raises(ValueError, match="final registration approval"):
+        approve_semantic_result(
+            tmp_path,
+            registration_run=tmp_path / "registration",
+            reviewer="Reviewer",
+            notes="Reviewed.",
+        )
+
+    review = json.loads((tmp_path / "semantic_review.json").read_text())
+    assert review["approved"] is False
 
 
 def test_semantic_approval_rejects_stale_review_and_result_artifacts(

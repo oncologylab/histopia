@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -24,7 +25,7 @@ def test_write_atlas_result_is_review_gated_and_keeps_per_slide_grids(
     monkeypatch.setattr(
         approval_module,
         "validate_semantic_registration_binding",
-        lambda *args, **kwargs: None,
+        lambda *args, **kwargs: SimpleNamespace(approval_bound=True),
     )
     sections = tuple(
         PatchFeatures(

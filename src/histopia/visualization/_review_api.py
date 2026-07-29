@@ -290,7 +290,7 @@ class ReviewDecisionService:
                 "mask": _mask_status(runs.registration),
                 "order": _order_status(runs.registration),
                 "registration": _registration_status(runs.registration),
-                "semantic": _semantic_status(runs.semantic),
+                "semantic": _semantic_status(runs.registration, runs.semantic),
                 "topology": _topology_status(runs.topology),
                 "stain": _stain_status(runs.stain),
             },
@@ -368,29 +368,73 @@ def _registration_status(run: Path) -> dict[str, object]:
     return {"available": True, "approved": True}
 
 
-def _semantic_status(run: Path | None) -> dict[str, object]:
+def _semantic_status(
+    registration_run: Path,
+    run: Path | None,
+) -> dict[str, object]:
     if run is None:
-        return {"available": False, "approved": False}
+        return {
+            "available": False,
+            "approved": False,
+            "approval_ready": False,
+        }
+    result_path = run / "semantic_result.json"
+    if not result_path.is_file():
+        return {
+            "available": False,
+            "approved": False,
+            "approval_ready": False,
+        }
     try:
-        result = _json_object(run / "semantic_result.json")
-        review = _json_object(run / "semantic_review.json")
-        fingerprint = result.get("fingerprint")
-        approved = (
-            isinstance(fingerprint, str)
-            and bool(fingerprint)
-            and review.get("schema_version") == 3
-            and review.get("fingerprint") == fingerprint
-            and review.get("approved") is True
-            and isinstance(review.get("reviewer"), str)
-            and bool(str(review["reviewer"]).strip())
-            and isinstance(review.get("notes"), str)
-            and bool(str(review["notes"]).strip())
+        from histopia.semantic import (
+            validate_semantic_approval,
+            validate_semantic_registration_binding,
         )
+        from histopia.semantic._result_validation import validate_semantic_result
+
+        result = validate_semantic_result(run)
+        binding = validate_semantic_registration_binding(
+            registration_run,
+            run,
+            semantic_payload=result,
+        )
+        if not binding.approval_bound:
+            return {
+                "available": True,
+                "approved": False,
+                "approval_ready": False,
+                "issue": "semantic_registration_approval_binding_required",
+            }
+        try:
+            validate_semantic_approval(run)
+            approved = True
+        except ValueError:
+            review = _json_object(run / "semantic_review.json")
+            fingerprint = result.get("fingerprint")
+            current_pending = (
+                isinstance(fingerprint, str)
+                and bool(fingerprint)
+                and review.get("schema_version") == 3
+                and review.get("fingerprint") == fingerprint
+                and review.get("approved") is False
+            )
+            if not current_pending:
+                raise
+            approved = False
     except (FileNotFoundError, OSError, TypeError, ValueError):
-        if not (run / "semantic_result.json").is_file():
-            return {"available": False, "approved": False}
-        return {"available": True, "approved": False}
-    return {"available": True, "approved": approved}
+        return {
+            "available": True,
+            "approved": False,
+            "approval_ready": False,
+            "invalid": True,
+            "issue": "semantic_result_binding_or_approval_invalid",
+        }
+    return {
+        "available": True,
+        "approved": approved,
+        "approval_ready": not approved,
+        "issue": None if approved else "semantic_approval_required",
+    }
 
 
 def _stain_status(run: Path | None) -> dict[str, object]:

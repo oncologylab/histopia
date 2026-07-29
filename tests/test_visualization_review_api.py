@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from histopia.visualization._review_api import (
     ReviewDecisionService,
+    _semantic_status,
     _topology_status,
 )
 
@@ -114,6 +116,82 @@ def test_topology_status_explains_approval_bound_rebuild(
         "approved": False,
         "approval_ready": False,
         "issue": "approval_bound_rebuild_required",
+    }
+
+
+def test_semantic_status_rejects_legacy_approval_as_unbound(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registration = tmp_path / "registration"
+    semantic = tmp_path / "semantic"
+    registration.mkdir()
+    semantic.mkdir()
+    (semantic / "semantic_result.json").write_text("{}")
+    monkeypatch.setattr(
+        "histopia.semantic._result_validation.validate_semantic_result",
+        lambda _run: {"fingerprint": "semantic"},
+    )
+    monkeypatch.setattr(
+        "histopia.semantic.validate_semantic_registration_binding",
+        lambda *args, **kwargs: SimpleNamespace(approval_bound=False),
+    )
+
+    assert _semantic_status(registration, semantic) == {
+        "available": True,
+        "approved": False,
+        "approval_ready": False,
+        "issue": "semantic_registration_approval_binding_required",
+    }
+
+
+def test_semantic_status_distinguishes_pending_and_approved(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registration = tmp_path / "registration"
+    semantic = tmp_path / "semantic"
+    registration.mkdir()
+    semantic.mkdir()
+    (semantic / "semantic_result.json").write_text("{}")
+    (semantic / "semantic_review.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "fingerprint": "semantic",
+                "approved": False,
+            }
+        )
+    )
+    monkeypatch.setattr(
+        "histopia.semantic._result_validation.validate_semantic_result",
+        lambda _run: {"fingerprint": "semantic"},
+    )
+    monkeypatch.setattr(
+        "histopia.semantic.validate_semantic_registration_binding",
+        lambda *args, **kwargs: SimpleNamespace(approval_bound=True),
+    )
+    monkeypatch.setattr(
+        "histopia.semantic.validate_semantic_approval",
+        lambda _run: (_ for _ in ()).throw(ValueError("not approved")),
+    )
+
+    assert _semantic_status(registration, semantic) == {
+        "available": True,
+        "approved": False,
+        "approval_ready": True,
+        "issue": "semantic_approval_required",
+    }
+
+    monkeypatch.setattr(
+        "histopia.semantic.validate_semantic_approval",
+        lambda _run: object(),
+    )
+    assert _semantic_status(registration, semantic) == {
+        "available": True,
+        "approved": True,
+        "approval_ready": False,
+        "issue": None,
     }
 
 

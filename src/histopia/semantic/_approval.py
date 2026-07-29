@@ -37,11 +37,16 @@ def approve_semantic_result(
 
     root = Path(run_dir)
     result = validate_semantic_result(root)
-    validate_semantic_registration_binding(
+    binding = validate_semantic_registration_binding(
         registration_run,
         root,
         semantic_payload=result,
     )
+    if not binding.approval_bound:
+        raise ValueError(
+            "semantic approval requires a preflight bound to the final "
+            "registration approval"
+        )
     review_path = root / "semantic_review.json"
     review = _load_review(review_path)
     if review.get("schema_version") != 3:
