@@ -752,6 +752,7 @@ histopia-visualize review /path/to/review \
   --run mouse-2=/path/to/run-2 \
   --semantic-run mouse-1=/path/to/semantic-1 \
   --stain-run mouse-1=/path/to/stain-1 \
+  --topology-run mouse-1=/path/to/topology-1 \
   --workers 4
 ```
 

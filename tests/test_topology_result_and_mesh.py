@@ -32,7 +32,7 @@ def test_topology_result_is_sealed_and_approval_is_fingerprint_bound(
         thickness_um=5,
     )
     preflight = tmp_path / "preflight.json"
-    preflight.write_text('{"semantic_approval":{"bound":true}}')
+    preflight.write_text(json.dumps(_approved_preflight()))
     benchmark = tmp_path / "benchmark.json"
     benchmark.write_text(
         json.dumps(
@@ -50,6 +50,8 @@ def test_topology_result_is_sealed_and_approval_is_fingerprint_bound(
         {
             "schema_version": 1,
             "preflight": "preflight.json",
+            "registration_result_sha256": "registration-sha",
+            "semantic_fingerprint": "semantic-fingerprint",
             "benchmark": "benchmark.json",
             "selected_k": 2,
             "observed_section_count": 2,
@@ -84,7 +86,7 @@ def test_topology_result_is_sealed_and_approval_is_fingerprint_bound(
 
 def test_stale_topology_review_is_reset(tmp_path: Path) -> None:
     preflight = tmp_path / "preflight.json"
-    preflight.write_text('{"semantic_approval":{"bound":true}}')
+    preflight.write_text(json.dumps(_approved_preflight()))
     (tmp_path / "topology_review.json").write_text(
         json.dumps({"schema_version": 1, "approved": True, "fingerprint": "old"})
     )
@@ -94,6 +96,8 @@ def test_stale_topology_review_is_reset(tmp_path: Path) -> None:
         {
             "schema_version": 1,
             "preflight": "preflight.json",
+            "registration_result_sha256": "registration-sha",
+            "semantic_fingerprint": "semantic-fingerprint",
             "selected_k": 2,
             "observed_section_count": 2,
             "virtual_section_count": 0,
@@ -173,6 +177,48 @@ def test_topology_approval_rejects_unbound_legacy_inputs(tmp_path: Path) -> None
             reviewer="Reviewer",
             notes="Reviewed.",
         )
+
+
+def test_topology_approval_rejects_malformed_input_snapshot(tmp_path: Path) -> None:
+    preflight = _approved_preflight()
+    preflight["semantic_approval"]["semantic_fingerprint"] = "stale"
+    (tmp_path / "preflight.json").write_text(json.dumps(preflight))
+    write_topology_result(
+        tmp_path,
+        {
+            "schema_version": 1,
+            "preflight": "preflight.json",
+            "registration_result_sha256": "registration-sha",
+            "semantic_fingerprint": "semantic-fingerprint",
+            "selected_k": 2,
+            "observed_section_count": 2,
+            "virtual_section_count": 0,
+            "segment_count": 1,
+            "gap_decisions": [],
+            "planes": [],
+            "meshes": [],
+            "classes": [],
+        },
+    )
+
+    with pytest.raises(ValueError, match="input binding"):
+        approve_topology_result(
+            tmp_path,
+            reviewer="Reviewer",
+            notes="Reviewed.",
+        )
+
+
+def _approved_preflight() -> dict[str, object]:
+    return {
+        "registration_result_sha256": "registration-sha",
+        "semantic_fingerprint": "semantic-fingerprint",
+        "semantic_approval": {
+            "semantic_fingerprint": "semantic-fingerprint",
+            "semantic_reviewer": "Semantic Reviewer",
+            "registration_result_sha256": "registration-sha",
+        },
+    }
 
 
 def _plane(z: float, *, observed: bool) -> ReconstructedPlane:

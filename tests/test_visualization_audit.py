@@ -13,6 +13,8 @@ from histopia.semantic._preflight import preflight_registration, write_preflight
 from histopia.semantic._result_validation import _seal_semantic_result
 from histopia.stain import approve_stain_result
 from histopia.stain._result import write_stain_result
+from histopia.topology import approve_topology_result
+from histopia.topology._result import write_topology_result
 from histopia.visualization import audit_workflows, write_workflow_audit
 
 
@@ -20,6 +22,7 @@ def test_audit_accepts_exact_approved_workflow_and_current_viewer(
     tmp_path: Path,
 ) -> None:
     registration, semantic = _write_approved_workflow(tmp_path)
+    topology = _write_topology_workflow(tmp_path, registration, semantic)
     registration_result = registration / "registration_result.json"
     registration_approval = json.loads(
         (registration / "registration_approval.json").read_text()
@@ -68,10 +71,12 @@ def test_audit_accepts_exact_approved_workflow_and_current_viewer(
     report = audit_workflows(
         {"mouse-a": registration},
         semantic_runs={"mouse-a": semantic},
+        topology_runs={"mouse-a": topology},
         viewer_manifest=manifest,
     )
 
     payload = report.to_json_dict()
+    assert payload["schema_version"] == 3
     assert report.status == "approved"
     assert report.exit_code == 0
     assert payload["summary"] == {
@@ -92,6 +97,15 @@ def test_audit_accepts_exact_approved_workflow_and_current_viewer(
     assert payload["cohorts"][0]["semantic"]["registration_binding"] == (
         "approval_bound"
     )
+    assert payload["cohorts"][0]["topology"] == {
+        "status": "approved",
+        "fingerprint": json.loads((topology / "topology_result.json").read_text())[
+            "fingerprint"
+        ],
+        "observed_section_count": 2,
+        "semantic_binding": "approval_bound",
+        "issue": None,
+    }
     assert payload["cohorts"][0]["viewer"]["status"] == "current"
     assert str(tmp_path) not in json.dumps(payload)
 
@@ -205,6 +219,57 @@ def test_audit_rejects_unknown_semantic_and_unsafe_cohort_ids(
             {"mouse-a": tmp_path / "registration"},
             stain_runs={"mouse-b": tmp_path / "stain"},
         )
+    with pytest.raises(ValueError, match="topology runs have no matching semantic"):
+        audit_workflows(
+            {"mouse-a": tmp_path / "registration"},
+            topology_runs={"mouse-a": tmp_path / "topology"},
+        )
+
+
+def test_audit_requires_approval_bound_topology_rebuild(tmp_path: Path) -> None:
+    registration, semantic = _write_approved_workflow(tmp_path)
+    topology = _write_topology_workflow(
+        tmp_path,
+        registration,
+        semantic,
+        approval_bound=False,
+    )
+
+    report = audit_workflows(
+        {"mouse-a": registration},
+        semantic_runs={"mouse-a": semantic},
+        topology_runs={"mouse-a": topology},
+    )
+
+    assert report.status == "review_required"
+    assert report.exit_code == 2
+    assert report.cohorts[0].topology.semantic_binding == "legacy_unsealed"
+    assert report.cohorts[0].topology.issue == (
+        "topology_approval_bound_rebuild_required"
+    )
+
+
+def test_audit_rejects_stale_topology_source_binding(tmp_path: Path) -> None:
+    registration, semantic = _write_approved_workflow(tmp_path)
+    topology = _write_topology_workflow(tmp_path, registration, semantic)
+    preflight_path = topology / "preflight.json"
+    preflight = json.loads(preflight_path.read_text())
+    preflight["registration_result_sha256"] = "0" * 64
+    core = {key: value for key, value in preflight.items() if key != "fingerprint"}
+    preflight["fingerprint"] = hashlib.sha256(
+        json.dumps(core, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    preflight_path.write_text(json.dumps(preflight))
+
+    report = audit_workflows(
+        {"mouse-a": registration},
+        semantic_runs={"mouse-a": semantic},
+        topology_runs={"mouse-a": topology},
+    )
+
+    assert report.status == "invalid"
+    assert report.exit_code == 1
+    assert report.cohorts[0].topology.issue == ("topology_result_or_binding_invalid")
 
 
 def _write_approved_workflow(
@@ -318,6 +383,7 @@ def _write_approved_workflow(
     core = {
         "schema_version": 3,
         "model": model_path.name,
+        "selected_k": 2,
         "slides": semantic_slides,
         "topology_pairs": [],
         "feature_provenance": {
@@ -346,6 +412,75 @@ def _write_approved_workflow(
             reviewed_at="2026-07-26T11:00:00+00:00",
         )
     return registration, semantic
+
+
+def _write_topology_workflow(
+    root: Path,
+    registration: Path,
+    semantic: Path,
+    *,
+    approval_bound: bool = True,
+) -> Path:
+    topology = root / "topology"
+    topology.mkdir()
+    semantic_result_path = semantic / "semantic_result.json"
+    semantic_result = json.loads(semantic_result_path.read_text())
+    registration_result_path = registration / "registration_result.json"
+    slide_ids = tuple(row["id"] for row in semantic_result["slides"])
+    preflight_core = {
+        "schema_version": 2,
+        "registration_result_sha256": _sha256(registration_result_path),
+        "semantic_result_sha256": _sha256(semantic_result_path),
+        "semantic_fingerprint": semantic_result["fingerprint"],
+        "semantic_approval": (
+            {
+                "semantic_fingerprint": semantic_result["fingerprint"],
+                "semantic_reviewer": "Test Reviewer",
+                "registration_result_sha256": _sha256(registration_result_path),
+            }
+            if approval_bound
+            else None
+        ),
+        "selected_k": 2,
+        "slide_ids": list(slide_ids),
+    }
+    preflight = {
+        **preflight_core,
+        "fingerprint": hashlib.sha256(
+            json.dumps(
+                preflight_core,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest(),
+    }
+    (topology / "preflight.json").write_text(json.dumps(preflight))
+    write_topology_result(
+        topology,
+        {
+            "schema_version": 1,
+            "preflight": "preflight.json",
+            "preflight_fingerprint": preflight["fingerprint"],
+            "registration_result_sha256": _sha256(registration_result_path),
+            "semantic_fingerprint": semantic_result["fingerprint"],
+            "selected_k": 2,
+            "observed_section_count": len(slide_ids),
+            "virtual_section_count": 0,
+            "segment_count": len(slide_ids) - 1,
+            "gap_decisions": [],
+            "planes": [],
+            "meshes": [],
+            "classes": [],
+        },
+    )
+    if approval_bound:
+        approve_topology_result(
+            topology,
+            reviewer="Test Reviewer",
+            notes="Reviewed topology surfaces and transitions.",
+            reviewed_at="2026-07-26T12:00:00+00:00",
+        )
+    return topology
 
 
 def _sha256(path: Path) -> str:

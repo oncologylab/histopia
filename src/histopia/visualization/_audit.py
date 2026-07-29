@@ -27,6 +27,13 @@ StainStatus = Literal[
     "incomplete",
     "invalid",
 ]
+TopologyStatus = Literal[
+    "approved",
+    "review_required",
+    "not_requested",
+    "incomplete",
+    "invalid",
+]
 ViewerStatus = Literal["current", "not_requested", "incomplete", "invalid"]
 
 
@@ -98,6 +105,31 @@ class StainWorkflowAudit:
 
 
 @dataclass(frozen=True, slots=True)
+class TopologyWorkflowAudit:
+    """Portable validation state for one reconstructed semantic topology."""
+
+    status: TopologyStatus
+    fingerprint: str | None = None
+    observed_section_count: int | None = None
+    semantic_binding: Literal[
+        "approval_bound",
+        "legacy_unsealed",
+        "not_requested",
+        "unavailable",
+    ] = "unavailable"
+    issue: str | None = None
+
+    def to_json_dict(self) -> dict[str, object]:
+        return {
+            "status": self.status,
+            "fingerprint": self.fingerprint,
+            "observed_section_count": self.observed_section_count,
+            "semantic_binding": self.semantic_binding,
+            "issue": self.issue,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class ViewerWorkflowAudit:
     """Portable validation state for one cohort in a generated viewer."""
 
@@ -117,6 +149,7 @@ class CohortWorkflowAudit:
     registration: RegistrationWorkflowAudit
     semantic: SemanticWorkflowAudit
     stain: StainWorkflowAudit
+    topology: TopologyWorkflowAudit
     viewer: ViewerWorkflowAudit
 
     def to_json_dict(self) -> dict[str, object]:
@@ -126,6 +159,7 @@ class CohortWorkflowAudit:
             "registration": self.registration.to_json_dict(),
             "semantic": self.semantic.to_json_dict(),
             "stain": self.stain.to_json_dict(),
+            "topology": self.topology.to_json_dict(),
             "viewer": self.viewer.to_json_dict(),
         }
 
@@ -157,7 +191,7 @@ class WorkflowAudit:
             for status in ("approved", "review_required", "incomplete", "invalid")
         }
         return {
-            "schema_version": 2,
+            "schema_version": 3,
             "status": self.status,
             "summary": {
                 "cohort_count": len(self.cohorts),
@@ -179,6 +213,9 @@ class _RegistrationIdentity:
 class _SemanticIdentity:
     slide_count: int
     fingerprint: str
+    result_sha256: str
+    slide_ids: tuple[str, ...]
+    selected_k: int
     binding_payload: dict[str, object]
     review_approved: bool
 
@@ -202,6 +239,7 @@ def audit_workflows(
     *,
     semantic_runs: dict[str, Path | str] | None = None,
     stain_runs: dict[str, Path | str] | None = None,
+    topology_runs: dict[str, Path | str] | None = None,
     viewer_manifest: Path | str | None = None,
 ) -> WorkflowAudit:
     """Validate exact workflow state without publishing local filesystem paths."""
@@ -211,8 +249,10 @@ def audit_workflows(
     _validate_cohort_ids(registration_runs)
     semantic_runs = semantic_runs or {}
     stain_runs = stain_runs or {}
+    topology_runs = topology_runs or {}
     _validate_cohort_ids(semantic_runs)
     _validate_cohort_ids(stain_runs)
+    _validate_cohort_ids(topology_runs)
     unknown_semantics = sorted(set(semantic_runs) - set(registration_runs))
     if unknown_semantics:
         raise ValueError(
@@ -223,6 +263,18 @@ def audit_workflows(
     if unknown_stains:
         raise ValueError(
             "stain runs have no matching registration: " + ", ".join(unknown_stains)
+        )
+    unknown_topologies = sorted(set(topology_runs) - set(registration_runs))
+    if unknown_topologies:
+        raise ValueError(
+            "topology runs have no matching registration: "
+            + ", ".join(unknown_topologies)
+        )
+    missing_semantics = sorted(set(topology_runs) - set(semantic_runs))
+    if missing_semantics:
+        raise ValueError(
+            "topology runs have no matching semantic run: "
+            + ", ".join(missing_semantics)
         )
 
     viewer = (
@@ -246,6 +298,14 @@ def audit_workflows(
             registration_identity,
             stain_root,
         )
+        topology_root = (
+            Path(topology_runs[cohort_id]) if cohort_id in topology_runs else None
+        )
+        topology = _audit_topology(
+            registration_identity,
+            semantic_identity,
+            topology_root,
+        )
         viewer_state = _audit_viewer(
             cohort_id,
             viewer,
@@ -261,6 +321,7 @@ def audit_workflows(
                 registration.status,
                 semantic.status,
                 stain.status,
+                topology.status,
                 viewer_state.status,
             )
         )
@@ -271,6 +332,7 @@ def audit_workflows(
                 registration=registration,
                 semantic=semantic,
                 stain=stain,
+                topology=topology,
                 viewer=viewer_state,
             )
         )
@@ -396,6 +458,8 @@ def _audit_semantic(
         )
         from histopia.semantic._result_validation import validate_semantic_result
 
+        result_bytes = result_path.read_bytes()
+        result_sha256 = hashlib.sha256(result_bytes).hexdigest()
         payload = validate_semantic_result(semantic_root)
         binding = validate_semantic_registration_binding(
             registration_root,
@@ -404,6 +468,8 @@ def _audit_semantic(
         )
         fingerprint = _required_string(payload, "fingerprint")
         slide_count = _semantic_slide_count(payload)
+        if hashlib.sha256(result_path.read_bytes()).hexdigest() != result_sha256:
+            raise ValueError("semantic result changed during audit")
     except (OSError, TypeError, ValueError, json.JSONDecodeError):
         return (
             SemanticWorkflowAudit(
@@ -476,6 +542,9 @@ def _audit_semantic(
     identity = _SemanticIdentity(
         slide_count=slide_count,
         fingerprint=fingerprint,
+        result_sha256=result_sha256,
+        slide_ids=_semantic_slide_ids(payload),
+        selected_k=_semantic_selected_k(payload),
         binding_payload=binding.to_json_dict(),
         review_approved=approved,
     )
@@ -580,6 +649,118 @@ def _audit_stain(
             approved_families=approved,
         ),
         identity,
+    )
+
+
+def _audit_topology(
+    registration_identity: _RegistrationIdentity | None,
+    semantic_identity: _SemanticIdentity | None,
+    topology_root: Path | None,
+) -> TopologyWorkflowAudit:
+    if topology_root is None:
+        return TopologyWorkflowAudit(
+            status="not_requested",
+            semantic_binding="not_requested",
+        )
+    result_path = topology_root / "topology_result.json"
+    if not result_path.is_file():
+        return TopologyWorkflowAudit(
+            status="incomplete",
+            issue="topology_result_missing",
+        )
+    try:
+        from histopia.topology._result import validate_topology_result
+
+        result = validate_topology_result(topology_root)
+        fingerprint = _required_string(result, "fingerprint")
+        preflight_name = _required_string(result, "preflight")
+        preflight_path = _safe_relative_artifact(topology_root, preflight_name)
+        preflight = json.loads(preflight_path.read_text())
+        if not isinstance(preflight, dict):
+            raise ValueError("topology preflight must be an object")
+        _validate_fingerprinted_payload(preflight, "topology preflight")
+        observed_count = _positive_int(result.get("observed_section_count"))
+        selected_k = _positive_int(result.get("selected_k"))
+        slide_ids = _string_tuple(preflight.get("slide_ids"))
+        if (
+            registration_identity is None
+            or semantic_identity is None
+            or preflight.get("registration_result_sha256")
+            != registration_identity.result_sha256
+            or preflight.get("semantic_result_sha256")
+            != semantic_identity.result_sha256
+            or preflight.get("semantic_fingerprint") != semantic_identity.fingerprint
+            or preflight.get("selected_k") != semantic_identity.selected_k
+            or selected_k != semantic_identity.selected_k
+            or slide_ids != semantic_identity.slide_ids
+            or observed_count != semantic_identity.slide_count
+            or result.get("preflight_fingerprint") != preflight.get("fingerprint")
+            or result.get("registration_result_sha256")
+            != registration_identity.result_sha256
+            or result.get("semantic_fingerprint") != semantic_identity.fingerprint
+        ):
+            raise ValueError("topology source binding is stale")
+        approval_bound = _validate_topology_approval_snapshot(preflight)
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return TopologyWorkflowAudit(
+            status="invalid",
+            issue="topology_result_or_binding_invalid",
+        )
+
+    binding_name: Literal["approval_bound", "legacy_unsealed"] = (
+        "approval_bound" if approval_bound else "legacy_unsealed"
+    )
+    if not approval_bound:
+        return TopologyWorkflowAudit(
+            status="review_required",
+            fingerprint=fingerprint,
+            observed_section_count=observed_count,
+            semantic_binding=binding_name,
+            issue="topology_approval_bound_rebuild_required",
+        )
+    try:
+        from histopia.topology._approval import validate_topology_approval
+
+        validate_topology_approval(topology_root)
+    except FileNotFoundError:
+        return TopologyWorkflowAudit(
+            status="review_required",
+            fingerprint=fingerprint,
+            observed_section_count=observed_count,
+            semantic_binding=binding_name,
+            issue="topology_approval_required",
+        )
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        review_path = topology_root / "topology_review.json"
+        try:
+            review = json.loads(review_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            review = None
+        if (
+            isinstance(review, dict)
+            and review.get("schema_version") == 1
+            and review.get("approved") is False
+            and review.get("fingerprint") == fingerprint
+        ):
+            return TopologyWorkflowAudit(
+                status="review_required",
+                fingerprint=fingerprint,
+                observed_section_count=observed_count,
+                semantic_binding=binding_name,
+                issue="topology_approval_required",
+            )
+        return TopologyWorkflowAudit(
+            status="invalid",
+            fingerprint=fingerprint,
+            observed_section_count=observed_count,
+            semantic_binding=binding_name,
+            issue="topology_approval_invalid",
+        )
+    return TopologyWorkflowAudit(
+        status="approved",
+        fingerprint=fingerprint,
+        observed_section_count=observed_count,
+        semantic_binding=binding_name,
     )
 
 
@@ -749,6 +930,71 @@ def _semantic_slide_count(payload: dict[str, object]) -> int:
     if not isinstance(slides, list) or not slides:
         raise ValueError("semantic result contains no slides")
     return len(slides)
+
+
+def _semantic_slide_ids(payload: dict[str, object]) -> tuple[str, ...]:
+    slides = payload.get("slides")
+    if not isinstance(slides, list):
+        raise ValueError("semantic result contains no slides")
+    values: list[str] = []
+    for row in slides:
+        value = row.get("id") if isinstance(row, dict) else None
+        if not isinstance(value, str) or not value:
+            raise ValueError("semantic slide IDs are invalid")
+        values.append(value)
+    if len(set(values)) != len(values):
+        raise ValueError("semantic slide IDs must be unique")
+    return tuple(values)
+
+
+def _semantic_selected_k(payload: dict[str, object]) -> int:
+    value = payload.get("selected_k", payload.get("primary_clusters"))
+    return _positive_int(value)
+
+
+def _positive_int(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError("value must be a positive integer")
+    return value
+
+
+def _safe_relative_artifact(root: Path, value: str) -> Path:
+    relative = Path(value)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise ValueError("artifact path must stay inside the run")
+    resolved_root = root.resolve()
+    resolved = (resolved_root / relative).resolve()
+    if not resolved.is_relative_to(resolved_root):
+        raise ValueError("artifact path must stay inside the run")
+    return resolved
+
+
+def _validate_fingerprinted_payload(payload: dict[str, object], name: str) -> None:
+    fingerprint = payload.get("fingerprint")
+    core = {key: value for key, value in payload.items() if key != "fingerprint"}
+    expected = hashlib.sha256(
+        json.dumps(core, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    if fingerprint != expected:
+        raise ValueError(f"{name} fingerprint is stale")
+
+
+def _validate_topology_approval_snapshot(preflight: dict[str, object]) -> bool:
+    approval = preflight.get("semantic_approval")
+    if approval is None:
+        return False
+    if not isinstance(approval, dict):
+        raise ValueError("topology semantic approval snapshot is invalid")
+    reviewer = approval.get("semantic_reviewer")
+    if (
+        approval.get("semantic_fingerprint") != preflight.get("semantic_fingerprint")
+        or approval.get("registration_result_sha256")
+        != preflight.get("registration_result_sha256")
+        or not isinstance(reviewer, str)
+        or not reviewer.strip()
+    ):
+        raise ValueError("topology semantic approval snapshot is stale")
+    return True
 
 
 def _required_string(payload: dict[str, object], key: str) -> str:

@@ -472,13 +472,16 @@ histopia-visualize audit \
   --run sample-b=/path/to/registration-b \
   --semantic-run sample-a=/path/to/semantic-a \
   --semantic-run sample-b=/path/to/semantic-b \
+  --topology-run sample-a=/path/to/topology-a \
+  --topology-run sample-b=/path/to/topology-b \
   --viewer-manifest /path/to/viewer-root/histopia/manifest.json \
   --output /path/to/workflow-audit.json
 ```
 
 `audit` emits the same portable JSON to standard output and, when requested,
 atomically writes it to `--output`. It never includes source or run-directory
-paths. Exit code `0` means every requested scientific stage is approved and
+paths. Schema 3 adds topology status and exact upstream bindings. Exit code
+`0` means every requested scientific stage is approved and
 the viewer is current. Exit code `2` means all inspected artifacts are valid
 but at least one human review or current registration-approval binding remains
 required. Exit code `1` means a requested artifact is missing, malformed,

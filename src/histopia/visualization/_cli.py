@@ -253,7 +253,7 @@ def _main(argv: list[str] | None = None) -> int:
     )
     audit = commands.add_parser(
         "audit",
-        help="Validate registration, semantic, and viewer workflow integrity.",
+        help="Validate scientific workflow and viewer integrity.",
     )
     audit.add_argument(
         "--run",
@@ -275,6 +275,13 @@ def _main(argv: list[str] | None = None) -> int:
         action="append",
         default=[],
         help="Named stain run as NAME=PATH; repeat for a cohort.",
+    )
+    audit.add_argument(
+        "--topology-run",
+        type=_named_path,
+        action="append",
+        default=[],
+        help="Named topology run as NAME=PATH; repeat for a cohort.",
     )
     audit.add_argument(
         "--viewer-manifest",
@@ -412,6 +419,7 @@ def _main(argv: list[str] | None = None) -> int:
             _unique_named_paths(args.run, "registration"),
             semantic_runs=_unique_named_paths(args.semantic_run, "semantic"),
             stain_runs=_unique_named_paths(args.stain_run, "stain"),
+            topology_runs=_unique_named_paths(args.topology_run, "topology"),
             viewer_manifest=args.viewer_manifest,
         )
         if args.output is not None:

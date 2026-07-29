@@ -101,3 +101,17 @@ histopia-topology approve \
 Estimated volumes and surface areas are not physical measurements when z
 positions are inferred or assumed. Histopia records that provenance in
 `topology_result.json`.
+
+Audit topology together with its exact upstream registration and semantic
+results before release:
+
+```bash
+histopia-visualize audit \
+  --run sample=/path/to/registration-run \
+  --semantic-run sample=/path/to/semantic-run \
+  --topology-run sample=/path/to/topology-run
+```
+
+The path-free report distinguishes an approved topology, a pending review, an
+older topology that must be rebuilt from approval-bound semantic inputs, and
+an invalid or stale source binding.

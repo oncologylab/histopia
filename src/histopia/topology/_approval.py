@@ -107,3 +107,15 @@ def _require_approved_inputs(
         raise ValueError(
             "topology approval requires approval-bound registration and semantic inputs"
         )
+    reviewer = approval.get("semantic_reviewer")
+    if (
+        approval.get("semantic_fingerprint") != preflight.get("semantic_fingerprint")
+        or approval.get("registration_result_sha256")
+        != preflight.get("registration_result_sha256")
+        or not isinstance(reviewer, str)
+        or not reviewer.strip()
+        or result.get("semantic_fingerprint") != preflight.get("semantic_fingerprint")
+        or result.get("registration_result_sha256")
+        != preflight.get("registration_result_sha256")
+    ):
+        raise ValueError("topology approval input binding is invalid")

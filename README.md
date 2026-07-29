@@ -103,11 +103,13 @@ histopia-visualize audit \
   --run sample=/path/to/registration-run \
   --semantic-run sample=/path/to/semantic-run \
   --stain-run sample=/path/to/stain-run \
+  --topology-run sample=/path/to/topology-run \
   --viewer-manifest /path/to/viewer/manifest.json
 ```
 
 The path-free report distinguishes approved results, explicit review gates,
-missing stages, and integrity failures, including family-scoped stain approval.
+missing stages, and integrity failures, including family-scoped stain approval
+and topology binding to the exact registration and semantic results.
 Stable viewer builds publish approved results only. Use
 `histopia-visualize review` to generate a separate review hub containing
 pending registration, 3D, semantic, and stain evidence.

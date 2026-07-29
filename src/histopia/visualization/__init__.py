@@ -19,6 +19,10 @@ _PUBLIC_IMPORTS = {
         "histopia.visualization._audit",
         "StainWorkflowAudit",
     ),
+    "TopologyWorkflowAudit": (
+        "histopia.visualization._audit",
+        "TopologyWorkflowAudit",
+    ),
     "ViewerWorkflowAudit": (
         "histopia.visualization._audit",
         "ViewerWorkflowAudit",

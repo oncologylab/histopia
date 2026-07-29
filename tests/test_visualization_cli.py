@@ -489,3 +489,16 @@ def test_audit_command_rejects_duplicate_named_runs(tmp_path: Path) -> None:
                 f"mouse={tmp_path / 'second'}",
             ]
         )
+
+
+def test_audit_command_accepts_named_topology_runs(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="no matching semantic run"):
+        _cli.main(
+            [
+                "audit",
+                "--run",
+                f"mouse={tmp_path / 'registration'}",
+                "--topology-run",
+                f"mouse={tmp_path / 'topology'}",
+            ]
+        )
