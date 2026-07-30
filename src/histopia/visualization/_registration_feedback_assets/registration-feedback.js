@@ -43,9 +43,9 @@ feedbackPanel.innerHTML = `
     <button id="feedback-next" type="button">Next open</button>
   </div>
   <div class="decisions">
-    <button type="button" data-feedback-decision="accept">Accept</button>
-    <button type="button" data-feedback-decision="hold">Hold</button>
-    <button type="button" data-feedback-decision="reject">Reject</button>
+    <button type="button" data-feedback-decision="accept" disabled>Accept</button>
+    <button type="button" data-feedback-decision="hold" disabled>Hold</button>
+    <button type="button" data-feedback-decision="reject" disabled>Reject</button>
   </div>
   <fieldset id="feedback-labels"><legend>Issues</legend></fieldset>
   <div id="feedback-order" class="order-corrections" hidden>
@@ -87,7 +87,8 @@ let currentSlideId = reviewData.slides[0].slide;
 let currentDecision = "";
 let authenticationRequired = true;
 feedbackElements.key.value = sessionStorage.getItem("histopiaReviewKey") || "";
-feedbackElements.reviewer.value = sessionStorage.getItem("histopiaReviewer") || "";
+feedbackElements.reviewer.value =
+  sessionStorage.getItem("histopiaReviewer") || "Web reviewer";
 feedbackElements.order.hidden = feedbackConfig.stage !== "order";
 feedbackElements.suggestedOrder.max = String(reviewData.slides.length);
 
@@ -157,6 +158,9 @@ function renderFeedback() {
   feedbackElements.status.textContent =
     `${feedback.summary.reviewed}/${feedback.slides.length} reviewed`;
   feedbackElements.save.disabled = false;
+  decisionButtons.forEach((button) => {
+    button.disabled = false;
+  });
   selectSlide(currentSlideId);
 }
 
@@ -202,7 +206,7 @@ function moveSlide(direction, openOnly = false) {
   selectSlide(rows[next].slide);
 }
 
-decisionButtons.forEach((button) => button.addEventListener("click", () => {
+decisionButtons.forEach((button) => button.addEventListener("click", async () => {
   currentDecision = button.dataset.feedbackDecision;
   if (currentDecision === "accept") {
     feedbackElements.labels.querySelectorAll("input").forEach((input) => {
@@ -212,6 +216,10 @@ decisionButtons.forEach((button) => button.addEventListener("click", () => {
   decisionButtons.forEach((row) => {
     row.classList.toggle("active", row === button);
   });
+  if (currentDecision === "accept") {
+    await saveFeedback({advance: true});
+    return;
+  }
   feedbackElements.message.style.color = "#52605a";
   feedbackElements.message.textContent =
     `${button.textContent} selected. Enter a reviewer and save this slide review.`;
@@ -239,19 +247,19 @@ document.querySelector("#feedback-previous").addEventListener("click", () => {
 document.querySelector("#feedback-next").addEventListener("click", () => {
   moveSlide(1, true);
 });
-feedbackElements.save.addEventListener("click", async () => {
+async function saveFeedback({advance = false} = {}) {
   feedbackElements.message.textContent = "";
   if (!currentDecision) {
     feedbackElements.message.textContent = "Choose Accept, Hold, or Reject first.";
     decisionButtons[0].focus();
-    return;
+    return false;
   }
   const reviewer = feedbackElements.reviewer.value.trim();
   if (!reviewer) {
     feedbackElements.message.textContent =
       "Enter a reviewer name before saving.";
     feedbackElements.reviewer.focus();
-    return;
+    return false;
   }
   sessionStorage.setItem("histopiaReviewer", feedbackElements.reviewer.value);
   const payload = {
@@ -274,6 +282,12 @@ feedbackElements.save.addEventListener("click", async () => {
     }
   }
   feedbackElements.save.disabled = true;
+  decisionButtons.forEach((button) => {
+    button.disabled = true;
+  });
+  feedbackElements.message.style.color = "#52605a";
+  feedbackElements.message.textContent =
+    currentDecision === "accept" ? "Saving acceptance" : "Saving slide review";
   try {
     const response = await fetch("/api/reviews/feedback", {
       method: "POST",
@@ -284,13 +298,25 @@ feedbackElements.save.addEventListener("click", async () => {
     if (!response.ok) throw new Error(result.error || "Unable to save feedback");
     feedback = result.feedback;
     feedbackElements.message.style.color = "#146b46";
-    feedbackElements.message.textContent = "Slide review saved";
+    feedbackElements.message.textContent =
+      currentDecision === "accept" ? "Accepted and saved" : "Slide review saved";
     renderFeedback();
+    if (advance) moveSlide(1, true);
+    return true;
   } catch (error) {
     feedbackElements.message.style.color = "#8e2623";
     feedbackElements.message.textContent = error.message;
     feedbackElements.save.disabled = false;
+    return false;
+  } finally {
+    decisionButtons.forEach((button) => {
+      button.disabled = false;
+    });
   }
+}
+
+feedbackElements.save.addEventListener("click", async () => {
+  await saveFeedback();
 });
 selectSlide(currentSlideId);
 configureFeedbackAccess().catch((error) => {

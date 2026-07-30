@@ -224,6 +224,8 @@ def test_mask_review_browser_persists_per_slide_feedback(tmp_path: Path) -> None
             page.locator("#feedback-key").fill(token)
             page.locator("#feedback-connect").click()
             page.get_by_text("0/1 reviewed").wait_for()
+            assert page.locator("#feedback-reviewer").input_value() == "Web reviewer"
+            page.locator("#feedback-reviewer").fill("")
             reject = page.locator("[data-feedback-decision='reject']")
             reject.click()
             assert (
@@ -247,6 +249,10 @@ def test_mask_review_browser_persists_per_slide_feedback(tmp_path: Path) -> None
             page.get_by_text("Slide review saved").wait_for()
             assert page.get_by_text("1/1 reviewed").is_visible()
             assert page.locator("article.feedback-reject").count() == 1
+            page.locator("[data-feedback-decision='accept']").click()
+            page.get_by_text("Accepted and saved").wait_for()
+            assert page.get_by_text("1/1 reviewed").is_visible()
+            assert page.locator("article.feedback-accept").count() == 1
             browser.close()
     finally:
         server.shutdown()
@@ -255,3 +261,5 @@ def test_mask_review_browser_persists_per_slide_feedback(tmp_path: Path) -> None
 
     payloads = load_registration_feedback(feedback_dir)
     assert payloads[0]["records"][0]["labels"] == ["extra_debris"]
+    assert payloads[0]["records"][1]["decision"] == "accept"
+    assert payloads[0]["records"][1]["labels"] == []
