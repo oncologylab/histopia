@@ -22,12 +22,10 @@ FEEDBACK_LABELS: dict[str, tuple[str, ...]] = {
         "internal_holes",
         "excess_whitespace",
         "fragmented_tissue",
-        "wrong_orientation",
         "other",
     ),
     "order": (
         "wrong_position",
-        "wrong_orientation",
         "abrupt_morphology_jump",
         "anchor_issue",
         "duplicate_section",
@@ -35,6 +33,7 @@ FEEDBACK_LABELS: dict[str, tuple[str, ...]] = {
         "other",
     ),
     "alignment": (
+        "wrong_orientation",
         "global_shift",
         "rotation_error",
         "scale_error",

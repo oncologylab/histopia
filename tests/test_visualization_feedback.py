@@ -15,6 +15,7 @@ from histopia.visualization import (
     summarize_registration_feedback,
 )
 from histopia.visualization._feedback import (
+    FEEDBACK_LABELS,
     RegistrationFeedbackStore,
     registration_feedback_evidence,
 )
@@ -123,6 +124,12 @@ def test_feedback_store_rejects_stale_or_uninformative_concern(
         )
 
 
+def test_feedback_labels_assign_orientation_to_registered_stack_only() -> None:
+    assert "wrong_orientation" not in FEEDBACK_LABELS["mask"]
+    assert "wrong_orientation" not in FEEDBACK_LABELS["order"]
+    assert "wrong_orientation" in FEEDBACK_LABELS["alignment"]
+
+
 def test_order_feedback_accepts_bounded_corrections(tmp_path: Path) -> None:
     run = tmp_path / "mouse"
     run.mkdir()
@@ -146,7 +153,7 @@ def test_order_feedback_accepts_bounded_corrections(tmp_path: Path) -> None:
             "fingerprint": "order-fingerprint",
             "slide_id": "CK19.ndpi",
             "decision": "hold",
-            "labels": ["wrong_position", "wrong_orientation"],
+            "labels": ["wrong_position"],
             "comment": "Move before H&E and rotate.",
             "reviewer": "Reviewer",
             "suggested_order": 1,
