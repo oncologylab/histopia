@@ -318,8 +318,14 @@ def warp_saved_registration(
     accepted_non_rigid_only: bool = False,
     slide_names: Iterable[str | Path] | None = None,
     vips_threads: int | None = None,
+    require_approval: bool = True,
 ) -> tuple[WsiWarpResult, ...]:
-    """Apply selected transforms from an existing registration run."""
+    """Apply selected transforms from a sealed registration run.
+
+    ``require_approval=False`` is reserved for controlled validation of
+    provisional registrations. CLI and production callers always use the
+    approval-bound default.
+    """
 
     from histopia.registration._io import load_thumbnail
 
@@ -331,9 +337,15 @@ def warp_saved_registration(
     )
     require_bool("overwrite", overwrite)
     require_bool("accepted_non_rigid_only", accepted_non_rigid_only)
+    require_bool("require_approval", require_approval)
     configure_vips_threads(vips_threads)
     normalized_slide_names = _normalize_slide_names(slide_names)
     run_dir = Path(run_dir)
+    approval = None
+    if require_approval:
+        from histopia.registration._approval import validate_registration_approval
+
+        approval = validate_registration_approval(run_dir)
     result_path = run_dir / "registration_result.json"
     result_bytes = result_path.read_bytes()
     payload = json.loads(result_bytes)
@@ -444,6 +456,15 @@ def warp_saved_registration(
             reference_bbox=reference_bbox,
             reference_identity=reference_identity,
             registration_result_sha256=registration_result_sha256,
+            registration_approval=(
+                {
+                    "order_fingerprint": approval.order_fingerprint,
+                    "reviewed_at": approval.reviewed_at,
+                    "reviewer": approval.reviewer,
+                }
+                if approval is not None
+                else None
+            ),
             crop_mode=crop_mode,
             compression=compression,
             jpeg_quality=jpeg_quality,
@@ -513,6 +534,7 @@ def warp_saved_registration(
                     reference_path,
                     result_path,
                     registration_result_sha256,
+                    require_approval=require_approval,
                 )
                 pending_path.replace(plan.output_path)
                 result.output_path = plan.output_path
@@ -523,6 +545,7 @@ def warp_saved_registration(
             reference_path,
             result_path,
             registration_result_sha256,
+            require_approval=require_approval,
         )
         prior = prior_by_output.get(_path_key(plan.output_path))
         if resumed and prior is not None and isinstance(prior.get("provenance"), dict):
@@ -553,6 +576,8 @@ def _validate_export_inputs(
     reference_path: Path,
     result_path: Path,
     registration_result_sha256: str,
+    *,
+    require_approval: bool,
 ) -> None:
     _require_unchanged_input(
         plan.moving_path,
@@ -575,6 +600,14 @@ def _validate_export_inputs(
         registration_result_sha256
     ):
         raise ValueError("registration result changed during full-resolution export")
+    if require_approval:
+        from histopia.registration._approval import validate_registration_approval
+
+        approval = validate_registration_approval(result_path.parent)
+        if approval.registration_result_sha256 != registration_result_sha256:
+            raise ValueError(
+                "registration approval changed during full-resolution export"
+            )
 
 
 def _create_export_plan(
@@ -590,6 +623,7 @@ def _create_export_plan(
     reference_bbox: tuple[int, int, int, int],
     reference_identity: dict[str, Any],
     registration_result_sha256: str,
+    registration_approval: dict[str, str] | None,
     crop_mode: str,
     compression: str,
     jpeg_quality: int,
@@ -649,6 +683,7 @@ def _create_export_plan(
         "schema_version": 1,
         "algorithm": "histopia-full-resolution-mapim-v2",
         "registration_result_sha256": registration_result_sha256,
+        "registration_approval": registration_approval,
         "source": _file_identity(moving_path),
         "reference": reference_identity,
         "thumbnail_transform": matrix.tolist(),

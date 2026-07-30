@@ -20,18 +20,18 @@ and interactive 3D reconstruction across tissue sections.
 ## Installation
 
 ```bash
-pip install "histopia @ git+https://github.com/oncologylab/histopia.git@main"
+pip install histopia
 ```
 
 Install only the workflow dependencies you need:
 
 ```bash
-pip install "histopia[registration,wsi] @ git+https://github.com/oncologylab/histopia.git@main"
-pip install "histopia[semantic] @ git+https://github.com/oncologylab/histopia.git@main"
-pip install "histopia[topology] @ git+https://github.com/oncologylab/histopia.git@main"
-pip install "histopia[stain] @ git+https://github.com/oncologylab/histopia.git@main"
-pip install "histopia[uni2h] @ git+https://github.com/oncologylab/histopia.git@main"
-pip install "histopia[qupath] @ git+https://github.com/oncologylab/histopia.git@main"
+pip install "histopia[registration,wsi]"
+pip install "histopia[semantic]"
+pip install "histopia[topology]"
+pip install "histopia[stain]"
+pip install "histopia[uni2h]"
+pip install "histopia[qupath]"
 ```
 
 Exact validation environments use the checked-in constraint files described in
@@ -49,8 +49,8 @@ Exact validation environments use the checked-in constraint files described in
 - **Stain profiling:** source-space relative optical density for H-DAB,
   Sirius Red, PAS, and Alcian Blue with guarded background correction.
 - **Visualization:** interactive 3D histology, semantic, and stain stacks with
-  quantitative QC, linked ROI probes, and adjacent-section correspondence
-  links.
+  quantitative QC, linked ROI probes, adjacent-section correspondence links,
+  and approval-bound native-resolution WSI focus views.
 - **QuPath:** extension-launched registration and semantic jobs, fail-closed
   workflow integrity audits, compact checksummed GeoJSON regions, dynamic K
   selection, and native WSI coordinates.
@@ -132,4 +132,4 @@ clinical use, cell-level correspondence, or final OME metadata conformance.
 
 ## License
 
-The license is pending. See `LICENSE` for the current placeholder.
+Histopia is distributed under the BSD 3-Clause License. See `LICENSE`.

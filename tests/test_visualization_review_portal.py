@@ -421,6 +421,10 @@ def test_workflow_review_builds_one_fixed_stage_hub(
         in (output / "decisions" / "review-decisions.js").read_text()
     )
     assert (
+        "/api/reviews/access"
+        in (output / "decisions" / "review-decisions.js").read_text()
+    )
+    assert (
         "Upstream rebuild required"
         in (output / "decisions" / "review-decisions.js").read_text()
     )

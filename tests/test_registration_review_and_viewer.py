@@ -550,6 +550,7 @@ def test_order_review_builds_fixed_height_fingerprinted_grid(tmp_path: Path) -> 
         json.dumps(
             {
                 "approved": False,
+                "algorithm": "completed-registration-order-v1",
                 "fingerprint": "abc123",
                 "objective": 0.0,
                 "runner_up_objective": None,
@@ -578,13 +579,14 @@ def test_order_review_builds_fixed_height_fingerprinted_grid(tmp_path: Path) -> 
     )
 
     manifest = json.loads((index.parent / "manifest.json").read_text())
+    script = (index.parent / "order-review.js").read_text()
+    assert manifest["algorithm"] == "completed-registration-order-v1"
     assert manifest["fingerprint"] == "abc123"
     assert manifest["slides"][0]["fixed"] is True
     assert manifest["physical_area_continuity"]["review_recommended"] is True
-    assert (
-        "area continuity review"
-        in (index.parent / "order-review.js").read_text().lower()
-    )
+    assert "area continuity review" in script.lower()
+    assert "Completed registration order" in script
+    assert "value == null" in script
     assert "overflow:hidden" in (index.parent / "order-review.css").read_text()
     assert (index.parent / "manifest-data.js").is_file()
     assert "manifest-data.js" in index.read_text()

@@ -34,6 +34,20 @@ def test_browser_test_extra_contains_its_test_runner() -> None:
     )
 
 
+def test_release_metadata_is_consistent() -> None:
+    metadata = tomllib.loads(Path("pyproject.toml").read_text())
+    init = Path("src/histopia/__init__.py").read_text()
+    license_text = Path("LICENSE").read_text()
+
+    assert metadata["project"]["version"] == "0.1.0"
+    assert '__version__: Final[str] = "0.1.0"' in init
+    assert metadata["project"]["license"] == {"file": "LICENSE"}
+    assert "BSD 3-Clause License" in license_text
+    assert (
+        "License :: OSI Approved :: BSD License" in metadata["project"]["classifiers"]
+    )
+
+
 def test_exact_versions_are_not_duplicated_in_extras() -> None:
     metadata = tomllib.loads(Path("pyproject.toml").read_text())
     extras = metadata["project"]["optional-dependencies"]

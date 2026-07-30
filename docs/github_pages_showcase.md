@@ -11,13 +11,34 @@ histopia-visualize showcase \
     --mouse sample-b
 ```
 
+An approved sparse native-resolution subset can be embedded in the same
+artifact:
+
+```bash
+histopia-visualize showcase \
+    /path/to/generated/viewer/histopia \
+    /path/to/new/showcase \
+    --mouse sample-a \
+    --review-config /path/to/review-server.json \
+    --wsi-section sample-a=001 \
+    --wsi-section sample-a=009 \
+    --wsi-section sample-a=017 \
+    --max-bytes 943718400
+```
+
+The WSI exporter verifies the sealed registration and full-resolution export
+fingerprints, omits all-white tiles, inventories every retained tile, and
+fails before exceeding the configured byte budget. The default budget is
+900 MiB. Only explicitly selected sections are embedded; other sections keep
+their compact overview textures.
+
 Repeat `--mouse` in the desired browser order. The exporter copies only the
 selected mice, rejects duplicate or local absolute paths, refuses unapproved
 semantic or stain results, and writes:
 
 - the browser entry point, JavaScript, CSS, and selected static textures;
-- a pinned Three.js runtime and its license, so the viewer has no CDN or
-  third-party runtime request;
+- pinned Three.js and OpenSeadragon runtimes with their licenses, so the
+  viewer has no CDN or third-party runtime request;
 - a selected-cohort `manifest.json`;
 - `.nojekyll` for static hosting; and
 - `showcase.json`, which records semantic and stain fingerprints plus the
@@ -41,6 +62,12 @@ The viewer runtime is pinned to Three.js 0.170.0. Histopia verifies the
 packaged runtime checksums during every build, records the version in
 `build-report.json`, and includes the runtime files in the static artifact
 inventory.
+
+The native-resolution focus viewer uses locally vendored OpenSeadragon 6.0.2.
+It supports pan, wheel or pinch zoom, section stepping, fit-to-tissue, mask
+overlay, and registered-section comparison. Analytical overlays retain their
+native patch or map resolution instead of being presented as scanner-resolution
+measurements.
 
 Rendering is demand-driven. The viewer redraws while sections load and while
 the camera is moving, then stops requesting animation frames when the scene is

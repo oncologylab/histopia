@@ -506,7 +506,8 @@ histopia-visualize serve viewer-root/ \
     "example": {
       "registration": "/path/to/registration-run",
       "semantic": "/path/to/semantic-run",
-      "stain": "/path/to/stain-run"
+      "stain": "/path/to/stain-run",
+      "registered_wsi": "/path/to/approved-registered-wsi"
     }
   }
 }
@@ -517,6 +518,21 @@ kept in browser session storage. It is never written into generated viewer
 assets. The server denies unauthenticated and cross-origin decision requests,
 and each accepted decision delegates to the package's existing artifact-bound
 approval validation.
+
+For a deliberately open review deployment, the shared key can be disabled:
+
+```bash
+histopia-visualize serve viewer-root/ \
+  --require-route histopia \
+  --require-route review \
+  --review-config review-server.json \
+  --public-review-write
+```
+
+This mode is opt-in because anyone who can reach the server can submit
+same-origin review records and exact approvals. Reviewer identity, notes,
+artifact fingerprints, feedback completeness, and all scientific validation
+gates remain required. Cross-origin requests remain denied.
 
 Mask, section-order, and registered-stack pages provide per-slide
 Accept/Hold/Reject decisions, structured issue labels, reviewer comments, and
@@ -529,8 +545,17 @@ stale labels.
 When feedback storage is configured, website approval of masks, order, or the
 registered stack requires a current Accept decision for every displayed slide.
 Any unreviewed, Hold, or Reject record keeps that stage open. This requirement
-applies to the authenticated website workflow; it does not rewrite historical
+applies to the website workflow; it does not rewrite historical
 approval files or silently change the standalone command-line approval API.
+
+When `registered_wsi` points to an approval-bound
+`full_resolution_warps.json`, clicking an available section opens a tiled
+native-resolution focus view. Mask review uses source WSI plus the accepted
+mask, alignment review layers the selected registered section over the
+reference, and the 3D atlas returns to the same camera and visibility state
+when focus closes. Sections without an approved export retain the normal
+overview behavior. Semantic patches and stain maps remain displayed at their
+recorded analytical resolution even when the histology is sharper.
 
 Feedback is reusable without depending on the website:
 
@@ -627,6 +652,19 @@ The performance record reports `compute_backend = "cpu"` alongside the worker,
 effective OpenCV, and libvips controls. GPU, CPU, and Apple MPS selection is
 available for the separate UNI2-h feature-extraction stage.
 
+Completed runs created before section-order review manifests can be made
+reviewable without recomputing or approving them:
+
+```bash
+histopia-register --prepare-completed-review /path/to/completed-run
+```
+
+The command preserves the exact order already used by the saved transforms and
+writes an unapproved schema-3 order review bound to the registration-result
+bytes and every mask fingerprint. It refuses approved runs, mismatched masks,
+changed results, and conflicting order manifests. Review masks, order, and the
+registered stack normally before granting approval.
+
 After reviewing the completed mask, order, and registration views, seal the
 exact artifacts without recomputing unchanged transforms:
 
@@ -702,6 +740,9 @@ from the scanner content bounds saved during registration. Each completed file
 is written atomically and recorded in `full_resolution_warps.json` with a
 fingerprint of the registration result, source/reference file identities,
 transform, non-rigid displacement, crop, writer settings, and output identity.
+Saved-run export requires a current `registration_approval.json`; a changed
+result, mask review, order review, or approval digest fails before output is
+accepted.
 An existing TIFF is reused only when that complete request still matches and
 the file remains readable with the expected canvas. Outputs created by an
 older summary schema, changed inputs, or changed settings require

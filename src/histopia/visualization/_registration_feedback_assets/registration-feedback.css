@@ -65,6 +65,7 @@ body > main {
   gap: 5px;
   margin-bottom: 10px;
 }
+#registration-feedback .access[hidden] { display: none; }
 #registration-feedback .decisions,
 #registration-feedback .navigation {
   display: grid;

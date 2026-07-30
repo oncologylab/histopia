@@ -9,6 +9,7 @@ from histopia.registration._approval import (
     approve_mask_review,
     approve_registration_run,
     approve_section_order,
+    prepare_completed_registration_review,
     validate_registration_approval,
 )
 
@@ -82,6 +83,49 @@ def test_registration_performance_is_outside_approval_seal(tmp_path: Path) -> No
     performance_path.write_text('{"observational_only":true,"elapsed_seconds":99}')
 
     assert validate_registration_approval(tmp_path) == first == approved
+
+
+def test_prepare_completed_registration_review_is_fail_closed(
+    tmp_path: Path,
+) -> None:
+    _write_run(tmp_path)
+    order_path = tmp_path / "section_order_review.json"
+    order_path.unlink()
+
+    prepared = prepare_completed_registration_review(tmp_path)
+    payload = json.loads(prepared.read_text())
+
+    assert payload["algorithm"] == "completed-registration-order-v1"
+    assert payload["approved"] is False
+    assert len(payload["fingerprint"]) == 64
+    assert [row["slide"] for row in payload["slides"]] == ["HE.ndpi", "CK19.ndpi"]
+    assert all(row["fixed"] for row in payload["slides"])
+    assert payload["source_registration_result_sha256"]
+    assert prepare_completed_registration_review(tmp_path) == prepared
+
+    result_path = tmp_path / "registration_result.json"
+    result = json.loads(result_path.read_text())
+    result["warnings"] = ["changed after review preparation"]
+    result_path.write_text(json.dumps(result))
+    with pytest.raises(ValueError, match="source registration result is stale"):
+        approve_registration_run(
+            tmp_path,
+            reviewer="Test Reviewer",
+            notes="Reviewed.",
+        )
+
+
+def test_prepare_completed_registration_review_rejects_mask_mismatch(
+    tmp_path: Path,
+) -> None:
+    _write_run(tmp_path)
+    (tmp_path / "section_order_review.json").unlink()
+    mask = json.loads((tmp_path / "mask_review.json").read_text())
+    mask["slides"][0]["thumbnail_sha256"] = "changed"
+    (tmp_path / "mask_review.json").write_text(json.dumps(mask))
+
+    with pytest.raises(ValueError, match="mask review fingerprint mismatch"):
+        prepare_completed_registration_review(tmp_path)
 
 
 def test_approve_registration_run_rejects_timestamp_without_timezone(

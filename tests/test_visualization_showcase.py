@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 import json
+from io import BytesIO
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 from histopia.visualization import export_static_showcase
 from histopia.visualization._viewer import _write_viewer_runtime
+from histopia.visualization._wsi_tiles import (
+    WsiLayer,
+    WsiLevel,
+    WsiSection,
+    WsiTileService,
+)
 
 
 def _write_viewer(root: Path) -> None:
@@ -86,6 +94,8 @@ def test_export_static_showcase_copies_only_selected_mice(tmp_path: Path) -> Non
     assert not (output / "assets" / "4943").exists()
     assert (output / ".nojekyll").exists()
     assert (output / "vendor" / "three.module.min.js").is_file()
+    assert (output / "vendor" / "openseadragon.min.js").is_file()
+    assert (output / "focus-viewer.js").is_file()
     inventory = json.loads((output / "showcase.json").read_text())
     assert inventory["mouse_ids"] == ["5997", "4257"]
     assert inventory["semantic_results"] == {
@@ -110,6 +120,7 @@ def test_export_static_showcase_copies_only_selected_mice(tmp_path: Path) -> Non
     }
     assert "manifest.json" in inventory["files"]
     assert "vendor/three.module.min.js" in inventory["files"]
+    assert inventory["wsi_sections"] == {}
     assert all(
         len(metadata["sha256"]) == 64 for metadata in inventory["files"].values()
     )
@@ -201,3 +212,107 @@ def test_export_static_showcase_requires_matching_stain_approval(
 
     with pytest.raises(ValueError, match="stain showcase result"):
         export_static_showcase(source, tmp_path / "showcase", "5997")
+
+
+def test_export_static_showcase_embeds_sparse_approved_wsi_tiles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "source"
+    output = tmp_path / "showcase"
+    _write_viewer(source)
+    run = tmp_path / "run"
+    registered = tmp_path / "registered"
+    run.mkdir()
+    registered.mkdir()
+    config = tmp_path / "review-config.json"
+    config.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "cohorts": {
+                    "5997": {
+                        "registration": str(run),
+                        "registered_wsi": str(registered),
+                    }
+                },
+            }
+        )
+    )
+    digest = "b" * 64
+    layer = WsiLayer(
+        name="registered",
+        path=registered / "slide.registered.tiff",
+        digest=digest,
+        levels=(WsiLevel(512, 256, 0),),
+        tile_size=256,
+        microns_per_pixel=0.5,
+    )
+    section = WsiSection(
+        cohort="5997",
+        section="001",
+        slide="slide.ndpi",
+        label="H&E",
+        reference=True,
+        layers={"registered": layer},
+    )
+
+    class FakeService:
+        def section(self, cohort: str, section_id: str) -> WsiSection:
+            assert (cohort, section_id) == ("5997", "001")
+            return section
+
+        def metadata(self, cohort: str, section_id: str) -> dict[str, object]:
+            assert (cohort, section_id) == ("5997", "001")
+            return {
+                "schema_version": 1,
+                "cohort": cohort,
+                "section": section_id,
+                "layers": {
+                    "registered": {
+                        "digest": digest,
+                        "tile_size": 256,
+                        "width": 512,
+                        "height": 256,
+                        "levels": [{"width": 512, "height": 256}],
+                        "microns_per_pixel": 0.5,
+                        "format": "jpg",
+                    }
+                },
+            }
+
+        def render_tile(self, *args):
+            x = args[-2]
+            image = Image.new("RGB", (256, 256), "white" if x else "red")
+            encoded = BytesIO()
+            image.save(encoded, "JPEG")
+            return encoded.getvalue(), "image/jpeg", '"tile"'
+
+    monkeypatch.setattr(
+        WsiTileService,
+        "from_runs",
+        classmethod(lambda cls, runs: FakeService()),
+    )
+
+    export_static_showcase(
+        source,
+        output,
+        "5997",
+        review_config=config,
+        wsi_sections={"5997": ("001",)},
+        max_bytes=20 * 1024 * 1024,
+    )
+
+    metadata = json.loads(
+        (output / "wsi" / "5997" / "001" / "metadata.json").read_text()
+    )
+    layer_metadata = metadata["layers"]["registered"]
+    assert layer_metadata["existing_tiles"] == ["0/0/0"]
+    assert (output / "wsi" / "5997" / "001" / "registered").is_dir()
+    manifest = json.loads((output / "manifest.json").read_text())
+    assert manifest["mice"][0]["native_resolution"] == {
+        "sections": ["001"],
+        "metadata_template": "wsi/{cohort}/{section}/metadata.json",
+    }
+    inventory = json.loads((output / "showcase.json").read_text())
+    assert inventory["wsi_sections"] == {"5997": ["001"]}

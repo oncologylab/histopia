@@ -206,6 +206,7 @@ def build_workflow_review(
     semantic_runs: dict[str, Path | str] | None = None,
     stain_runs: dict[str, Path | str] | None = None,
     topology_runs: dict[str, Path | str] | None = None,
+    registered_wsi: dict[str, Path | str] | None = None,
     cohort_qc: Path | str | None = None,
     workers: int = 1,
 ) -> Path:
@@ -214,9 +215,10 @@ def build_workflow_review(
     semantic_runs = semantic_runs or {}
     stain_runs = stain_runs or {}
     topology_runs = topology_runs or {}
-    unknown = (set(semantic_runs) | set(stain_runs) | set(topology_runs)) - set(
-        registration_runs
-    )
+    registered_wsi = registered_wsi or {}
+    unknown = (
+        set(semantic_runs) | set(stain_runs) | set(topology_runs) | set(registered_wsi)
+    ) - set(registration_runs)
     if unknown:
         raise ValueError(
             "review inputs have no matching registration: " + ", ".join(sorted(unknown))
@@ -251,6 +253,11 @@ def build_workflow_review(
                 name: stain_runs[name] for name in completed if name in stain_runs
             },
             cohort_qc=cohort_qc,
+            registered_wsi={
+                name: registered_wsi[name]
+                for name in completed
+                if name in registered_wsi
+            },
             workers=workers,
             require_approvals=False,
         )
@@ -567,9 +574,11 @@ _DECISIONS_HTML = """<!doctype html>
 <body>
   <header>
     <strong>Review decisions</strong>
-    <label for="access-key">Access key</label>
-    <input id="access-key" type="password" autocomplete="current-password">
-    <button id="connect" type="button">Connect</button>
+    <div id="review-access">
+      <label for="access-key">Access key</label>
+      <input id="access-key" type="password" autocomplete="current-password">
+      <button id="connect" type="button">Connect</button>
+    </div>
     <span id="connection" role="status">Locked</span>
   </header>
   <main>
@@ -612,6 +621,8 @@ header{display:flex;align-items:center;gap:10px;padding:0 16px;background:#fff;
 border-bottom:1px solid #ccd1d1}
 header strong{margin-right:auto}
 header label{font-size:12px;color:#566573}
+#review-access{display:flex;align-items:center;gap:10px}
+#review-access[hidden]{display:none}
 input,textarea,select,button{font:inherit}
 input,textarea,select{border:1px solid #aeb6bf;background:#fff;padding:7px 9px}
 #access-key{width:min(260px,30vw)}
@@ -662,6 +673,7 @@ _DECISIONS_JS = """
 const keyInput=document.querySelector("#access-key");
 const connect=document.querySelector("#connect");
 const connection=document.querySelector("#connection");
+const accessControls=document.querySelector("#review-access");
 const cohortSelect=document.querySelector("#cohort");
 const stages=document.querySelector("#stages");
 const form=document.querySelector("#decision");
@@ -677,17 +689,37 @@ const labels={mask:"Tissue masks",order:"Section order",
   topology:"Semantic topology",stain:"Stain"};
 let registry=null;
 let selectedStage=null;
+let authenticationRequired=true;
 keyInput.value=sessionStorage.getItem("histopiaReviewKey")||"";
 reviewer.value=sessionStorage.getItem("histopiaReviewer")||"";
 function headers(){
-  return {"Authorization":`Bearer ${keyInput.value}`,"Content-Type":"application/json"};
+  const values={"Content-Type":"application/json"};
+  if(authenticationRequired)values.Authorization=`Bearer ${keyInput.value}`;
+  return values;
+}
+async function configureAccess(){
+  const response=await fetch("/api/reviews/access",{cache:"no-store"});
+  const payload=await response.json();
+  if(!response.ok)throw new Error(payload.error||"Review service unavailable");
+  if(!payload.review_configured)throw new Error("Review service unavailable");
+  authenticationRequired=Boolean(payload.authentication_required);
+  accessControls.hidden=!authenticationRequired;
+  if(!authenticationRequired){
+    connection.textContent="Ready";
+    connection.style.color="#117864";
+    await load();
+  }else if(keyInput.value){
+    await load();
+  }
 }
 async function load(){
   message.textContent="";
   const response=await fetch("/api/reviews",{headers:headers(),cache:"no-store"});
   if(!response.ok)throw new Error((await response.json()).error||"Unable to connect");
   registry=await response.json();
-  sessionStorage.setItem("histopiaReviewKey",keyInput.value);
+  if(authenticationRequired){
+    sessionStorage.setItem("histopiaReviewKey",keyInput.value);
+  }
   connection.textContent="Connected";
   connection.style.color="#117864";
   cohortSelect.disabled=false;
@@ -787,5 +819,9 @@ form.addEventListener("submit",async event=>{
     renderDecision();
   }
 });
-if(keyInput.value)load().catch(()=>{});
+configureAccess().catch(error=>{
+  connection.textContent="Unavailable";
+  connection.style.color="#7b241c";
+  message.textContent=error.message;
+});
 """

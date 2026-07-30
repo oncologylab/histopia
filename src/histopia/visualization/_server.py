@@ -14,6 +14,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from histopia.visualization._review_api import ReviewDecisionService
+from histopia.visualization._wsi_tiles import WsiTileCapacityError, WsiTileService
 
 _COMPRESSIBLE_SUFFIXES = frozenset(
     {
@@ -32,6 +33,18 @@ _MAX_GZIP_BYTES = 16 * 1024 * 1024
 _MIN_GZIP_BYTES = 512
 _MAX_API_BODY_BYTES = 16 * 1024
 _ROUTE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
+_WSI_METADATA_RE = re.compile(
+    r"/api/wsi/(?P<cohort>[A-Za-z0-9][A-Za-z0-9_.-]*)/"
+    r"(?P<section>[0-9]{3,6})"
+)
+_WSI_CATALOG_RE = re.compile(r"/api/wsi/(?P<cohort>[A-Za-z0-9][A-Za-z0-9_.-]*)")
+_WSI_TILE_RE = re.compile(
+    r"/api/wsi/(?P<cohort>[A-Za-z0-9][A-Za-z0-9_.-]*)/"
+    r"(?P<section>[0-9]{3,6})/"
+    r"(?P<layer>raw|registered|mask)/"
+    r"(?P<digest>[0-9a-f]{64})/"
+    r"(?P<level>[0-9]+)/(?P<x>[0-9]+)/(?P<y>[0-9]+)\.(?P<format>jpg|png)"
+)
 
 
 @lru_cache(maxsize=8)
@@ -55,6 +68,14 @@ class _ViewerRequestHandler(SimpleHTTPRequestHandler):
     def _review_token(self) -> str | None:
         return self.server.review_token  # type: ignore[attr-defined,no-any-return]
 
+    @property
+    def _public_review_write(self) -> bool:
+        return self.server.public_review_write  # type: ignore[attr-defined,no-any-return]
+
+    @property
+    def _wsi_tiles(self) -> WsiTileService | None:
+        return self.server.wsi_tiles  # type: ignore[attr-defined,no-any-return]
+
     def _redirect_root(self) -> bool:
         path = urlsplit(self.path).path
         if path == "/":
@@ -77,7 +98,11 @@ class _ViewerRequestHandler(SimpleHTTPRequestHandler):
         return True
 
     def do_GET(self) -> None:  # noqa: N802
-        if self._serve_health(head=False) or self._serve_review_api():
+        if (
+            self._serve_health(head=False)
+            or self._serve_review_api()
+            or self._serve_wsi_api()
+        ):
             return
         if not self._reject_hidden_path() and not self._redirect_root():
             super().do_GET()
@@ -138,6 +163,7 @@ class _ViewerRequestHandler(SimpleHTTPRequestHandler):
             "status": "ok" if all(routes.values()) else "degraded",
             "routes": {f"/{route}/": ready for route, ready in routes.items()},
             "review_api": self._review_service is not None,
+            "wsi_api": self._wsi_tiles is not None,
         }
         self._send_json(200 if all(routes.values()) else 503, payload, head=head)
         return True
@@ -145,11 +171,25 @@ class _ViewerRequestHandler(SimpleHTTPRequestHandler):
     def _serve_review_api(self) -> bool:
         parsed = urlsplit(self.path)
         if parsed.path not in {
+            "/api/reviews/access",
             "/api/reviews",
             "/api/reviews/feedback",
             "/api/reviews/feedback-summary",
         }:
             return False
+        if parsed.path == "/api/reviews/access":
+            if self._same_origin():
+                self._send_json(
+                    200,
+                    {
+                        "review_configured": self._review_service is not None,
+                        "authentication_required": (
+                            self._review_service is None
+                            or not self._public_review_write
+                        ),
+                    },
+                )
+            return True
         if not self._api_authorized():
             return True
         assert self._review_service is not None
@@ -169,14 +209,99 @@ class _ViewerRequestHandler(SimpleHTTPRequestHandler):
         self._send_json(200, payload)
         return True
 
+    def _serve_wsi_api(self) -> bool:
+        path = urlsplit(self.path).path
+        if not path.startswith("/api/wsi/"):
+            return False
+        catalog_match = _WSI_CATALOG_RE.fullmatch(path)
+        service = self._wsi_tiles
+        if service is None:
+            if catalog_match is not None:
+                self._send_json(
+                    200,
+                    {
+                        "schema_version": 1,
+                        "cohort": catalog_match.group("cohort"),
+                        "sections": [],
+                    },
+                )
+                return True
+            self._send_json(404, {"error": "WSI tiles are not configured"})
+            return True
+        if catalog_match is not None:
+            try:
+                payload = service.catalog(catalog_match.group("cohort"))
+            except FileNotFoundError as error:
+                self._send_json(404, {"error": str(error)})
+                return True
+            self._send_json(200, payload)
+            return True
+        metadata_match = _WSI_METADATA_RE.fullmatch(path)
+        if metadata_match is not None:
+            try:
+                payload = service.metadata(
+                    metadata_match.group("cohort"),
+                    metadata_match.group("section"),
+                )
+            except FileNotFoundError as error:
+                self._send_json(404, {"error": str(error)})
+                return True
+            self._send_json(200, payload)
+            return True
+        tile_match = _WSI_TILE_RE.fullmatch(path)
+        if tile_match is None:
+            self._send_json(404, {"error": "unknown WSI tile"})
+            return True
+        layer = tile_match.group("layer")
+        expected_format = "png" if layer == "mask" else "jpg"
+        if tile_match.group("format") != expected_format:
+            self._send_json(404, {"error": "invalid WSI tile format"})
+            return True
+        try:
+            payload, media_type, etag = service.render_tile(
+                tile_match.group("cohort"),
+                tile_match.group("section"),
+                layer,
+                tile_match.group("digest"),
+                int(tile_match.group("level")),
+                int(tile_match.group("x")),
+                int(tile_match.group("y")),
+            )
+        except FileNotFoundError as error:
+            self._send_json(404, {"error": str(error)})
+            return True
+        except WsiTileCapacityError as error:
+            self._send_json(
+                503,
+                {"error": str(error)},
+                extra_headers={"Retry-After": "1"},
+            )
+            return True
+        if _etag_matches(self.headers.get("If-None-Match", ""), etag):
+            self.send_response(304)
+            self.send_header("ETag", etag)
+            self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+            self.end_headers()
+            return True
+        self.send_response(200)
+        self.send_header("Content-Type", media_type)
+        self.send_header("Content-Length", str(len(payload)))
+        self.send_header("ETag", etag)
+        self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+        self.end_headers()
+        self.wfile.write(payload)
+        return True
+
     def _api_authorized(self) -> bool:
-        if self._review_service is None or self._review_token is None:
+        if self._review_service is None:
             self._send_json(404, {"error": "review decisions are not configured"})
             return False
-        origin = self.headers.get("Origin")
-        host = self.headers.get("Host")
-        if origin and (not host or urlsplit(origin).netloc != host):
-            self._send_json(403, {"error": "cross-origin review requests are denied"})
+        if not self._same_origin():
+            return False
+        if self._public_review_write:
+            return True
+        if self._review_token is None:
+            self._send_json(404, {"error": "review decisions are not configured"})
             return False
         supplied = self.headers.get("Authorization", "")
         if not supplied.startswith("Bearer ") or not hmac.compare_digest(
@@ -187,18 +312,29 @@ class _ViewerRequestHandler(SimpleHTTPRequestHandler):
             return False
         return True
 
+    def _same_origin(self) -> bool:
+        origin = self.headers.get("Origin")
+        host = self.headers.get("Host")
+        if origin and (not host or urlsplit(origin).netloc != host):
+            self._send_json(403, {"error": "cross-origin review requests are denied"})
+            return False
+        return True
+
     def _send_json(
         self,
         status: int,
         payload: dict[str, object],
         *,
         head: bool = False,
+        extra_headers: dict[str, str] | None = None,
     ) -> None:
         encoded = json.dumps(payload, separators=(",", ":")).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(encoded)))
         self.send_header("Cache-Control", "no-store")
+        for name, value in (extra_headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
         if not head:
             self.wfile.write(encoded)
@@ -300,6 +436,7 @@ def create_viewer_server(
     required_routes: tuple[str, ...] = ("histopia",),
     review_config: Path | str | None = None,
     review_token: str | None = None,
+    public_review_write: bool = False,
 ) -> ThreadingHTTPServer:
     """Create a server rooted above stable viewer endpoints."""
 
@@ -320,7 +457,11 @@ def create_viewer_server(
         if review_config is not None
         else None
     )
-    if review_service is not None:
+    wsi_runs = review_service.wsi_runs() if review_service is not None else {}
+    wsi_tiles = WsiTileService.from_runs(wsi_runs) if wsi_runs else None
+    if public_review_write and review_service is None:
+        raise ValueError("public review writes require a review configuration")
+    if review_service is not None and not public_review_write:
         review_token = (
             review_token or os.environ.get("HISTOPIA_REVIEW_TOKEN", "")
         ).strip()
@@ -334,6 +475,8 @@ def create_viewer_server(
     server.required_routes = required_routes  # type: ignore[attr-defined]
     server.review_service = review_service  # type: ignore[attr-defined]
     server.review_token = review_token  # type: ignore[attr-defined]
+    server.public_review_write = public_review_write  # type: ignore[attr-defined]
+    server.wsi_tiles = wsi_tiles  # type: ignore[attr-defined]
     return server
 
 
@@ -345,6 +488,7 @@ def serve_viewer(
     required_routes: tuple[str, ...] = ("histopia",),
     review_config: Path | str | None = None,
     review_token: str | None = None,
+    public_review_write: bool = False,
 ) -> None:
     """Serve a generated viewer until interrupted."""
 
@@ -355,6 +499,7 @@ def serve_viewer(
         required_routes=required_routes,
         review_config=review_config,
         review_token=review_token,
+        public_review_write=public_review_write,
     )
     endpoints = ", ".join(
         f"http://{bind}:{server.server_port}/{route}/" for route in required_routes

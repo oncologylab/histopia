@@ -1,4 +1,4 @@
-"""Authenticated web decisions for prepared Histopia review artifacts."""
+"""Web decisions for prepared Histopia review artifacts."""
 
 from __future__ import annotations
 
@@ -23,6 +23,7 @@ class ReviewRuns:
     semantic: Path | None = None
     topology: Path | None = None
     stain: Path | None = None
+    registered_wsi: Path | None = None
 
 
 class ReviewDecisionService:
@@ -85,6 +86,12 @@ class ReviewDecisionService:
                     config_path.parent,
                     required=False,
                 ),
+                registered_wsi=_configured_path(
+                    raw,
+                    "registered_wsi",
+                    config_path.parent,
+                    required=False,
+                ),
             )
         feedback_dir = payload.get("feedback_dir")
         if feedback_dir is not None and (
@@ -123,6 +130,15 @@ class ReviewDecisionService:
             "cohorts": [
                 self._cohort_status(name, runs) for name, runs in self._cohorts.items()
             ],
+        }
+
+    def wsi_runs(self) -> dict[str, tuple[Path, Path]]:
+        """Return private WSI bindings for server construction only."""
+
+        return {
+            cohort: (runs.registration, runs.registered_wsi)
+            for cohort, runs in self._cohorts.items()
+            if runs.registered_wsi is not None
         }
 
     def approve(self, request: dict[str, object]) -> dict[str, object]:

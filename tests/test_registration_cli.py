@@ -129,6 +129,34 @@ def test_nonstaged_registration_preserves_strict_failure(
         _cli.main(["--config", str(config)])
 
 
+def test_prepare_completed_review_reports_pending_order(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+) -> None:
+    order = tmp_path / "section_order_review.json"
+    order.write_text(
+        json.dumps(
+            {
+                "fingerprint": "prepared-fingerprint",
+                "slides": [{"slide": "HE.ndpi"}],
+            }
+        )
+    )
+    monkeypatch.setattr(
+        "histopia.registration._approval.prepare_completed_registration_review",
+        lambda run: order,
+    )
+
+    result = _cli.main(["--prepare-completed-review", str(tmp_path)])
+
+    assert result == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "review_required"
+    assert payload["stage"] == "order"
+    assert payload["slide_count"] == 1
+
+
 def test_registration_viewer_passes_worker_count(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:

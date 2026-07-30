@@ -16,6 +16,7 @@ from histopia.visualization._viewer import (
     _VIEWER_JS,
     _write_viewer_runtime,
 )
+from histopia.visualization._wsi_tiles import WsiTileService
 
 
 @pytest.mark.browser
@@ -263,6 +264,134 @@ def test_viewer_fits_desktop_and_ignores_stale_mouse_loads(tmp_path: Path) -> No
             screenshot = page.locator("canvas").screenshot()
             pixels = np.asarray(Image.open(io.BytesIO(screenshot)).convert("RGB"))
             assert np.ptp(pixels.reshape(-1, 3), axis=0).max() > 20
+            browser.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+    assert errors == []
+
+
+@pytest.mark.browser
+def test_viewer_opens_native_resolution_focus_without_losing_3d_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    playwright = pytest.importorskip("playwright.sync_api")
+    root = tmp_path / "viewer"
+    site = root / "histopia"
+    assets = site / "assets"
+    assets.mkdir(parents=True)
+    mouse = _browser_mouse(assets, "mouse", 1, (45, 115, 175))
+    mouse["native_resolution"] = {"sections": ["001"]}
+    (site / "manifest.json").write_text(
+        json.dumps({"schema_version": 1, "mice": [mouse]})
+    )
+    (site / "index.html").write_text(_INDEX_HTML)
+    (site / "viewer.js").write_text(_VIEWER_JS)
+    (site / "styles.css").write_text(_STYLES_CSS)
+    _write_viewer_runtime(site)
+    run = tmp_path / "run"
+    registered = tmp_path / "registered"
+    run.mkdir()
+    registered.mkdir()
+    config = tmp_path / "review-config.json"
+    config.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "cohorts": {
+                    "mouse": {
+                        "registration": str(run),
+                        "registered_wsi": str(registered),
+                    }
+                },
+            }
+        )
+    )
+    tile_image = np.full((256, 512, 3), (245, 245, 242), dtype=np.uint8)
+    tile_image[25:230, 55:455] = (170, 72, 82)
+    encoded = io.BytesIO()
+    Image.fromarray(tile_image).save(encoded, "JPEG", quality=90)
+    tile = encoded.getvalue()
+    digest = "c" * 64
+
+    class FakeTiles:
+        def metadata(self, cohort: str, section: str) -> dict[str, object]:
+            assert (cohort, section) == ("mouse", "001")
+            return {
+                "schema_version": 1,
+                "cohort": cohort,
+                "section": section,
+                "slide": "mouse-1.ndpi",
+                "label": "Section 1",
+                "reference": True,
+                "layers": {
+                    "registered": {
+                        "digest": digest,
+                        "tile_size": 512,
+                        "width": 512,
+                        "height": 256,
+                        "levels": [{"width": 512, "height": 256}],
+                        "microns_per_pixel": 0.5,
+                        "format": "jpg",
+                    }
+                },
+            }
+
+        def render_tile(self, *args):
+            assert args == ("mouse", "001", "registered", digest, 0, 0, 0)
+            return tile, "image/jpeg", f'"{digest}-0-0-0"'
+
+    monkeypatch.setattr(
+        WsiTileService,
+        "from_runs",
+        classmethod(lambda cls, runs: FakeTiles()),
+    )
+    server = create_viewer_server(
+        root,
+        bind="127.0.0.1",
+        port=0,
+        review_config=config,
+        public_review_write=True,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    errors: list[str] = []
+    try:
+        with playwright.sync_playwright() as runtime:
+            browser = runtime.chromium.launch(headless=True)
+            page = browser.new_page(viewport={"width": 1920, "height": 1080})
+            page.on(
+                "console",
+                lambda message: (
+                    errors.append(message.text) if message.type == "error" else None
+                ),
+            )
+            page.goto(
+                f"http://127.0.0.1:{server.server_port}/histopia/",
+                wait_until="networkidle",
+            )
+            page.locator("#sections li span").click()
+            focus = page.locator(".histopia-focus-host")
+            focus.wait_for(state="visible")
+            page.wait_for_function(
+                """() => document.querySelector(
+                  '.histopia-focus-status span').textContent.includes('512')"""
+            )
+            assert focus.locator("strong").inner_text() == "001 Section 1"
+            assert "0.500 µm/px" in focus.locator(".histopia-focus-status").inner_text()
+            focus.locator('[data-action="fit"]').click()
+            focus_box = focus.bounding_box()
+            assert focus_box is not None
+            assert focus_box["x"] == pytest.approx(300, abs=1)
+            assert focus_box["width"] == pytest.approx(1620, abs=1)
+            image = focus.locator(".histopia-focus-canvas").screenshot()
+            pixels = np.asarray(Image.open(io.BytesIO(image)).convert("RGB"))
+            assert np.ptp(pixels.reshape(-1, 3), axis=0).max() > 40
+            focus.locator('[data-action="close"]').click()
+            assert focus.is_hidden()
+            assert page.locator("#viewport canvas").is_visible()
             browser.close()
     finally:
         server.shutdown()

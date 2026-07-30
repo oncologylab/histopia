@@ -32,8 +32,8 @@ const labelNames = {
 };
 feedbackPanel.innerHTML = `
   <h2 id="feedback-title">Slide review</h2>
-  <span id="feedback-status" class="feedback-status">Connect to load feedback</span>
-  <div class="access">
+  <span id="feedback-status" class="feedback-status">Loading feedback</span>
+  <div id="feedback-access" class="access">
     <input id="feedback-key" type="password" placeholder="Access key"
       autocomplete="current-password">
     <button id="feedback-connect" type="button">Connect</button>
@@ -64,6 +64,7 @@ feedbackPanel.innerHTML = `
 const feedbackElements = {
   title: document.querySelector("#feedback-title"),
   status: document.querySelector("#feedback-status"),
+  access: document.querySelector("#feedback-access"),
   key: document.querySelector("#feedback-key"),
   connect: document.querySelector("#feedback-connect"),
   labels: document.querySelector("#feedback-labels"),
@@ -84,16 +85,39 @@ cards.forEach((card, index) => {
 let feedback = null;
 let currentSlideId = reviewData.slides[0].slide;
 let currentDecision = "";
+let authenticationRequired = true;
 feedbackElements.key.value = sessionStorage.getItem("histopiaReviewKey") || "";
 feedbackElements.reviewer.value = sessionStorage.getItem("histopiaReviewer") || "";
 feedbackElements.order.hidden = feedbackConfig.stage !== "order";
 feedbackElements.suggestedOrder.max = String(reviewData.slides.length);
 
 function authorizationHeaders() {
-  return {
-    "Authorization": `Bearer ${feedbackElements.key.value}`,
-    "Content-Type": "application/json",
-  };
+  const headers = {"Content-Type": "application/json"};
+  if (authenticationRequired) {
+    headers.Authorization = `Bearer ${feedbackElements.key.value}`;
+  }
+  return headers;
+}
+
+async function configureFeedbackAccess() {
+  if (location.protocol === "file:") {
+    feedbackElements.status.textContent = "Static review";
+    return;
+  }
+  const response = await fetch("/api/reviews/access", {cache: "no-store"});
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error || "Review service unavailable");
+  if (!payload.review_configured) {
+    feedbackElements.status.textContent = "Feedback unavailable";
+    return;
+  }
+  authenticationRequired = Boolean(payload.authentication_required);
+  feedbackElements.access.hidden = !authenticationRequired;
+  if (!authenticationRequired || feedbackElements.key.value) {
+    await connectFeedback();
+  } else {
+    feedbackElements.status.textContent = "Connect to load feedback";
+  }
 }
 
 function currentRecord() {
@@ -152,7 +176,9 @@ async function connectFeedback() {
     throw new Error("Displayed review is stale; rebuild it before recording feedback");
   }
   feedback = payload;
-  sessionStorage.setItem("histopiaReviewKey", feedbackElements.key.value);
+  if (authenticationRequired) {
+    sessionStorage.setItem("histopiaReviewKey", feedbackElements.key.value);
+  }
   feedbackElements.labels.querySelectorAll("label").forEach((label) => label.remove());
   for (const labelId of feedback.labels) {
     const label = document.createElement("label");
@@ -252,4 +278,7 @@ feedbackElements.save.addEventListener("click", async () => {
   }
 });
 selectSlide(currentSlideId);
-if (feedbackElements.key.value) connectFeedback().catch(() => {});
+configureFeedbackAccess().catch((error) => {
+  feedbackElements.status.textContent = "Feedback unavailable";
+  feedbackElements.message.textContent = error.message;
+});

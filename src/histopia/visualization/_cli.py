@@ -18,12 +18,17 @@ def build_section_viewer(*args, **kwargs) -> Path:
     return build(*args, **kwargs)
 
 
-def export_static_showcase(source: Path, output: Path, mice: list[str]) -> Path:
+def export_static_showcase(
+    source: Path,
+    output: Path,
+    mice: list[str],
+    **kwargs,
+) -> Path:
     """Lazily dispatch static showcase export."""
 
     from histopia.visualization._showcase import export_static_showcase as export
 
-    return export(source, output, mice)
+    return export(source, output, mice, **kwargs)
 
 
 def export_registration_qc_showcase(
@@ -47,6 +52,7 @@ def serve_viewer(
     port: int,
     required_routes: tuple[str, ...],
     review_config: Path | None,
+    public_review_write: bool,
 ) -> None:
     """Lazily dispatch the static viewer server."""
 
@@ -58,6 +64,7 @@ def serve_viewer(
         port=port,
         required_routes=required_routes,
         review_config=review_config,
+        public_review_write=public_review_write,
     )
 
 
@@ -76,6 +83,15 @@ def _named_path(value: str) -> tuple[str, Path]:
     if not name or not raw_path:
         raise argparse.ArgumentTypeError("expected non-empty NAME=PATH")
     return name, Path(raw_path)
+
+
+def _named_text(value: str) -> tuple[str, str]:
+    if "=" not in value:
+        raise argparse.ArgumentTypeError("expected NAME=VALUE")
+    name, text = value.split("=", 1)
+    if not name or not text:
+        raise argparse.ArgumentTypeError("expected non-empty NAME=VALUE")
+    return name, text
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -101,13 +117,28 @@ def _main(argv: list[str] | None = None) -> int:
     serve.add_argument(
         "--review-config",
         type=Path,
-        help="Local path registry enabling authenticated web approvals.",
+        help="Local path registry enabling fingerprint-bound web approvals.",
+    )
+    serve.add_argument(
+        "--public-review-write",
+        action="store_true",
+        help=(
+            "Allow same-origin review writes without an access key; "
+            "authentication remains required by default."
+        ),
     )
     build = commands.add_parser("build", help="Build the stable viewer endpoint.")
     build.add_argument("root", type=Path, help="Viewer root containing histopia/.")
     build.add_argument("--run", type=_named_path, action="append", required=True)
     build.add_argument("--semantic-run", type=_named_path, action="append", default=[])
     build.add_argument("--stain-run", type=_named_path, action="append", default=[])
+    build.add_argument(
+        "--registered-wsi",
+        type=_named_path,
+        action="append",
+        default=[],
+        help="Approved full-resolution export as NAME=PATH; repeat as needed.",
+    )
     build.add_argument("--cohort-qc", type=Path)
     build.add_argument(
         "--include-unapproved",
@@ -186,6 +217,13 @@ def _main(argv: list[str] | None = None) -> int:
         action="append",
         default=[],
     )
+    workflow_review.add_argument(
+        "--registered-wsi",
+        type=_named_path,
+        action="append",
+        default=[],
+        help="Approved full-resolution export as NAME=PATH; repeat as needed.",
+    )
     workflow_review.add_argument("--cohort-qc", type=Path)
     workflow_review.add_argument("--workers", type=int, default=1)
     stain_review = commands.add_parser(
@@ -238,6 +276,25 @@ def _main(argv: list[str] | None = None) -> int:
         action="append",
         required=True,
         help="Exact viewer mouse ID; repeat to export a cohort.",
+    )
+    showcase.add_argument(
+        "--review-config",
+        type=Path,
+        help="Local review registry required for native-resolution static tiles.",
+    )
+    showcase.add_argument(
+        "--wsi-section",
+        type=_named_text,
+        action="append",
+        default=[],
+        metavar="MOUSE=SECTION",
+        help="Embed one approved three-digit WSI section; repeat as needed.",
+    )
+    showcase.add_argument(
+        "--max-bytes",
+        type=int,
+        default=900 * 1024 * 1024,
+        help="Hard size limit when embedding WSI tiles. Default: 900 MiB.",
     )
     qc_showcase = commands.add_parser(
         "qc-showcase",
@@ -352,6 +409,10 @@ def _main(argv: list[str] | None = None) -> int:
             semantic_runs=_unique_named_paths(args.semantic_run, "semantic"),
             stain_runs=_unique_named_paths(args.stain_run, "stain"),
             topology_runs=_unique_named_paths(args.topology_run, "topology"),
+            registered_wsi=_unique_named_paths(
+                args.registered_wsi,
+                "registered WSI",
+            ),
             cohort_qc=args.cohort_qc,
             workers=args.workers,
         )
@@ -398,6 +459,7 @@ def _main(argv: list[str] | None = None) -> int:
             args.root / "histopia",
             semantic_runs=dict(args.semantic_run),
             stain_runs=dict(args.stain_run),
+            registered_wsi=dict(args.registered_wsi),
             cohort_qc=args.cohort_qc,
             workers=args.workers,
             require_approvals=not args.include_unapproved,
@@ -405,7 +467,22 @@ def _main(argv: list[str] | None = None) -> int:
         print(index)
         return 0
     if args.command == "showcase":
-        index = export_static_showcase(args.source, args.output, args.mouse)
+        options = {}
+        if args.review_config is not None or args.wsi_section:
+            sections: dict[str, list[str]] = {}
+            for mouse, section in args.wsi_section:
+                sections.setdefault(mouse, []).append(section)
+            options = {
+                "review_config": args.review_config,
+                "wsi_sections": sections,
+                "max_bytes": args.max_bytes,
+            }
+        index = export_static_showcase(
+            args.source,
+            args.output,
+            args.mouse,
+            **options,
+        )
         print(index)
         return 0
     if args.command == "qc-showcase":
@@ -448,6 +525,7 @@ def _main(argv: list[str] | None = None) -> int:
             port=args.port,
             required_routes=tuple(args.require_route or ["histopia"]),
             review_config=args.review_config,
+            public_review_write=args.public_review_write,
         )
         return 0
     parser.error(f"unsupported command: {args.command}")

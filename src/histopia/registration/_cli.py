@@ -50,6 +50,14 @@ def _main(argv: list[str] | None = None) -> int:
         help="Approve the exact prepared section-order proposal.",
     )
     parser.add_argument(
+        "--prepare-completed-review",
+        type=Path,
+        help=(
+            "Prepare a fingerprinted order review for a completed legacy run "
+            "without granting approval."
+        ),
+    )
+    parser.add_argument(
         "--reviewer",
         help="Reviewer name required with --approve-run.",
     )
@@ -157,13 +165,39 @@ def _main(argv: list[str] | None = None) -> int:
 
     approval_actions = tuple(
         path
-        for path in (args.approve_masks, args.approve_order, args.approve_run)
+        for path in (
+            args.prepare_completed_review,
+            args.approve_masks,
+            args.approve_order,
+            args.approve_run,
+        )
         if path is not None
     )
     if len(approval_actions) > 1:
         parser.error(
-            "--approve-masks, --approve-order, and --approve-run are mutually exclusive"
+            "--prepare-completed-review and approval actions are mutually exclusive"
         )
+
+    if args.prepare_completed_review is not None:
+        from histopia.registration._approval import (
+            prepare_completed_registration_review,
+        )
+
+        path = prepare_completed_registration_review(args.prepare_completed_review)
+        payload = json.loads(path.read_text())
+        print(
+            json.dumps(
+                {
+                    "status": "review_required",
+                    "stage": "order",
+                    "run_dir": str(args.prepare_completed_review),
+                    "slide_count": len(payload["slides"]),
+                    "order_fingerprint": payload["fingerprint"],
+                },
+                indent=2,
+            )
+        )
+        return 0
 
     if args.approve_masks is not None:
         if not args.reviewer or not args.review_notes:

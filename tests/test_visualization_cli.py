@@ -11,7 +11,7 @@ from histopia.visualization import _cli
 def test_serve_command_dispatches_explicit_network_settings(
     tmp_path: Path, monkeypatch
 ) -> None:
-    calls: list[tuple[Path, str, int, tuple[str, ...], Path | None]] = []
+    calls: list[tuple[Path, str, int, tuple[str, ...], Path | None, bool]] = []
 
     def capture(
         root: Path,
@@ -20,17 +20,35 @@ def test_serve_command_dispatches_explicit_network_settings(
         port: int,
         required_routes: tuple[str, ...],
         review_config: Path | None,
+        public_review_write: bool,
     ) -> None:
-        calls.append((root, bind, port, required_routes, review_config))
+        calls.append(
+            (
+                root,
+                bind,
+                port,
+                required_routes,
+                review_config,
+                public_review_write,
+            )
+        )
 
     monkeypatch.setattr(_cli, "serve_viewer", capture)
 
     result = _cli.main(
-        ["serve", str(tmp_path), "--bind", "127.0.0.1", "--port", "9876"]
+        [
+            "serve",
+            str(tmp_path),
+            "--bind",
+            "127.0.0.1",
+            "--port",
+            "9876",
+            "--public-review-write",
+        ]
     )
 
     assert result == 0
-    assert calls == [(tmp_path, "127.0.0.1", 9876, ("histopia",), None)]
+    assert calls == [(tmp_path, "127.0.0.1", 9876, ("histopia",), None, True)]
 
 
 def test_feedback_export_writes_flat_dataset(tmp_path: Path) -> None:
@@ -62,6 +80,7 @@ def test_build_command_targets_stable_histopia_directory(
             Path,
             dict[str, Path],
             dict[str, Path],
+            dict[str, Path],
             Path | None,
             int,
             bool,
@@ -74,6 +93,7 @@ def test_build_command_targets_stable_histopia_directory(
         *,
         semantic_runs: dict[str, Path],
         stain_runs: dict[str, Path],
+        registered_wsi: dict[str, Path],
         cohort_qc: Path | None,
         workers: int,
         require_approvals: bool,
@@ -84,6 +104,7 @@ def test_build_command_targets_stable_histopia_directory(
                 output,
                 semantic_runs,
                 stain_runs,
+                registered_wsi,
                 cohort_qc,
                 workers,
                 require_approvals,
@@ -120,6 +141,7 @@ def test_build_command_targets_stable_histopia_directory(
             tmp_path / "viewer" / "histopia",
             {"mouse": semantic},
             {"mouse": stain},
+            {},
             tmp_path / "cohort.json",
             4,
             True,
@@ -304,6 +326,7 @@ def test_workflow_review_command_passes_all_named_runs(
         semantic_runs,
         stain_runs,
         topology_runs,
+        registered_wsi,
         cohort_qc,
         workers,
     ):
@@ -314,6 +337,7 @@ def test_workflow_review_command_passes_all_named_runs(
                 semantic_runs,
                 stain_runs,
                 topology_runs,
+                registered_wsi,
                 cohort_qc,
                 workers,
             )
@@ -353,6 +377,7 @@ def test_workflow_review_command_passes_all_named_runs(
             output,
             {"mouse": semantic},
             {"mouse": stain},
+            {},
             {},
             tmp_path / "cohort.json",
             4,

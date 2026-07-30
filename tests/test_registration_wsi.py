@@ -11,10 +11,27 @@ from histopia.registration import (
     calculate_thumbnail_overlap_bbox,
     geometry_thumbnail_to_native_matrix,
     thumbnail_to_full_resolution_matrix,
-    warp_saved_registration,
     warp_slide_to_reference,
 )
+from histopia.registration import warp_saved_registration as _warp_saved_registration
 from histopia.registration._wsi import _as_rgb_uchar, read_slide_shape
+
+
+def warp_saved_registration(*args, **kwargs):
+    """Exercise provisional fixtures without weakening the production default."""
+
+    kwargs.setdefault("require_approval", False)
+    return _warp_saved_registration(*args, **kwargs)
+
+
+def test_saved_wsi_export_requires_approved_registration_by_default(
+    tmp_path: Path,
+) -> None:
+    run = tmp_path / "run"
+    run.mkdir()
+
+    with pytest.raises(FileNotFoundError, match="registration_approval.json"):
+        _warp_saved_registration(run)
 
 
 def test_slide_geometry_maps_thumbnail_pixels_to_micrometres() -> None:

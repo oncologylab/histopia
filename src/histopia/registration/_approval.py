@@ -45,6 +45,105 @@ class SectionOrderApproval:
     reviewed_at: str
 
 
+def prepare_completed_registration_review(run_dir: Path | str) -> Path:
+    """Prepare a review manifest for a completed run that predates order review.
+
+    The completed slide order is preserved exactly because changing it would
+    invalidate the saved transforms. The new manifest grants no approval and
+    is bound to both the registration-result bytes and every mask-review
+    fingerprint.
+    """
+
+    root = Path(run_dir)
+    result_path = root / "registration_result.json"
+    mask_path = root / "mask_review.json"
+    order_path = root / "section_order_review.json"
+    if (root / "registration_approval.json").exists():
+        raise ValueError("approved registration runs cannot be migrated")
+
+    result = _load_object(result_path)
+    mask_review = _load_object(mask_path)
+    if mask_review.get("schema_version") != 2:
+        raise ValueError("mask review must use schema version 2")
+    result_rows = _object_rows(result, "slides", result_path)
+    mask_rows = _object_rows(mask_review, "slides", mask_path)
+    results_by_name = _unique_rows_by_name(result_rows, "path", result_path)
+    masks_by_name = _unique_rows_by_name(mask_rows, "slide", mask_path)
+    if set(results_by_name) != set(masks_by_name):
+        raise ValueError("mask review slides do not exactly match registration result")
+
+    ordered_names: list[str] = []
+    input_fingerprints: dict[str, str] = {}
+    for result_row in result_rows:
+        name = Path(_required_string(result_row, "path", result_path)).name
+        mask = result_row.get("mask")
+        if not isinstance(mask, dict) or mask.get("accepted") is not True:
+            raise ValueError(f"registration mask is not accepted: {name}")
+        embedded = result_row.get("mask_review")
+        if not isinstance(embedded, dict):
+            raise ValueError(f"registration result has no mask review: {name}")
+        reviewed_hash = _required_string(
+            masks_by_name[name],
+            "thumbnail_sha256",
+            mask_path,
+        )
+        if embedded.get("thumbnail_sha256") != reviewed_hash:
+            raise ValueError(f"mask review fingerprint mismatch: {name}")
+        _require_processed_review_artifacts(root, name)
+        ordered_names.append(name)
+        input_fingerprints[name] = reviewed_hash
+
+    source_hash = _sha256_file(result_path)
+    digest = hashlib.sha256(b"histopia-completed-registration-order-v1")
+    digest.update(source_hash.encode())
+    for order, name in enumerate(ordered_names, start=1):
+        digest.update(order.to_bytes(4, "big"))
+        digest.update(name.encode())
+        digest.update(b"\0")
+        digest.update(input_fingerprints[name].encode())
+        digest.update(b"\0")
+    fingerprint = digest.hexdigest()
+    payload: dict[str, object] = {
+        "schema_version": 3,
+        "algorithm": "completed-registration-order-v1",
+        "approved": False,
+        "fingerprint": fingerprint,
+        "objective": None,
+        "runner_up_objective": None,
+        "confidence_margin": None,
+        "fixed_positions": {
+            name: order for order, name in enumerate(ordered_names, start=1)
+        },
+        "input_fingerprints": input_fingerprints,
+        "source_registration_result_sha256": source_hash,
+        "physically_calibrated": False,
+        "physical_area_continuity": _unavailable_area_continuity(),
+        "cavity_continuity": _unavailable_cavity_continuity(),
+        "slides": [
+            {
+                "order": order,
+                "slide": name,
+                "fixed": True,
+                "distance_from_previous": None,
+                "physical_tissue_area_um2": None,
+                "quarter_turns_ccw": 0,
+                "largest_internal_cavity_fraction": None,
+            }
+            for order, name in enumerate(ordered_names, start=1)
+        ],
+    }
+    if order_path.exists():
+        existing = _load_object(order_path)
+        if (
+            existing.get("fingerprint") == fingerprint
+            and existing.get("source_registration_result_sha256") == source_hash
+        ):
+            return order_path
+        raise ValueError("section order review already exists with different inputs")
+    _write_json_atomic(order_path, payload)
+    return order_path
+
+
 def approve_mask_review(
     run_dir: Path | str,
     *,
@@ -136,6 +235,7 @@ def approve_section_order(
     payload = _load_object(order_path)
     if payload.get("schema_version") != 3:
         raise ValueError("section order review must use schema version 3")
+    _require_current_order_source(root, payload)
     fingerprint = _required_string(payload, "fingerprint", order_path)
     rows = _object_rows(payload, "slides", order_path)
     ordered_names: list[str] = []
@@ -193,6 +293,7 @@ def approve_registration_run(
     result = _load_object(result_path)
     mask_review = _load_object(mask_path)
     order_review = _load_object(order_path)
+    _require_current_order_source(root, order_review)
 
     result_slides = _object_rows(result, "slides", result_path)
     mask_slides = _object_rows(mask_review, "slides", mask_path)
@@ -402,6 +503,45 @@ def _require_processed_review_artifacts(root: Path, slide: str) -> None:
         artifact = root / "processed" / f"{stem}.{suffix}"
         if not artifact.is_file():
             raise FileNotFoundError(f"mask review artifact is missing: {artifact}")
+
+
+def _require_current_order_source(
+    root: Path,
+    order_review: dict[str, object],
+) -> None:
+    expected = order_review.get("source_registration_result_sha256")
+    if expected is None:
+        return
+    if not isinstance(expected, str) or not expected:
+        raise ValueError("section order source registration digest is invalid")
+    result_path = root / "registration_result.json"
+    if not result_path.is_file() or _sha256_file(result_path) != expected:
+        raise ValueError("section order source registration result is stale")
+
+
+def _unavailable_area_continuity() -> dict[str, object]:
+    return {
+        "available": False,
+        "trend": None,
+        "normalized_rmse": None,
+        "max_residual_fraction": None,
+        "max_adjacent_relative_change": None,
+        "max_adjacent_orders": None,
+        "review_recommended": False,
+        "residual_threshold": 0.15,
+        "adjacent_threshold": 0.2,
+    }
+
+
+def _unavailable_cavity_continuity() -> dict[str, object]:
+    return {
+        "blocks": [],
+        "block_count": 0,
+        "review_recommended": False,
+        "weak_threshold": 0.015,
+        "strong_threshold": 0.04,
+        "bridge_gap": 1,
+    }
 
 
 def _resolved_override_path(

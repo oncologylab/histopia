@@ -13,6 +13,7 @@ from histopia.visualization._server import (
     _ViewerRequestHandler,
     create_viewer_server,
 )
+from histopia.visualization._wsi_tiles import WsiTileService
 
 
 @pytest.mark.parametrize("error", (BrokenPipeError, ConnectionResetError))
@@ -88,6 +89,16 @@ def test_server_requires_and_reports_all_stable_routes(tmp_path: Path) -> None:
             "status": "ok",
             "routes": {"/histopia/": True, "/review/": True},
             "review_api": False,
+            "wsi_api": False,
+        }
+
+        connection.request("GET", "/api/wsi/mouse")
+        catalog = connection.getresponse()
+        assert catalog.status == 200
+        assert json.loads(catalog.read()) == {
+            "schema_version": 1,
+            "cohort": "mouse",
+            "sections": [],
         }
         connection.close()
     finally:
@@ -142,6 +153,14 @@ def test_review_api_requires_key_and_same_origin(tmp_path: Path) -> None:
     thread.start()
     try:
         connection = http.client.HTTPConnection("127.0.0.1", server.server_port)
+        connection.request("GET", "/api/reviews/access")
+        access = connection.getresponse()
+        assert access.status == 200
+        assert json.loads(access.read()) == {
+            "review_configured": True,
+            "authentication_required": True,
+        }
+
         connection.request("GET", "/api/reviews")
         denied = connection.getresponse()
         assert denied.status == 401
@@ -174,6 +193,181 @@ def test_review_api_requires_key_and_same_origin(tmp_path: Path) -> None:
             "approved": False,
         }
         assert str(tmp_path) not in json.dumps(payload)
+        connection.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_review_api_allows_explicit_public_same_origin_access(
+    tmp_path: Path,
+) -> None:
+    for route in ("histopia", "review"):
+        directory = tmp_path / route
+        directory.mkdir()
+        (directory / "index.html").write_text(route)
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "mask_review.json").write_text(
+        json.dumps({"slides": [{"status": "pending"}]})
+    )
+    config = tmp_path / "review-config.json"
+    config.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "cohorts": {"mouse": {"registration": str(run)}},
+            }
+        )
+    )
+    server = create_viewer_server(
+        tmp_path,
+        bind="127.0.0.1",
+        port=0,
+        required_routes=("histopia", "review"),
+        review_config=config,
+        public_review_write=True,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = http.client.HTTPConnection("127.0.0.1", server.server_port)
+        connection.request("GET", "/api/reviews/access")
+        access = connection.getresponse()
+        assert access.status == 200
+        assert json.loads(access.read()) == {
+            "review_configured": True,
+            "authentication_required": False,
+        }
+
+        connection.request("GET", "/api/reviews")
+        response = connection.getresponse()
+        assert response.status == 200
+        assert json.loads(response.read())["cohorts"][0]["id"] == "mouse"
+
+        connection.request(
+            "GET",
+            "/api/reviews",
+            headers={"Origin": "https://example.invalid"},
+        )
+        cross_origin = connection.getresponse()
+        assert cross_origin.status == 403
+        cross_origin.read()
+        connection.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_public_review_mode_requires_review_configuration(tmp_path: Path) -> None:
+    stable = tmp_path / "histopia"
+    stable.mkdir()
+    (stable / "index.html").write_text("stable")
+
+    with pytest.raises(
+        ValueError,
+        match="public review writes require a review configuration",
+    ):
+        create_viewer_server(
+            tmp_path,
+            bind="127.0.0.1",
+            port=0,
+            public_review_write=True,
+        )
+
+
+def test_server_serves_fingerprinted_wsi_metadata_and_tiles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stable = tmp_path / "histopia"
+    stable.mkdir()
+    (stable / "index.html").write_text("stable")
+    run = tmp_path / "run"
+    registered = tmp_path / "registered"
+    run.mkdir()
+    registered.mkdir()
+    config = tmp_path / "review-config.json"
+    config.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "cohorts": {
+                    "mouse": {
+                        "registration": str(run),
+                        "registered_wsi": str(registered),
+                    }
+                },
+            }
+        )
+    )
+    digest = "a" * 64
+
+    class FakeTiles:
+        def catalog(self, cohort: str) -> dict[str, object]:
+            assert cohort == "mouse"
+            return {
+                "schema_version": 1,
+                "cohort": cohort,
+                "sections": [{"section": "001"}],
+            }
+
+        def metadata(self, cohort: str, section: str) -> dict[str, object]:
+            assert (cohort, section) == ("mouse", "001")
+            return {"schema_version": 1, "cohort": cohort, "section": section}
+
+        def render_tile(self, *args):
+            assert args == ("mouse", "001", "registered", digest, 0, 0, 0)
+            return b"jpeg-tile", "image/jpeg", f'"{digest}-0-0-0"'
+
+    monkeypatch.setattr(
+        WsiTileService,
+        "from_runs",
+        classmethod(lambda cls, runs: FakeTiles()),
+    )
+    server = create_viewer_server(
+        tmp_path,
+        bind="127.0.0.1",
+        port=0,
+        review_config=config,
+        public_review_write=True,
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        connection = http.client.HTTPConnection("127.0.0.1", server.server_port)
+        connection.request("GET", "/api/wsi/mouse")
+        catalog = connection.getresponse()
+        assert catalog.status == 200
+        assert json.loads(catalog.read())["sections"] == [{"section": "001"}]
+
+        connection.request("GET", "/api/wsi/mouse/001")
+        metadata = connection.getresponse()
+        assert metadata.status == 200
+        assert json.loads(metadata.read())["section"] == "001"
+
+        tile_path = f"/api/wsi/mouse/001/registered/{digest}/0/0/0.jpg"
+        connection.request("GET", tile_path)
+        tile = connection.getresponse()
+        assert tile.status == 200
+        assert tile.getheader("Content-Type") == "image/jpeg"
+        assert tile.getheader("Cache-Control") == (
+            "public, max-age=31536000, immutable"
+        )
+        etag = tile.getheader("ETag")
+        assert tile.read() == b"jpeg-tile"
+
+        connection.request("GET", tile_path, headers={"If-None-Match": etag})
+        cached = connection.getresponse()
+        assert cached.status == 304
+        assert cached.read() == b""
+
+        connection.request("GET", f"{tile_path}/../../etc/passwd")
+        rejected = connection.getresponse()
+        assert rejected.status == 404
+        rejected.read()
         connection.close()
     finally:
         server.shutdown()

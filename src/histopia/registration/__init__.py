@@ -95,6 +95,10 @@ _PUBLIC_IMPORTS = {
         "histopia.registration._approval",
         "approve_section_order",
     ),
+    "prepare_completed_registration_review": (
+        "histopia.registration._approval",
+        "prepare_completed_registration_review",
+    ),
     "build_kpf_manifest": (
         "histopia.registration._manifest",
         "build_kpf_manifest",

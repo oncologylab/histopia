@@ -47,6 +47,8 @@ THREE_VENDOR_SHA256 = {
     "LICENSE-three.txt": "4c40a1ef62450b857c3b2aaf294936304cd552d965fbcd9d32d4c5bcf4ba4454",
     "OrbitControls.js": "80efaadea4f8a636a65fb0bd08bfef62f3d93a0bb94e2e7500f23176c5c07f4e",
     "three.module.min.js": "08fd7545d13d2c7fb65ab691530a802dafefd638596501854f267d0fb13c39e7",
+    "LICENSE-openseadragon.txt": "17da96b26ac706d2cbd06d4555dedb43026782f4943faf0156fe7acf89454228",
+    "openseadragon.min.js": "b94ea1ecff28f1510d78b2630a49c97efcc11239c1691a6eed91cf31f101373a",
 }
 MAX_DISPLAY_LINKS = 500
 VIEWER_MOUSE_CACHE_VERSION = 5
@@ -238,6 +240,7 @@ def build_section_viewer(
     semantic_runs: dict[str, Path | str] | None = None,
     stain_runs: dict[str, Path | str] | None = None,
     cohort_qc: Path | str | None = None,
+    registered_wsi: dict[str, Path | str] | None = None,
     workers: int = 1,
     require_approvals: bool = True,
 ) -> Path:
@@ -282,6 +285,26 @@ def build_section_viewer(
     provisional_mice = provisional_mice or set()
     semantic_runs = semantic_runs or {}
     stain_runs = stain_runs or {}
+    registered_wsi = registered_wsi or {}
+    unknown_wsi = set(registered_wsi) - set(runs)
+    if unknown_wsi:
+        raise ValueError(
+            "registered WSI has no matching registration: "
+            + ", ".join(sorted(unknown_wsi))
+        )
+    wsi_sections: dict[str, tuple[str, ...]] = {}
+    if registered_wsi:
+        from histopia.visualization._wsi_tiles import WsiTileService
+
+        wsi_service = WsiTileService.from_runs(
+            {
+                mouse_id: (Path(runs[mouse_id]), Path(path))
+                for mouse_id, path in registered_wsi.items()
+            }
+        )
+        wsi_sections = {
+            mouse_id: wsi_service.sections(mouse_id) for mouse_id in registered_wsi
+        }
     cohort_rows = _load_cohort_rows(cohort_qc)
     mouse_payloads: list[dict[str, object]] = []
     semantic_validations: list[
@@ -415,6 +438,11 @@ def build_section_viewer(
         ):
             previous_mouse["provisional_order"] = mouse_id in provisional_mice
             previous_mouse["registration_approval"] = registration_approval
+            previous_mouse["native_resolution"] = (
+                {"sections": list(wsi_sections[mouse_id])}
+                if mouse_id in wsi_sections
+                else None
+            )
             if previous_mouse.get("semantic") is not None:
                 previous_mouse["semantic"]["review"] = semantic_review
                 previous_mouse["semantic"]["qc"] = semantic_qc
@@ -663,6 +691,11 @@ def build_section_viewer(
             "width": int(reference_image.shape[1]),
             "height": int(reference_image.shape[0]),
             "slides": slides,
+            "native_resolution": (
+                {"sections": list(wsi_sections[mouse_id])}
+                if mouse_id in wsi_sections
+                else None
+            ),
             "semantic": (
                 {
                     "cluster_count": cluster_count,
@@ -879,14 +912,41 @@ def _write_viewer_runtime(output_dir: Path) -> None:
     vendor = output_dir / "vendor"
     vendor.mkdir(parents=True, exist_ok=True)
     packaged = resources.files("histopia.visualization").joinpath("_vendor")
-    for filename, expected_sha256 in THREE_VENDOR_SHA256.items():
+    for filename in (
+        "LICENSE-three.txt",
+        "OrbitControls.js",
+        "three.module.min.js",
+    ):
         content = packaged.joinpath(filename).read_bytes()
+        expected_sha256 = THREE_VENDOR_SHA256[filename]
         actual_sha256 = hashlib.sha256(content).hexdigest()
         if actual_sha256 != expected_sha256:
             raise RuntimeError(
                 f"packaged viewer dependency failed checksum: {filename}"
             )
         (vendor / filename).write_bytes(content)
+    _write_focus_runtime(output_dir)
+
+
+def _write_focus_runtime(output_dir: Path) -> None:
+    """Write the shared native-resolution focus UI and pinned viewer."""
+
+    vendor = output_dir / "vendor"
+    vendor.mkdir(parents=True, exist_ok=True)
+    packaged_vendor = resources.files("histopia.visualization").joinpath("_vendor")
+    for filename in ("LICENSE-openseadragon.txt", "openseadragon.min.js"):
+        content = packaged_vendor.joinpath(filename).read_bytes()
+        expected = THREE_VENDOR_SHA256[filename]
+        if hashlib.sha256(content).hexdigest() != expected:
+            raise RuntimeError(
+                f"packaged viewer dependency failed checksum: {filename}"
+            )
+        (vendor / filename).write_bytes(content)
+    packaged_focus = resources.files("histopia.visualization").joinpath("_focus_assets")
+    for filename in ("focus-viewer.css", "focus-viewer.js"):
+        (output_dir / filename).write_text(
+            packaged_focus.joinpath(filename).read_text()
+        )
 
 
 def build_mask_review(
@@ -1048,6 +1108,7 @@ def build_mask_review(
     (output_dir / "mask-review.js").write_text(_MASK_REVIEW_JS)
     (output_dir / "mask-review.css").write_text(_ORDER_REVIEW_CSS)
     _write_registration_feedback_assets(output_dir)
+    _write_focus_runtime(output_dir)
     _write_json_atomic(
         output_dir / "build-report.json",
         {
@@ -1232,6 +1293,7 @@ def build_alignment_review(
     (output_dir / "alignment-review.js").write_text(_ALIGNMENT_REVIEW_JS)
     (output_dir / "alignment-review.css").write_text(_ORDER_REVIEW_CSS)
     _write_registration_feedback_assets(output_dir)
+    _write_focus_runtime(output_dir)
     _write_json_atomic(
         output_dir / "build-report.json",
         {
@@ -1998,6 +2060,7 @@ def build_section_order_review(
     review_payload = {
         "schema_version": 1,
         "approved": bool(payload.get("approved")),
+        "algorithm": str(payload.get("algorithm", "")),
         "fingerprint": str(payload.get("fingerprint", "")),
         "objective": payload.get("objective"),
         "runner_up_objective": payload.get("runner_up_objective"),
@@ -2015,6 +2078,7 @@ def build_section_order_review(
     (output_dir / "order-review.js").write_text(_ORDER_REVIEW_JS)
     (output_dir / "order-review.css").write_text(_ORDER_REVIEW_CSS)
     _write_registration_feedback_assets(output_dir)
+    _write_focus_runtime(output_dir)
     return output_dir / "index.html"
 
 
@@ -2088,6 +2152,9 @@ _INDEX_HTML = """<!doctype html>
   <title>Histopia Section Stack</title>
   <link rel="icon" href="data:">
   <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="focus-viewer.css">
+  <script src="vendor/openseadragon.min.js"></script>
+  <script src="focus-viewer.js"></script>
   <script type="importmap">
     {"imports": {
       "three": "./vendor/three.module.min.js",
@@ -2161,6 +2228,7 @@ _ORDER_REVIEW_HTML = """<!doctype html>
   <title>Histopia Section Order Review</title>
   <link rel="stylesheet" href="order-review.css">
   <link rel="stylesheet" href="registration-feedback.css">
+  <link rel="stylesheet" href="focus-viewer.css">
 </head>
 <body>
   <header>
@@ -2172,6 +2240,8 @@ _ORDER_REVIEW_HTML = """<!doctype html>
   <main id="slides"></main>
   <aside id="registration-feedback"></aside>
   <script src="manifest-data.js"></script>
+  <script src="vendor/openseadragon.min.js"></script>
+  <script src="focus-viewer.js"></script>
   <script src="order-review.js"></script>
   <script src="registration-feedback.js"></script>
 </body>
@@ -2186,6 +2256,7 @@ _MASK_REVIEW_HTML = """<!doctype html>
   <title>Histopia Tissue Mask Review</title>
   <link rel="stylesheet" href="mask-review.css">
   <link rel="stylesheet" href="registration-feedback.css">
+  <link rel="stylesheet" href="focus-viewer.css">
 </head>
 <body>
   <header>
@@ -2197,6 +2268,8 @@ _MASK_REVIEW_HTML = """<!doctype html>
   <main id="slides"></main>
   <aside id="registration-feedback"></aside>
   <script src="manifest-data.js"></script>
+  <script src="vendor/openseadragon.min.js"></script>
+  <script src="focus-viewer.js"></script>
   <script src="mask-review.js"></script>
   <script src="registration-feedback.js"></script>
 </body>
@@ -2211,6 +2284,7 @@ _ALIGNMENT_REVIEW_HTML = """<!doctype html>
   <title>Histopia Registration Alignment Review</title>
   <link rel="stylesheet" href="alignment-review.css">
   <link rel="stylesheet" href="registration-feedback.css">
+  <link rel="stylesheet" href="focus-viewer.css">
 </head>
 <body>
   <header>
@@ -2222,6 +2296,8 @@ _ALIGNMENT_REVIEW_HTML = """<!doctype html>
   <main id="slides"></main>
   <aside id="registration-feedback"></aside>
   <script src="manifest-data.js"></script>
+  <script src="vendor/openseadragon.min.js"></script>
+  <script src="focus-viewer.js"></script>
   <script src="alignment-review.js"></script>
   <script src="registration-feedback.js"></script>
 </body>
@@ -2258,6 +2334,11 @@ for (const slide of data.slides) {
   card.append(image, label, metrics);
   slides.append(card);
 }
+globalThis.HistopiaFocusViewer?.attachGrid({
+  container: slides,
+  data,
+  mode: 'mask',
+});
 """
 
 _ALIGNMENT_REVIEW_JS = """const data = globalThis.HISTOPIA_REVIEW_MANIFEST;
@@ -2305,6 +2386,11 @@ for (const slide of data.slides) {
   card.append(image, label, metrics);
   slides.append(card);
 }
+globalThis.HistopiaFocusViewer?.attachGrid({
+  container: slides,
+  data,
+  mode: 'alignment',
+});
 """
 
 _ORDER_REVIEW_JS = """const data = globalThis.HISTOPIA_REVIEW_MANIFEST;
@@ -2319,11 +2405,18 @@ document.querySelector('#status').textContent =
   `${data.physical_area_continuity?.review_recommended
     ? 'Area continuity review | '
     : ''}` +
+  `${data.algorithm === 'completed-registration-order-v1'
+    ? 'Completed registration order | '
+    : ''}` +
   `${data.approved ? 'Approved' : 'Approval required'} | ` +
   `${data.physically_calibrated ? 'physical scale' : 'pixel scale'}`;
+const formatDiagnostic = value =>
+  value == null || !Number.isFinite(Number(value))
+    ? 'n/a'
+    : Number(value).toFixed(4);
 document.querySelector('#score').textContent =
-  `cost ${Number(data.objective).toFixed(4)} | margin ` +
-  `${Number(data.confidence_margin).toFixed(4)}`;
+  `cost ${formatDiagnostic(data.objective)} | margin ` +
+  `${formatDiagnostic(data.confidence_margin)}`;
 document.querySelector('#fingerprint').textContent =
   data.fingerprint ? data.fingerprint.slice(0, 16) : '';
 for (const slide of data.slides) {
@@ -2347,6 +2440,11 @@ for (const slide of data.slides) {
   card.append(image, label, metrics);
   slides.append(card);
 }
+globalThis.HistopiaFocusViewer?.attachGrid({
+  container: slides,
+  data,
+  mode: 'order',
+});
 """
 
 _ORDER_REVIEW_CSS = """*{box-sizing:border-box}html,body{margin:0;height:100%;overflow:hidden}
@@ -2612,9 +2710,9 @@ function buildList() {
     });
     const text = document.createElement('span');
     text.textContent = `${slide.label}${slide.reference ? ' (reference)' : ''}`;
-    text.title = 'Show only this slide';
+    text.title = 'Open native-resolution section';
     text.addEventListener('click', () =>
-      focusSlide([...list.children].indexOf(item)));
+      openFocusedWsi(slide, [...list.children].indexOf(item)));
     item.append(toggle, text);
     item.addEventListener('dragstart', event => event.dataTransfer.setData('text/plain', slide.id));
     item.addEventListener('dragover', event => event.preventDefault());
@@ -2641,6 +2739,49 @@ function textureUrl(slide, mode, clusterCount = currentK) {
       ? slide.stain.overlay_textures[currentStainVariant]
       : slide.texture;
   return slide.texture;
+}
+function focusOverlay(slide) {
+  if ((currentMode === 'semantic' || currentMode === 'blend') &&
+      slide.semantic_textures)
+    return {
+      url: slide.semantic_textures[String(currentK)],
+      resolution: `Semantic K ${currentK} patch grid`,
+    };
+  if ((currentMode === 'stain' || currentMode === 'stain-overlay') &&
+      slide.stain?.quantified)
+    return {
+      url: slide.stain.textures[currentStainVariant],
+      resolution: 'Stain analytical map',
+    };
+  return {url: null, resolution: null};
+}
+function focusedWsiOptions(slide, index) {
+  const overlay = focusOverlay(slide);
+  return {
+    cohort: current.id,
+    section: String(slide.order).padStart(3, '0'),
+    title: slide.label,
+    layer: 'registered',
+    layout: 'atlas',
+    overlayUrl: overlay.url,
+    overlayResolution: overlay.resolution,
+    metadataTemplate: current.native_resolution?.metadata_template,
+    onUnavailable: () => focusSlide(index),
+    onStep(offset) {
+      const slides = orderedSlides();
+      const target = (index + offset + slides.length) % slides.length;
+      return focusedWsiOptions(slides[target], target);
+    },
+  };
+}
+function openFocusedWsi(slide, index) {
+  const section = String(slide.order).padStart(3, '0');
+  if (!globalThis.HistopiaFocusViewer ||
+      !current.native_resolution?.sections?.includes(section)) {
+    focusSlide(index);
+    return;
+  }
+  globalThis.HistopiaFocusViewer.open(focusedWsiOptions(slide, index));
 }
 function modeAvailable(mouse, mode) {
   if (mode === 'histology') return true;
