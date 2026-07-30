@@ -307,7 +307,8 @@ def test_server_serves_fingerprinted_wsi_metadata_and_tiles(
 
     class FakeTiles:
         def catalog(self, cohort: str) -> dict[str, object]:
-            assert cohort == "mouse"
+            if cohort != "mouse":
+                raise FileNotFoundError("unknown WSI cohort")
             return {
                 "schema_version": 1,
                 "cohort": cohort,
@@ -347,6 +348,11 @@ def test_server_serves_fingerprinted_wsi_metadata_and_tiles(
         metadata = connection.getresponse()
         assert metadata.status == 200
         assert json.loads(metadata.read())["section"] == "001"
+
+        connection.request("GET", "/api/wsi/unknown")
+        missing_catalog = connection.getresponse()
+        assert missing_catalog.status == 200
+        assert json.loads(missing_catalog.read())["sections"] == []
 
         tile_path = f"/api/wsi/mouse/001/registered/{digest}/0/0/0.jpg"
         connection.request("GET", tile_path)

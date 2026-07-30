@@ -56,7 +56,7 @@ feedbackPanel.innerHTML = `
       <option value="3">270 degrees CCW</option>
     </select></label>
   </div>
-  <label>Reviewer<input id="feedback-reviewer" autocomplete="name"></label>
+  <label>Reviewer<input id="feedback-reviewer" autocomplete="name" required></label>
   <label>Comment<textarea id="feedback-comment" maxlength="4000"></textarea></label>
   <button id="feedback-save" class="save" type="button" disabled>Save slide review</button>
   <span id="feedback-message" class="message" role="status"></span>`;
@@ -212,6 +212,9 @@ decisionButtons.forEach((button) => button.addEventListener("click", () => {
   decisionButtons.forEach((row) => {
     row.classList.toggle("active", row === button);
   });
+  feedbackElements.message.style.color = "#52605a";
+  feedbackElements.message.textContent =
+    `${button.textContent} selected. Enter a reviewer and save this slide review.`;
 }));
 cards.forEach((card) => {
   card.addEventListener("click", () => selectSlide(card.dataset.feedbackSlide));
@@ -238,6 +241,18 @@ document.querySelector("#feedback-next").addEventListener("click", () => {
 });
 feedbackElements.save.addEventListener("click", async () => {
   feedbackElements.message.textContent = "";
+  if (!currentDecision) {
+    feedbackElements.message.textContent = "Choose Accept, Hold, or Reject first.";
+    decisionButtons[0].focus();
+    return;
+  }
+  const reviewer = feedbackElements.reviewer.value.trim();
+  if (!reviewer) {
+    feedbackElements.message.textContent =
+      "Enter a reviewer name before saving.";
+    feedbackElements.reviewer.focus();
+    return;
+  }
   sessionStorage.setItem("histopiaReviewer", feedbackElements.reviewer.value);
   const payload = {
     cohort: feedbackConfig.cohort,
@@ -247,7 +262,7 @@ feedbackElements.save.addEventListener("click", async () => {
     decision: currentDecision,
     labels: [...feedbackElements.labels.querySelectorAll("input:checked")]
       .map((input) => input.value),
-    reviewer: feedbackElements.reviewer.value,
+    reviewer,
     comment: feedbackElements.comment.value,
   };
   if (feedbackConfig.stage === "order") {

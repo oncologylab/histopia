@@ -224,8 +224,23 @@ def test_mask_review_browser_persists_per_slide_feedback(tmp_path: Path) -> None
             page.locator("#feedback-key").fill(token)
             page.locator("#feedback-connect").click()
             page.get_by_text("0/1 reviewed").wait_for()
-            page.locator("[data-feedback-decision='reject']").click()
+            reject = page.locator("[data-feedback-decision='reject']")
+            reject.click()
+            assert (
+                reject.evaluate(
+                    "(element) => getComputedStyle(element).backgroundColor"
+                )
+                == "rgb(161, 46, 42)"
+            )
+            page.get_by_text(
+                "Reject selected. Enter a reviewer and save this slide review."
+            ).wait_for()
             page.locator("#feedback-labels").get_by_text("Extra debris").click()
+            page.locator("#feedback-save").click()
+            page.get_by_text("Enter a reviewer name before saving.").wait_for()
+            assert page.locator("#feedback-reviewer").evaluate(
+                "(element) => element === document.activeElement"
+            )
             page.locator("#feedback-reviewer").fill("Reviewer")
             page.locator("#feedback-comment").fill("Detached artifact.")
             page.locator("#feedback-save").click()

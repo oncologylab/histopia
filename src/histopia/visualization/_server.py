@@ -231,9 +231,12 @@ class _ViewerRequestHandler(SimpleHTTPRequestHandler):
         if catalog_match is not None:
             try:
                 payload = service.catalog(catalog_match.group("cohort"))
-            except FileNotFoundError as error:
-                self._send_json(404, {"error": str(error)})
-                return True
+            except FileNotFoundError:
+                payload = {
+                    "schema_version": 1,
+                    "cohort": catalog_match.group("cohort"),
+                    "sections": [],
+                }
             self._send_json(200, payload)
             return True
         metadata_match = _WSI_METADATA_RE.fullmatch(path)

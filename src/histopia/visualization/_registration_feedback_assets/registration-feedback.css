@@ -76,17 +76,17 @@ body > main {
   grid-template-columns: 1fr 1fr;
   margin: 8px 0;
 }
-#registration-feedback .decisions button.active[data-decision="accept"] {
+#registration-feedback .decisions button.active[data-feedback-decision="accept"] {
   border-color: #146b46;
   background: #146b46;
   color: #fff;
 }
-#registration-feedback .decisions button.active[data-decision="hold"] {
+#registration-feedback .decisions button.active[data-feedback-decision="hold"] {
   border-color: #b77719;
   background: #b77719;
   color: #fff;
 }
-#registration-feedback .decisions button.active[data-decision="reject"] {
+#registration-feedback .decisions button.active[data-feedback-decision="reject"] {
   border-color: #a12e2a;
   background: #a12e2a;
   color: #fff;
