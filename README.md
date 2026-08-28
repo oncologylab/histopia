@@ -12,8 +12,9 @@ proteomic image analysis. It provides reviewed inter-section alignment,
 group-aware tissue masking, global morphology segmentation, spatial topology,
 and interactive 3D reconstruction across tissue sections.
 
-**[Launch the interactive 3D research showcase](https://oncologylab.github.io/histopia/)**
-| **[Registration QC showcase](https://oncologylab.github.io/histopia/qc/)**
+**[Launch the interactive three-mouse presentation demo](https://oncologylab.github.io/histopia/)**
+| [Registration](https://oncologylab.github.io/histopia/?view=registration)
+| [Cellular protein atlas](https://oncologylab.github.io/histopia/?view=protein-atlas)
 | [QuPath extension](https://github.com/oncologylab/qupath-extension-histopia/releases/latest)
 | [PyPI](https://pypi.org/project/histopia/)
 
