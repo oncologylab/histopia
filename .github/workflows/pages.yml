@@ -19,9 +19,10 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  SHOWCASE_ARCHIVE: histopia-pages-sixteen-mouse-v8.tar.gz
-  SHOWCASE_SHA256: 16cb9b29e05c25d6b83f591dcde01dd1b3fd585c3cb41687e387879cbccb6ec8
-  SHOWCASE_URL: https://github.com/oncologylab/histopia/releases/download/pages-demo-sixteen-mouse-v8/histopia-pages-sixteen-mouse-v8.tar.gz
+  SHOWCASE_ARCHIVE: histopia-pages-three-mouse-presentation-v1.tar.gz
+  SHOWCASE_SHA256: 4bd70bda53841d731ec63ec3c2433fcd69bd7665ee1b2756f436038525d1d2de
+  SHOWCASE_URL: https://github.com/oncologylab/histopia/releases/download/pages-demo-three-mouse-presentation-v1/histopia-pages-three-mouse-presentation-v1.tar.gz
+  SHOWCASE_MAX_BYTES: 943718400
 
 jobs:
   build:
@@ -42,15 +43,43 @@ jobs:
           mkdir _site
           tar --extract --gzip --file "$SHOWCASE_ARCHIVE" --directory _site
           test -f _site/index.html
-          test -f _site/manifest.json
-          test -f _site/showcase.json
-          test -f _site/vendor/three.module.min.js
-          test -f _site/vendor/OrbitControls.js
-          test -f _site/vendor/LICENSE-three.txt
-          test -f _site/qc/index.html
-          test -f _site/qc/qc-showcase.json
-          test -f _site/qc/registration/vendor/three.module.min.js
+          test -f _site/demo-manifest.json
+          test -f _site/static/presentation.css
+          test -f _site/static/openseadragon.min.js
+          for view in registration atlas stain cells topology protein protein-atlas; do
+            test -f "_site/$view/index.html"
+          done
           test -z "$(find _site -type l -print -quit)"
+
+      - name: Validate read-only presentation bundle
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path("_site")
+          manifest = json.loads((root / "demo-manifest.json").read_text())
+          assert manifest["cohorts"] == ["4312", "4630", "6180"]
+          assert manifest["read_only"] is True
+          assert manifest["review_writes"] is False
+          assert manifest["views"] == [
+              "registration", "atlas", "stain", "cells", "topology",
+              "protein", "protein-atlas",
+          ]
+          total = sum(path.stat().st_size for path in root.rglob("*") if path.is_file())
+          assert total <= int(os.environ["SHOWCASE_MAX_BYTES"]), total
+          forbidden = (
+              "/api/reviews", 'placeholder="Reviewer"',
+              'placeholder="Review comment"', "data-decision=",
+              "/home/exouser", "/media/volume", "yilab:",
+          )
+          for path in root.rglob("*"):
+              if path.suffix.lower() not in {".html", ".js", ".json", ".css"}:
+                  continue
+              text = path.read_text(encoding="utf-8", errors="ignore")
+              assert not any(token in text for token in forbidden), path
+          PY
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v5
