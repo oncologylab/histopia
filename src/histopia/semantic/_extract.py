@@ -12,6 +12,10 @@ from zipfile import BadZipFile
 import numpy as np
 
 from histopia._vips_image import normalize_vips_rgb_uchar
+from histopia._vips_retry import (
+    is_transient_vips_error,
+    retry_transient_vips_read,
+)
 from histopia.compute import configure_vips_threads
 from histopia.registration._slides import SlideGeometry
 from histopia.semantic._config import SemanticAtlasConfig
@@ -74,8 +78,11 @@ def extract_registration_features(
         "slide_count": len(slides),
         "completed_slides": 0,
         "cached_slides": 0,
+        "incremental_slides": 0,
         "extracted_slides": 0,
         "total_patches": 0,
+        "reused_patches": 0,
+        "extracted_patches": 0,
         "elapsed_seconds": 0.0,
         "controls": {
             "batch_size": config.batch_size,
@@ -92,10 +99,19 @@ def extract_registration_features(
             row["status"] == "cached" for row in performance_rows
         )
         performance["extracted_slides"] = sum(
-            row["status"] == "extracted" for row in performance_rows
+            row["status"] in {"extracted", "incremental"} for row in performance_rows
+        )
+        performance["incremental_slides"] = sum(
+            row["status"] == "incremental" for row in performance_rows
         )
         performance["total_patches"] = sum(
             int(row["patches"]) for row in performance_rows
+        )
+        performance["reused_patches"] = sum(
+            int(row["reused_patches"]) for row in performance_rows
+        )
+        performance["extracted_patches"] = sum(
+            int(row["extracted_patches"]) for row in performance_rows
         )
         performance["elapsed_seconds"] = elapsed_seconds(extraction_started)
         write_performance_stage(config.output_dir, "extraction", performance)
@@ -141,6 +157,8 @@ def extract_registration_features(
                         slide_path.name,
                         status="cached",
                         patches=len(cached.features),
+                        reused_patches=0,
+                        extracted_patches=0,
                         elapsed_seconds=elapsed,
                     )
                 )
@@ -150,6 +168,12 @@ def extract_registration_features(
                 continue
             if progress is not None:
                 progress(f"[{order}/{len(slides)}] extracting {slide_path.name}")
+            reusable = None
+            if config.feature_reuse_dir is not None:
+                reusable = _matching_feature_reuse(
+                    config.feature_reuse_dir / output.name,
+                    provenance,
+                )
             geometry = _geometry_from_json(slide["geometry"])
             mask = _read_mask(
                 config.registration_run / "processed" / f"{slide_path.stem}.mask.png"
@@ -171,15 +195,21 @@ def extract_registration_features(
                 batch_size=config.batch_size,
                 patch_workers=config.patch_workers,
                 provenance=provenance,
+                reusable_features=reusable,
             )
             artifact.save(output)
             elapsed = elapsed_seconds(slide_started)
+            reused_patches = _shared_grid_count(artifact, reusable)
+            extracted_patches = len(artifact.features) - reused_patches
+            status = "incremental" if reused_patches else "extracted"
             performance_rows.append(
                 _performance_slide_row(
                     order,
                     slide_path.name,
-                    status="extracted",
+                    status=status,
                     patches=len(artifact.features),
+                    reused_patches=reused_patches,
+                    extracted_patches=extracted_patches,
                     elapsed_seconds=elapsed,
                 )
             )
@@ -187,7 +217,9 @@ def extract_registration_features(
             if progress is not None:
                 progress(
                     f"[{order}/{len(slides)}] completed {slide_path.name}: "
-                    f"{len(artifact.features):,} patches in {elapsed:.1f}s"
+                    f"{len(artifact.features):,} patches "
+                    f"({reused_patches:,} reused, {extracted_patches:,} encoded) "
+                    f"in {elapsed:.1f}s"
                 )
     except BaseException as exc:
         performance["status"] = (
@@ -213,6 +245,15 @@ def feature_cache_matches(
     return _matching_feature_cache(path, expected_provenance) is not None
 
 
+def load_feature_reuse_candidate(
+    path: Path | str,
+    expected_provenance: dict[str, object],
+) -> PatchFeatures | None:
+    """Load a sealed artifact safe for native-grid vector reuse, if present."""
+
+    return _matching_feature_reuse(path, expected_provenance)
+
+
 def _matching_feature_cache(
     path: Path | str, expected_provenance: dict[str, object]
 ) -> PatchFeatures | None:
@@ -226,6 +267,51 @@ def _matching_feature_cache(
         and artifact.provenance == expected_provenance
     )
     return artifact if matches else None
+
+
+_FEATURE_REUSE_PROVENANCE_KEYS = (
+    "slide_name",
+    "source_sha256",
+    "model_fingerprint",
+    "analysis_mpp",
+    "patch_size_px",
+    "min_tissue_fraction",
+    "encoder_runtime",
+    "extraction_method",
+    "patch_reader",
+)
+
+
+def _matching_feature_reuse(
+    path: Path | str,
+    expected_provenance: dict[str, object],
+) -> PatchFeatures | None:
+    try:
+        artifact = PatchFeatures.load(path)
+    except (BadZipFile, EOFError, KeyError, OSError, ValueError):
+        return None
+    provenance = artifact.provenance
+    if (
+        artifact.fingerprint is None
+        or artifact.content_fingerprint is None
+        or not isinstance(provenance, dict)
+        or any(
+            provenance.get(key) != expected_provenance.get(key)
+            for key in _FEATURE_REUSE_PROVENANCE_KEYS
+        )
+    ):
+        return None
+    return artifact
+
+
+def _shared_grid_count(
+    current: PatchFeatures,
+    reusable: PatchFeatures | None,
+) -> int:
+    if reusable is None:
+        return 0
+    old = {tuple(int(value) for value in row) for row in reusable.grid_rc}
+    return sum(tuple(int(value) for value in row) in old for row in current.grid_rc)
 
 
 def _safe_encoder_runtime(
@@ -260,6 +346,8 @@ def _performance_slide_row(
     *,
     status: str,
     patches: int,
+    reused_patches: int,
+    extracted_patches: int,
     elapsed_seconds: float,
 ) -> dict[str, object]:
     return {
@@ -267,6 +355,8 @@ def _performance_slide_row(
         "slide_id": slide_id,
         "status": status,
         "patches": patches,
+        "reused_patches": reused_patches,
+        "extracted_patches": extracted_patches,
         "elapsed_seconds": elapsed_seconds,
         "patches_per_second": round(patches / max(elapsed_seconds, 1e-9), 3),
     }
@@ -286,14 +376,33 @@ class _VipsPatchReader:
             raise RuntimeError(
                 "WSI feature extraction requires the 'wsi' extra"
             ) from exc
-        self.image = pyvips.Image.new_from_file(str(path), access="random")
+        self._path = path
+        self._pyvips = pyvips
+        self.image = retry_transient_vips_read(self._open)
+
+    def _open(self) -> Any:
+        return self._pyvips.Image.new_from_file(str(self._path), access="random")
+
+    def _with_reopen(
+        self,
+        operation: Callable[[Any], np.ndarray | tuple[np.ndarray, ...]],
+    ) -> np.ndarray | tuple[np.ndarray, ...]:
+        try:
+            return operation(self.image)
+        except Exception as error:
+            if not is_transient_vips_error(error):
+                raise
+        return retry_transient_vips_read(lambda: operation(self._open()))
 
     def __call__(
         self, x: int, y: int, width: int, height: int, output_px: int
     ) -> np.ndarray:
-        image = self.image.crop(x, y, width, height)
-        image = image.resize(output_px / width, vscale=output_px / height)
-        return self._as_rgb(image)
+        output = self._with_reopen(
+            lambda image: self._read_one(image, x, y, width, height, output_px)
+        )
+        if not isinstance(output, np.ndarray):
+            raise RuntimeError("single patch reader returned an invalid result")
+        return output
 
     def read_many(
         self, requests: tuple[tuple[int, int, int, int, int], ...]
@@ -302,6 +411,18 @@ class _VipsPatchReader:
 
         if not requests:
             return ()
+        output = self._with_reopen(
+            lambda image: self._read_many_from_image(image, requests)
+        )
+        if isinstance(output, np.ndarray):
+            raise RuntimeError("batch patch reader returned an invalid result")
+        return output
+
+    def _read_many_from_image(
+        self,
+        image: Any,
+        requests: tuple[tuple[int, int, int, int, int], ...],
+    ) -> tuple[np.ndarray, ...]:
         groups: dict[
             tuple[int, int, int, int],
             list[tuple[int, tuple[int, int, int, int, int]]],
@@ -316,8 +437,8 @@ class _VipsPatchReader:
             minimum = min(request[0] for _, request in items)
             maximum = max(request[0] + width for _, request in items)
             left = minimum - width if minimum >= width else minimum
-            right = maximum + width if maximum + width <= self.image.width else maximum
-            strip = self.image.crop(left, y, right - left, height)
+            right = maximum + width if maximum + width <= image.width else maximum
+            strip = image.crop(left, y, right - left, height)
             strip = strip.resize(
                 output_px / width,
                 vscale=output_px / height,
@@ -327,11 +448,25 @@ class _VipsPatchReader:
                 start = round((request[0] - left) * output_px / width)
                 patch = array[:, start : start + output_px]
                 if patch.shape != (output_px, output_px, 3):
-                    patch = self(*request)
+                    patch = self._read_one(image, *request)
                 patches[index] = patch
         if any(patch is None for patch in patches):
             raise RuntimeError("batch patch reader did not fill every request")
         return tuple(patch for patch in patches if patch is not None)
+
+    @classmethod
+    def _read_one(
+        cls,
+        image: Any,
+        x: int,
+        y: int,
+        width: int,
+        height: int,
+        output_px: int,
+    ) -> np.ndarray:
+        patch = image.crop(x, y, width, height)
+        patch = patch.resize(output_px / width, vscale=output_px / height)
+        return cls._as_rgb(patch)
 
     @staticmethod
     def _as_rgb(image: Any) -> np.ndarray:

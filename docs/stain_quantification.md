@@ -22,6 +22,9 @@ study-specific normalization model beyond this workflow.
 Known special-stain names are inferred conservatively. Other brightfield
 markers use `default_family`, normally `h-dab`. Use an exact assay manifest
 when filenames are ambiguous or when acquisition batches must be recorded.
+Manifest rows may also set `analysis_included = false` with a required
+`exclusion_reason`. Excluded registered sections remain explicit result rows,
+but no quantitative model or map is produced for them.
 
 ## Method
 
@@ -33,23 +36,58 @@ At the configured physical resolution, Histopia:
    accepted tissue mask.
 3. Benchmarks fixed, legacy, Macenko, and nonnegative matrix-factorization
    stain vectors within each assay family.
-4. Selects one family method from reconstruction error, glass leakage, prior
-   drift, and bootstrap stability. Adaptive candidates are eligible only when
+4. Selects one family method from reconstruction error, glass leakage,
+   counterstain-only target leakage, prior drift, and bootstrap stability.
+   Adaptive candidates are eligible only when
    their main and bootstrap optimizations converge for every family slide and
    their target signal preserves the fixed-baseline pixel ranking on at least
    90% of family slides. Selected slide vectors are then shrunk toward a robust
    cohort template.
 5. Proposes background correction but accepts it only when rank correlation is
-   at least the configured guard and glass leakage does not worsen.
+   at least the configured guard and neither glass nor counterstain-only target
+   leakage worsens.
 6. Writes continuous raw target OD, corrected target OD, counterstain,
-   reconstruction residual, confidence, and tissue support maps.
+   reconstruction residual, confidence, and tissue support maps. The portable
+   artifact contract rejects every continuous channel or positive pixel that
+   is nonzero outside the saved tissue mask.
+7. Optionally derives a tissue-only adaptive output by subtracting an inferred
+   target-OD floor. This derived layer is accepted only when support size,
+   bootstrap stability, total suppression, upper-signal retention, rank
+   preservation, and post-subtraction background all pass fixed guards.
+   The counterstain-conditioned v3 option additionally estimates a bounded,
+   nonnegative target-channel leakage slope from high-confidence negative
+   tissue. It writes a source-fingerprint-bound sidecar and never rewrites the
+   physical raw/corrected maps.
 
 The raw map uses the versioned fixed vector on the uncorrected source image.
 The corrected map uses the selected, cohort-shrunk vector and illumination
-correction only when the rank, glass-leakage, and background-spatial-variation
-guards all pass. If any guard fails, the corrected map is the raw map. This
-makes the raw/corrected comparison a conservative audit of the complete
-nuisance-correction proposal.
+correction only when the rank, glass-leakage, counterstain-leakage, and
+background-spatial-variation guards all pass. The counterstain diagnostic uses
+strong-counterstain, low-target pixels selected against the family prior; it
+does not erase nuclei or alter the raw measurement. If any guard fails, the
+corrected map is the raw map. This makes the raw/corrected comparison a
+conservative audit of the complete nuisance-correction proposal.
+
+`adaptive_background = "inferred_floor"` does not rewrite or replace either
+physical OD array. It derives `max(physical_output - floor, 0)` only inside the
+accepted registration tissue mask. If any adaptive guard fails, display and
+downstream output fall back to the physical raw/corrected map. This is intended
+to correct broad slide-level chromogen cast without inventing finer spatial
+detail or implying measurement resolution below the configured 4 µm/px.
+The v2 gate also handles broadly over-stained tissue: it may remove up to 75%
+of integrated target OD only when the inferred floor is bootstrap-stable, at
+least 45% of the tissue q95 signal remains, and signal ranks are preserved.
+Low-fraction counterstain support is accepted only when it contains at least
+4,096 pixels; otherwise the physical map remains the fallback.
+
+`adaptive_background = "counterstain_conditioned"` fits a three-component
+mixture to log target OD inside accepted tissue, identifies the low-signal
+population, and removes a bounded nuisance envelope conditioned on
+counterstain OD. The correction retains at least 45% of q95 signal, suppresses
+no more than 75% of integrated OD, preserves retained-signal ranks, and uses no
+free spatial field. Accepted output is stored in an immutable derived map bound
+to the exact source-map content fingerprint. Rejected v3 proposals leave the
+validated v2/physical output available as an explicit fallback.
 
 Automatic positivity is secondary. Otsu, a robust low-mode estimate, and a
 two-component mixture must agree and show sufficient separation. If that gate
@@ -134,14 +172,17 @@ histopia-visualize build /path/to/viewer-root \
   --workers 4
 ```
 
-The viewer exposes raw and corrected signal-only layers, histology overlays,
+The viewer exposes raw, corrected, and (when accepted) adaptive signal layers,
+histology overlays,
 fixed per-mouse OD scales, correction and approval status, and a linked ROI
 probe across visible sections. Probe values come from bounded registered grids;
 full analysis arrays and source WSI are never loaded into the browser. H&E
 sections remain visible as context but are excluded from quantitative probe
 rows.
 
-Color is a display encoding, not a second normalization. Use the numeric OD
+Color is a display encoding, not a second normalization. Palettes follow the
+assay chromogen (DAB brown, Sirius Red red, PAS magenta, Alcian Blue blue) and
+never change numeric OD. Use the numeric OD
 summary and QC flags for interpretation. The viewer clips display and probe
 grids at the largest slide-level 99th-percentile value within each mouse while
 the sealed source-space maps retain their complete continuous values.
@@ -158,8 +199,8 @@ histopia-visualize stain-review /path/to/viewer-root/histopia \
 ```
 
 The portal ranks a bounded review set from correction rejection, rank-guard
-failure, increased candidate glass leakage, high corrected leakage, high
-reconstruction residual, and assay-family coverage. It presents registered
+failure, increased candidate glass or counterstain-only leakage, high corrected
+leakage, high reconstruction residual, and assay-family coverage. It presents registered
 histology, raw OD overlay, final output overlay, and final output OD with linked
 zoom. When a correction proposal fails, the final panels are explicitly
 identified as the raw fallback.

@@ -150,3 +150,17 @@ body > main {
   body { grid-template-columns: minmax(0, 1fr) 260px; }
   #registration-feedback { padding: 8px; }
 }
+@media (max-width: 600px) {
+  body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: 32px minmax(260px, 42vh) minmax(0, 1fr);
+  }
+  body > header { grid-column: 1; grid-row: 1; }
+  body > main { grid-column: 1; grid-row: 2; }
+  #registration-feedback {
+    grid-column: 1;
+    grid-row: 3;
+    border-top: 1px solid #45494d;
+    border-left: 0;
+  }
+}

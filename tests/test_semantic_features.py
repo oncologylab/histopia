@@ -6,6 +6,7 @@ import zipfile
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from histopia.registration import SlideGeometry
 from histopia.semantic import PatchFeatures
@@ -192,7 +193,7 @@ def test_extract_patch_features_filters_grid_with_registered_tissue_mask() -> No
 
     def reader(x: int, y: int, width: int, height: int, output_px: int) -> np.ndarray:
         calls.append((x, y, width, height, output_px))
-        return np.full((output_px, output_px, 3), x + y, dtype=np.uint8)
+        return np.full((output_px, output_px, 3), (x + y) % 256, dtype=np.uint8)
 
     class MeanEncoder:
         def encode(self, images: np.ndarray) -> np.ndarray:
@@ -215,6 +216,102 @@ def test_extract_patch_features_filters_grid_with_registered_tissue_mask() -> No
     np.testing.assert_allclose(result.native_xy, [[112, 112], [336, 112]])
     np.testing.assert_allclose(result.reference_um_xy, [[56, 56], [168, 56]])
     assert calls == [(0, 0, 224, 224, 224), (224, 0, 224, 224, 224)]
+
+
+def test_extract_patch_features_reuses_native_grid_and_encodes_only_new_cells() -> None:
+    geometry = SlideGeometry(
+        native_shape=(448, 448),
+        content_bbox_xywh=(0, 0, 448, 448),
+        thumbnail_shape=(4, 4),
+        bounds_source="test",
+        mpp_xy=(0.5, 0.5),
+    )
+    reusable = PatchFeatures(
+        slide_id="section.ndpi",
+        features=np.array([[11, 12], [21, 22]], dtype=np.float32),
+        grid_rc=np.array([[0, 0], [0, 1]], dtype=np.int32),
+        native_xy=np.array([[112, 112], [336, 112]], dtype=np.float64),
+        reference_um_xy=np.zeros((2, 2), dtype=np.float64),
+        tissue_fraction=np.ones(2, dtype=np.float32),
+        grid_shape=(2, 2),
+        patch_size_px=224,
+        analysis_mpp=0.5,
+    )
+    calls: list[tuple[int, int]] = []
+
+    def reader(x: int, y: int, width: int, height: int, output_px: int) -> np.ndarray:
+        calls.append((x, y))
+        return np.full((output_px, output_px, 3), (x + y) % 256, dtype=np.uint8)
+
+    class Encoder:
+        def encode(self, images: np.ndarray) -> np.ndarray:
+            values = images[:, 0, 0, 0].astype(np.float32)
+            return np.column_stack([values, values + 1])
+
+    result = extract_patch_features(
+        slide_id="section.ndpi",
+        geometry=geometry,
+        tissue_mask=np.ones((4, 4), dtype=bool),
+        moving_to_reference_thumbnail=np.array(
+            [[1, 0, 1], [0, 1, 2], [0, 0, 1]], dtype=float
+        ),
+        reference_geometry=geometry,
+        reader=reader,
+        encoder=Encoder(),
+        reusable_features=reusable,
+        batch_size=8,
+    )
+
+    assert calls == [(0, 224), (224, 224)]
+    np.testing.assert_array_equal(result.grid_rc, [[0, 0], [0, 1], [1, 0], [1, 1]])
+    np.testing.assert_array_equal(result.features[:2], reusable.features)
+    np.testing.assert_array_equal(result.features[2:], [[224, 225], [192, 193]])
+    np.testing.assert_allclose(result.reference_um_xy[0], [112, 168])
+    np.testing.assert_array_equal(result.tissue_fraction, np.ones(4))
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    (
+        ({"slide_id": "other.ndpi"}, "different slide"),
+        ({"grid_shape": (1, 4)}, "grid shape"),
+        ({"patch_size_px": 112}, "patch size"),
+        ({"analysis_mpp": 1.0}, "analysis MPP"),
+        ({"native_xy": np.array([[113, 112]])}, "native patch centers"),
+    ),
+)
+def test_extract_patch_features_rejects_incompatible_reuse(change, message) -> None:
+    geometry = SlideGeometry(
+        native_shape=(224, 224),
+        content_bbox_xywh=(0, 0, 224, 224),
+        thumbnail_shape=(2, 2),
+        bounds_source="test",
+        mpp_xy=(0.5, 0.5),
+    )
+    values = {
+        "slide_id": "section.ndpi",
+        "features": np.ones((1, 2), dtype=np.float32),
+        "grid_rc": np.array([[0, 0]], dtype=np.int32),
+        "native_xy": np.array([[112, 112]], dtype=np.float64),
+        "reference_um_xy": np.zeros((1, 2), dtype=np.float64),
+        "tissue_fraction": np.ones(1, dtype=np.float32),
+        "grid_shape": (1, 1),
+        "patch_size_px": 224,
+        "analysis_mpp": 0.5,
+    }
+    values.update(change)
+
+    with pytest.raises(ValueError, match=message):
+        extract_patch_features(
+            slide_id="section.ndpi",
+            geometry=geometry,
+            tissue_mask=np.ones((2, 2), dtype=bool),
+            moving_to_reference_thumbnail=np.eye(3),
+            reference_geometry=geometry,
+            reader=lambda *_: np.zeros((224, 224, 3), dtype=np.uint8),
+            encoder=object(),
+            reusable_features=PatchFeatures(**values),
+        )
 
 
 def test_vectorized_grid_coverage_exactly_matches_scalar_reference() -> None:

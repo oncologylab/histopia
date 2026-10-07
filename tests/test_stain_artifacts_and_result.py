@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
 import pytest
 
 from histopia.stain import (
+    AdaptiveStainMap,
     StainFamily,
     StainMap,
     approve_stain_result,
@@ -53,6 +55,114 @@ def test_stain_map_detects_changed_content(tmp_path: Path) -> None:
         StainMap.load(path)
 
 
+def test_adaptive_stain_map_is_bound_to_physical_content(tmp_path: Path) -> None:
+    source = _map()
+    target = np.where(source.tissue_mask, source.corrected_target_od / 2, 0)
+    adaptive = AdaptiveStainMap(
+        slide_id=source.slide_id,
+        target_od=target,
+        tissue_mask=source.tissue_mask,
+        analysis_mpp=source.analysis_mpp,
+        content_origin_native_xy=source.content_origin_native_xy,
+        source_mpp_xy=source.source_mpp_xy,
+        source_content_fingerprint=str(source.content_fingerprint),
+        method="counterstain-conditioned-v3",
+        diagnostics={
+            "method": "counterstain-conditioned-v3",
+            "accepted": True,
+        },
+    )
+    path = adaptive.save(tmp_path / "adaptive.npz")
+    loaded = AdaptiveStainMap.load(path)
+
+    np.testing.assert_array_equal(loaded.target_od, target)
+    assert loaded.source_content_fingerprint == source.content_fingerprint
+    assert len(str(loaded.content_fingerprint)) == 64
+    with pytest.raises(ValueError, match="source fingerprint"):
+        replace(adaptive, source_content_fingerprint="stale", content_fingerprint=None)
+
+
+def test_stain_result_seals_optional_adaptive_map(tmp_path: Path) -> None:
+    (tmp_path / "preflight.json").write_text("{}")
+    (tmp_path / "benchmark.json").write_text("{}")
+    source = _map()
+    source.save(tmp_path / "map.npz")
+    adaptive = AdaptiveStainMap(
+        slide_id=source.slide_id,
+        target_od=source.corrected_target_od,
+        tissue_mask=source.tissue_mask,
+        analysis_mpp=source.analysis_mpp,
+        content_origin_native_xy=source.content_origin_native_xy,
+        source_mpp_xy=source.source_mpp_xy,
+        source_content_fingerprint=str(source.content_fingerprint),
+        method="counterstain-conditioned-v3",
+        diagnostics={"method": "counterstain-conditioned-v3"},
+    )
+    adaptive.save(tmp_path / "adaptive.npz")
+    (tmp_path / "model.json").write_text("{}")
+    write_stain_result(
+        tmp_path,
+        {
+            "schema_version": 1,
+            "preflight": "preflight.json",
+            "benchmark": "benchmark.json",
+            "slides": [
+                {
+                    "id": source.slide_id,
+                    "quantified": True,
+                    "map": "map.npz",
+                    "model": "model.json",
+                    "adaptive_map": "adaptive.npz",
+                }
+            ],
+        },
+    )
+
+    result = validate_stain_result(tmp_path)
+    assert "adaptive.npz" in result["artifacts"]
+    (tmp_path / "adaptive.npz").write_bytes(b"changed")
+    with pytest.raises(ValueError, match="digest mismatch"):
+        validate_stain_result(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "raw_target_od",
+        "corrected_target_od",
+        "counterstain_od",
+        "reconstruction_residual",
+        "confidence",
+    ],
+)
+def test_stain_map_rejects_continuous_values_outside_tissue(field: str) -> None:
+    stain_map = _map()
+    leaked = np.array(getattr(stain_map, field), copy=True)
+    leaked[0, 0] = 0.1
+
+    with pytest.raises(ValueError, match="outside the tissue mask"):
+        replace(
+            stain_map,
+            **{field: leaked},
+            fingerprint=None,
+            content_fingerprint=None,
+        )
+
+
+def test_stain_map_rejects_positive_pixels_outside_tissue() -> None:
+    stain_map = _map()
+    leaked = np.array(stain_map.positive_mask, copy=True)
+    leaked[0, 0] = True
+
+    with pytest.raises(ValueError, match="positive mask"):
+        replace(
+            stain_map,
+            positive_mask=leaked,
+            fingerprint=None,
+            content_fingerprint=None,
+        )
+
+
 def test_result_sealing_and_approval_reject_tampering(tmp_path: Path) -> None:
     (tmp_path / "preflight.json").write_text("{}")
     (tmp_path / "benchmark.json").write_text("{}")
@@ -94,6 +204,13 @@ def test_result_sealing_and_approval_reject_tampering(tmp_path: Path) -> None:
     models.joinpath("001.json").write_text('{"schema_version":2}')
     with pytest.raises(ValueError, match="digest mismatch"):
         validate_stain_result(tmp_path)
+    with pytest.raises(ValueError, match="digest mismatch"):
+        stain_review_status(tmp_path, payload)
+    assert stain_review_status(
+        tmp_path,
+        payload,
+        verify_artifacts=False,
+    )["approved_families"] == ["h-dab"]
     assert json.loads(result_path.read_text())["fingerprint"] == payload["fingerprint"]
 
 

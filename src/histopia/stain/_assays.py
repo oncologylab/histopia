@@ -28,6 +28,8 @@ class SlideAssay:
     marker: str
     family: StainFamily
     batch_id: str | None = None
+    analysis_included: bool = True
+    exclusion_reason: str | None = None
 
     def __post_init__(self) -> None:
         if not self.slide_id.strip():
@@ -36,6 +38,12 @@ class SlideAssay:
             raise ValueError("marker must not be blank")
         if self.batch_id is not None and not self.batch_id.strip():
             raise ValueError("batch_id must be non-empty when provided")
+        if not isinstance(self.analysis_included, bool):
+            raise ValueError("analysis_included must be bool")
+        if self.analysis_included and self.exclusion_reason is not None:
+            raise ValueError("included slides cannot have an exclusion_reason")
+        if not self.analysis_included and not (self.exclusion_reason or "").strip():
+            raise ValueError("excluded slides require an exclusion_reason")
 
     def to_json_dict(self) -> dict[str, object]:
         payload = asdict(self)
@@ -73,6 +81,12 @@ def load_assay_manifest(path: Path | str) -> dict[str, SlideAssay]:
             batch_id=(
                 str(raw["batch_id"]).strip()
                 if raw.get("batch_id") is not None
+                else None
+            ),
+            analysis_included=raw.get("analysis_included", True),
+            exclusion_reason=(
+                str(raw["exclusion_reason"]).strip()
+                if raw.get("exclusion_reason") is not None
                 else None
             ),
         )
@@ -125,7 +139,10 @@ def infer_slide_assay(
     elif key == "pas" or key.startswith("pascollection"):
         family = StainFamily.PAS
         marker = "PAS"
-    elif key in {"he", "hande", "hematoxylineosin"}:
+    elif key in {"he", "hande", "hematoxylineosin", "ahe"}:
+        # ``A_HE`` is a verified KPF acquisition label for the contextual H&E
+        # section (the leading ``A`` is not an antibody name).  Keep the alias
+        # explicit so unrelated markers ending in ``HE`` remain conservative.
         family = StainFamily.CONTEXT_HE
         marker = "H&E"
     elif default_family is not None:

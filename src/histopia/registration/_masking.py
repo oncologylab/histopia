@@ -518,9 +518,16 @@ def refine_group_tissue_masks(
                 and fragment_gap <= 0.02 * float(np.hypot(*result.mask.shape))
                 and _component_center_fill_ratio(component) >= 0.45
             )
+            # A serial section can contain a compact secondary tissue island
+            # that is much smaller than the dominant lobe.  Requiring it to be
+            # at least 10% of the dominant component removed a real, recurring
+            # pancreatic lobule in mouse 4988 even though both direct and
+            # adjacent sections supported it.  Six percent remains above the
+            # small-fragment/debris regime, while the recurrence and shape
+            # gates below still reject rails, smears, and one-slide artifacts.
             recurring_substantial_component = (
                 support >= min_group_support
-                and relative_area >= 0.10
+                and relative_area >= 0.06
                 and (
                     relative_area >= 0.50
                     or direct_support >= 0.50

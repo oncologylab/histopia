@@ -1,0 +1,31 @@
+output_dir = "protein-run"
+seed = 0
+pca_components = 128
+spatial_block_um = 1024.0
+exclusion_buffer_um = 112.0
+positive_area_fraction = 0.25
+negative_area_fraction = 0.05
+minimum_effective_pixels = 2.0
+minimum_coverage = 0.70
+hidden_units = 256
+hidden_layers = 4
+ensemble_seeds = 3
+model_candidates = ["morphospatial_knn", "linear", "tree", "hurdle_mlp", "graphsage", "cross_attention"]
+coordinate_scale_um = 256.0
+section_spacing_um = 5.0
+calibration_enabled = true
+calibration_bin_um = 64.0
+calibration_minimum_cells_per_bin = 4
+calibration_minimum_anchors = 128
+calibration_scale_min = 0.5
+calibration_scale_max = 2.5
+semantic_blend_weight = 0.7
+od_harmonization = "none"
+
+[target]
+target_id = "E-Cad"
+aliases = ["Ecad"]
+assay_domain = "ecad-pooled-v1"
+compartment = "inner_boundary"
+measurement_statistic = "mean"
+binary_enabled = false

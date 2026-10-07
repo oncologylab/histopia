@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Organ metadata · Histopia</title><link rel="stylesheet" href="inventory.css">
+</head>
+<body>
+<header><div><h1>Organ metadata</h1><p>All audited internal scans · <span id="updated"></span></p></div>
+  <div class="downloads"><a id="organ-csv" href="downloads/all-organs.csv" download>Organ CSV</a>
+    <a id="workbook" hidden download>All organs · Excel</a></div></header>
+<main>
+  <nav id="organs" aria-label="Organ"></nav>
+  <div class="toolbar">
+    <label>Source<select id="source"><option value="">All internal sources</option></select></label>
+    <label id="table-choice" hidden>Table<select id="metadata-table"><option value="curated">Curated metadata</option><option value="inventory">All inventoried scans</option></select></label>
+    <label>Availability<select id="availability"><option value="">All scans</option><option value="results">Results available</option><option value="metadata">Metadata only</option></select></label>
+    <label class="search">Find a scan<input id="search" type="search" placeholder="Mouse, stain or filename" autocomplete="off"></label>
+    <button id="clear" type="button">Clear filters</button>
+  </div>
+  <p id="table-source" class="coverage" hidden></p>
+  <p class="coverage" id="coverage" role="status"></p>
+  <div class="table-wrap" tabindex="0" aria-label="Scan metadata table"><table>
+    <thead><tr><th>Mouse / specimen</th><th>Source</th><th>Scan / stain</th><th id="order-heading">Section</th><th>Available results</th><th>Review</th></tr></thead>
+    <tbody id="rows"></tbody></table></div>
+  <div class="pagination"><button id="previous" type="button">Previous</button><span id="page"></span><button id="next" type="button">Next</button></div>
+  <details class="methods"><summary>Inventory scope &amp; downloads</summary>
+    <p id="scope"></p><p>Exact copies are grouped. Scan counts are not physical section counts. Unknown identity, order and spacing remain unresolved. Inventory inclusion does not approve reconstruction or prediction.</p>
+    <p id="file-summary"></p><div id="extra-downloads" class="downloads"></div>
+  </details>
+  <noscript><p>Download the complete metadata tables:</p><ul><!-- ORGAN_DOWNLOADS --></ul></noscript>
+</main>
+<script src="inventory-data.js"></script><script src="inventory.js"></script>
+</body></html>

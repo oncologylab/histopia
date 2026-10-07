@@ -65,7 +65,14 @@ def test_qupath_doctor_ranges_match_normal_workflow_extras() -> None:
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
     extras = project["optional-dependencies"]
     expected: dict[str, str] = {}
-    for extra in ("registration", "wsi", "uni2h", "topology", "qupath"):
+    for extra in (
+        "registration",
+        "wsi",
+        "uni2h",
+        "topology",
+        "cells",
+        "qupath",
+    ):
         for requirement_text in extras[extra]:
             requirement = Requirement(requirement_text)
             name = canonicalize_name(requirement.name)

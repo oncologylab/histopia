@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from dataclasses import asdict
 from pathlib import Path
 
 from histopia._signals import graceful_sigterm
@@ -102,6 +103,15 @@ def _build_parser() -> argparse.ArgumentParser:
     approve.add_argument("--registration-run", type=Path, required=True)
     approve.add_argument("--reviewer", required=True)
     approve.add_argument("--review-notes", required=True)
+    rebind = subparsers.add_parser(
+        "rebind-registration",
+        help=(
+            "Rebind an unchanged legacy atlas to a final registration approval "
+            "after exact scientific-identity verification."
+        ),
+    )
+    rebind.add_argument("--run", type=Path, required=True)
+    rebind.add_argument("--registration-run", type=Path, required=True)
     cohort = subparsers.add_parser("cohort-qc")
     cohort.add_argument("--run", type=_named_path, action="append", required=True)
     cohort.add_argument("--output", type=Path, required=True)
@@ -139,6 +149,19 @@ def _main(argv: list[str] | None = None) -> int:
             f"{approval.run_dir / 'semantic_review.json'}: "
             f"fingerprint={approval.fingerprint}"
         )
+        return 0
+    if args.command == "rebind-registration":
+        from histopia.semantic._binding_migration import (
+            rebind_semantic_to_registration_approval,
+        )
+
+        migration = rebind_semantic_to_registration_approval(
+            args.registration_run,
+            args.run,
+        )
+        payload = asdict(migration)
+        payload["semantic_run"] = str(migration.semantic_run)
+        print(json.dumps(payload, indent=2))
         return 0
     if args.command == "cohort-qc":
         from histopia.semantic._qc import write_cohort_qc

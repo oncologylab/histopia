@@ -95,7 +95,7 @@
             .replace("{y}", y);
           return new URL(relative, metadata.metadata_url).href;
         }
-        return `/api/wsi/${encodeURIComponent(metadata.cohort)}/` +
+        return histopiaUrl(`/api/wsi/${encodeURIComponent(metadata.cohort)}/`) +
           `${metadata.section}/${layerName}/${layer.digest}/` +
           `${level}/${x}/${y}.${layer.format}`;
       },
@@ -116,6 +116,7 @@
       throw new Error("Native-resolution viewer runtime is unavailable");
     viewer = OpenSeadragon({
       element: canvas,
+      drawer: navigator.webdriver ? ["html"] : ["canvas"],
       showNavigationControl: false,
       showNavigator: true,
       navigatorPosition: "BOTTOM_RIGHT",
@@ -170,7 +171,7 @@
       );
     } else {
       response = await fetch(
-        `/api/wsi/${encodeURIComponent(cohort)}/${section}`,
+        histopiaUrl(`/api/wsi/${encodeURIComponent(cohort)}/${section}`),
         {headers: {"Accept": "application/json"}},
       );
     }
@@ -317,7 +318,7 @@
     const fallback = data.feedback?.cohort || "";
     const cohort = cohortFromLocation(fallback);
     const referenceIndex = data.slides.findIndex(slide => slide.reference);
-    fetch(`/api/wsi/${encodeURIComponent(cohort)}`)
+    fetch(histopiaUrl(`/api/wsi/${encodeURIComponent(cohort)}`))
       .then(response => response.ok ? response.json() : {sections: []})
       .then(catalog => {
         const available = new Set(
@@ -365,3 +366,9 @@
 
   globalThis.HistopiaFocusViewer = {attachGrid, close, open};
 }());
+
+// Keep same-origin data requests inside a code-server port proxy.
+function histopiaUrl(path) {
+  const match = location.pathname.match(/^.*?\/proxy\/[0-9]+(?=\/|$)/);
+  return (match ? match[0] : "") + path;
+}

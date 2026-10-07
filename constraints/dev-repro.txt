@@ -1,2 +1,5 @@
-# Exact formatter used by local development and CI.
+# Exact package-development and release tools used locally and in CI.
+build==1.5.0
+hatchling==1.32.0
 ruff==0.16.0
+twine==7.0.0

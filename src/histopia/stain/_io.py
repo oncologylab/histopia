@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 
 from histopia._vips_image import normalize_vips_rgb_uchar
+from histopia._vips_retry import retry_transient_vips_read
 from histopia.stain._preflight import StainPreflightSlide
 
 
@@ -34,24 +35,28 @@ def read_analysis_slide(
         import pyvips
     except ImportError as exc:
         raise RuntimeError("stain WSI processing requires the 'stain' extra") from exc
-    source = pyvips.Image.new_from_file(slide.source_path, access="random")
-    source = normalize_vips_rgb_uchar(source)
     x, y, width, height = slide.content_bbox_xywh
-    cropped = source.crop(x, y, width, height)
     scale_x = slide.mpp_xy[0] / analysis_mpp
     scale_y = slide.mpp_xy[1] / analysis_mpp
-    resized = cropped.resize(scale_x, vscale=scale_y, kernel="lanczos3")
-    rgb = np.frombuffer(resized.write_to_memory(), dtype=np.uint8).reshape(
-        resized.height,
-        resized.width,
-        resized.bands,
-    )
+
+    def read_rgb() -> np.ndarray:
+        source = pyvips.Image.new_from_file(slide.source_path, access="random")
+        source = normalize_vips_rgb_uchar(source)
+        cropped = source.crop(x, y, width, height)
+        resized = cropped.resize(scale_x, vscale=scale_y, kernel="lanczos3")
+        return np.frombuffer(resized.write_to_memory(), dtype=np.uint8).reshape(
+            resized.height,
+            resized.width,
+            resized.bands,
+        )
+
+    rgb = retry_transient_vips_read(read_rgb)
     mask_path = (
         Path(registration_run)
         / "processed"
         / f"{Path(slide.source_path).stem}.mask.png"
     )
-    tissue = _resize_mask(mask_path, (resized.height, resized.width))
+    tissue = _resize_mask(mask_path, rgb.shape[:2])
     return AnalysisSlide(
         rgb=rgb,
         tissue_mask=tissue,

@@ -22,6 +22,7 @@ from histopia.stain._config import load_stain_config
         ("Yi_#4257Panc_AlcianBlue-[247].scn", StainFamily.ALCIAN_BLUE, "Alcian Blue"),
         ("[#120] Yi_#4257_panc_PAS.ndpi", StainFamily.PAS, "PAS"),
         ("[#467] Yi_#5996_panc_HE.ndpi", StainFamily.CONTEXT_HE, "H&E"),
+        ("[#583] Yi_#8079_panc_A_HE.ndpi", StainFamily.CONTEXT_HE, "H&E"),
         ("[#463] Yi_#5996_panc_pERK.ndpi", StainFamily.H_DAB, "pERK"),
     ],
 )
@@ -72,6 +73,49 @@ def test_manifest_is_exact_and_rejects_unregistered_slides(tmp_path: Path) -> No
             manifest=manifest,
             default_family=StainFamily.H_DAB,
         )
+
+
+def test_manifest_records_explicit_analysis_exclusion(tmp_path: Path) -> None:
+    path = tmp_path / "assays.json"
+    path.write_text(
+        json.dumps(
+            {
+                "slides": {
+                    "B-catenin.ndpi": {
+                        "marker": "B-catenin",
+                        "family": "h-dab",
+                        "analysis_included": False,
+                        "exclusion_reason": "Excluded by project owner.",
+                    }
+                }
+            }
+        )
+    )
+
+    assay = load_assay_manifest(path)["B-catenin.ndpi"]
+
+    assert assay.analysis_included is False
+    assert assay.exclusion_reason == "Excluded by project owner."
+
+
+def test_manifest_rejects_unexplained_exclusion(tmp_path: Path) -> None:
+    path = tmp_path / "assays.json"
+    path.write_text(
+        json.dumps(
+            {
+                "slides": {
+                    "B-catenin.ndpi": {
+                        "marker": "B-catenin",
+                        "family": "h-dab",
+                        "analysis_included": False,
+                    }
+                }
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="require an exclusion_reason"):
+        load_assay_manifest(path)
 
 
 def test_config_loads_toml_and_validates_guards(tmp_path: Path) -> None:

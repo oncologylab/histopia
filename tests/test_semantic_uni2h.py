@@ -6,6 +6,7 @@ from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import numpy as np
+import pytest
 
 import histopia.semantic._uni2h as uni2h
 from histopia.semantic._uni2h import (
@@ -15,8 +16,20 @@ from histopia.semantic._uni2h import (
     _inference_precision,
     _LazyUni2hEncoder,
     _preload_wsi_backend,
+    _reshape_spatial_tokens,
     _Uni2hRuntime,
 )
+
+
+def test_spatial_tokens_exclude_prefix_and_preserve_position() -> None:
+    output = np.arange(2 * 13 * 3, dtype=np.float32).reshape(2, 13, 3)
+    tokens = _reshape_spatial_tokens(output, prefix_tokens=4)
+
+    assert tokens.shape == (2, 3, 3, 3)
+    np.testing.assert_array_equal(tokens[:, 0, 0], output[:, 4])
+    np.testing.assert_array_equal(tokens[:, -1, -1], output[:, 12])
+    with pytest.raises(ValueError, match="square"):
+        _reshape_spatial_tokens(output, prefix_tokens=3)
 
 
 def test_uni2h_preloads_wsi_backend_before_gpu_stack() -> None:

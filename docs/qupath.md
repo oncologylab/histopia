@@ -8,9 +8,9 @@ regions. Python remains a child process so WSI, GPU, and model dependencies do
 not enter QuPath's JVM.
 
 ```bash
-# Full registration, UNI2-h semantic, WSI, and interchange workflows:
+# Full registration, UNI2-h semantic, cell, WSI, and interchange workflows:
 python -m pip install \
-  "histopia[registration,wsi,uni2h,topology,qupath] @ git+https://github.com/oncologylab/histopia.git@main"
+  "histopia[registration,wsi,uni2h,topology,cells,qupath] @ git+https://github.com/oncologylab/histopia.git@main"
 
 # Lightweight interchange export only:
 python -m pip install \
@@ -23,7 +23,7 @@ histopia-qupath \
   --output /path/to/qupath-bundle
 
 # Validate the exact environment used by the extension:
-histopia-qupath --doctor --workflow full --device auto --require-api 2
+histopia-qupath --doctor --workflow full --device auto --require-api 3
 ```
 
 `--semantic-geometry regions` is the default. It losslessly coalesces
@@ -103,6 +103,11 @@ The primary **Project workflow** tab supports:
 - separate fingerprint-bound mask and order approvals, followed by final
   sealing of the registered result
 - direct semantic execution from the approved registration workspace
+- native-pixel cell-boundary detection from the approved registration, local
+  high-resolution boundary QC, and bounded editable detection import from the
+  selected QuPath ROI
+- separate UNI2-h and Cellpose model-cache controls, with missing Cellpose
+  weights rejected before inference rather than downloaded implicitly
 - local semantic, blend, K-sensitivity, and topology review followed by
   semantic approval bound to the exact current registration result and seal
 - one integrity audit for the registration seal, any started semantic run,
@@ -195,6 +200,9 @@ The project workflow is deliberately staged:
 9. Choose **Audit integrity** to verify the registration seal, semantic
    binding, and review state together.
 10. Export the approved atlas and import its regions into matching open slides.
+11. Choose **Run cell boundaries** after registration approval, inspect every
+    section with **Open cell QC**, and use **Import cells in ROI** to create
+    editable detections in the current QuPath image.
 
 The same button is used for each computational stage because preprocessing and
 pairwise-distance caches make unchanged work resumable. Review-required stages
@@ -228,7 +236,7 @@ the Python environment rather than QuPath's JVM. Configure and test that
 environment independently with:
 
 ```bash
-histopia-qupath --doctor --workflow full --device auto --require-api 2
+histopia-qupath --doctor --workflow full --device auto --require-api 3
 ```
 
 The doctor imports only the selected workflow's dependencies, checks each

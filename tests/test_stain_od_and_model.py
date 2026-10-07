@@ -6,12 +6,19 @@ import numpy as np
 import pytest
 
 from histopia.stain import StainFamily
+from histopia.stain._adaptive import (
+    apply_adaptive_background,
+    apply_counterstain_conditioned_background,
+    infer_adaptive_background,
+    infer_counterstain_conditioned_background,
+)
 from histopia.stain._model import (
     CandidateFit,
     StainModel,
     _rank_correlation,
     canonical_vectors,
     cohort_vector_template,
+    counterstain_only_mask,
     estimate_nmf_vectors,
     fit_candidate,
     select_family_method,
@@ -24,6 +31,138 @@ from histopia.stain._od import (
     od_to_rgb,
     rgb_to_od,
 )
+from histopia.stain._pipeline import _equivalent_fit_provenance
+
+
+def test_adaptive_background_removes_stable_tissue_floor_only() -> None:
+    rng = np.random.default_rng(17)
+    tissue = np.ones((100, 100), dtype=bool)
+    tissue[:5, :] = False
+    counterstain = rng.gamma(2.0, 0.15, tissue.shape).astype(np.float32)
+    target = np.zeros(tissue.shape, dtype=np.float32)
+    values = 0.04 + rng.gamma(1.5, 0.08, np.count_nonzero(tissue))
+    strongly_stained = rng.random(len(values)) < 0.20
+    values[strongly_stained] += rng.gamma(2.0, 0.30, np.count_nonzero(strongly_stained))
+    target[tissue] = values
+
+    result = infer_adaptive_background(target, counterstain, tissue, seed=4)
+    derived = apply_adaptive_background(target, tissue, result)
+
+    assert result.accepted is True
+    assert result.floor_od >= 0.02
+    assert result.rank_correlation >= 0.995
+    assert 0.10 <= result.suppression_fraction <= 0.75
+    assert np.count_nonzero(derived[~tissue]) == 0
+    np.testing.assert_array_equal(target, target.copy())
+
+
+def test_adaptive_background_falls_back_when_floor_is_too_small() -> None:
+    rng = np.random.default_rng(19)
+    tissue = np.ones((40, 40), dtype=bool)
+    target = rng.uniform(0.0, 0.015, tissue.shape).astype(np.float32)
+    counterstain = rng.uniform(0.0, 1.0, tissue.shape).astype(np.float32)
+
+    result = infer_adaptive_background(target, counterstain, tissue, seed=3)
+    derived = apply_adaptive_background(target, tissue, result)
+
+    assert result.accepted is False
+    assert "floor_below_minimum" in result.rejection_reasons
+    np.testing.assert_array_equal(derived, target)
+
+
+def test_adaptive_background_accepts_stable_overstain_floor() -> None:
+    rng = np.random.default_rng(23)
+    tissue = np.ones((160, 160), dtype=bool)
+    counterstain = rng.gamma(2.0, 0.18, tissue.shape).astype(np.float32)
+    target = np.zeros(tissue.shape, dtype=np.float32)
+    values = 0.32 + rng.gamma(1.2, 0.035, np.count_nonzero(tissue))
+    stained = rng.random(len(values)) < 0.12
+    values[stained] += rng.gamma(2.0, 0.45, np.count_nonzero(stained))
+    target[tissue] = values
+
+    result = infer_adaptive_background(target, counterstain, tissue, seed=5)
+    derived = apply_adaptive_background(target, tissue, result)
+
+    assert result.accepted is True
+    assert result.method == "inferred_floor-v2"
+    assert 0.45 < result.suppression_fraction <= 0.75
+    assert result.q95_retention >= 0.45
+    assert result.rank_correlation >= 0.995
+    assert float(np.quantile(derived[tissue], 0.95)) > 0
+
+
+def test_adaptive_background_allows_large_stable_low_fraction_support() -> None:
+    rng = np.random.default_rng(29)
+    tissue = np.ones((512, 512), dtype=bool)
+    target = 0.25 + rng.gamma(1.3, 0.05, tissue.shape).astype(np.float32)
+    counterstain = target.copy()
+    support = np.zeros(tissue.shape, dtype=bool)
+    support.ravel()[:5_000] = True
+    counterstain[support] = 1.2
+    target[support] = 0.25 + rng.uniform(0, 0.01, np.count_nonzero(support))
+
+    result = infer_adaptive_background(target, counterstain, tissue, seed=8)
+
+    assert result.support_fraction < 0.02
+    assert result.support_pixels >= 4_096
+    assert "insufficient_support_fraction" not in result.rejection_reasons
+
+
+def test_counterstain_conditioned_background_removes_diffuse_nuisance_only() -> None:
+    rng = np.random.default_rng(31)
+    tissue = np.ones((200, 200), dtype=bool)
+    tissue[:10] = False
+    counterstain = rng.gamma(2.0, 0.18, tissue.shape).astype(np.float32)
+    values = (
+        0.25
+        + 0.12 * (counterstain[tissue] - np.median(counterstain[tissue]))
+        + rng.normal(0.0, 0.018, np.count_nonzero(tissue))
+    )
+    positive = rng.random(len(values)) < 0.22
+    values[positive] += rng.gamma(2.0, 0.35, np.count_nonzero(positive))
+    target = np.zeros(tissue.shape, dtype=np.float32)
+    target[tissue] = np.maximum(values, 0)
+    confidence = tissue.astype(np.float32) * 0.9
+
+    result = infer_counterstain_conditioned_background(
+        target,
+        counterstain,
+        tissue,
+        confidence=confidence,
+        seed=31,
+    )
+    derived = apply_counterstain_conditioned_background(
+        target,
+        counterstain,
+        tissue,
+        result,
+    )
+
+    assert result.accepted is True
+    assert result.method == "counterstain-conditioned-v3"
+    assert result.spatial_field_used is False
+    assert 0.10 <= result.suppression_fraction <= 0.75001
+    assert result.q95_retention >= 0.45
+    assert result.residual_rank_correlation >= 0.99
+    assert result.minimum_nuisance_od <= result.maximum_nuisance_od
+    assert np.count_nonzero(derived[~tissue]) == 0
+    assert np.mean(derived[tissue] > 0.02) < 0.30
+    np.testing.assert_array_equal(target[~tissue], 0)
+
+
+def test_fit_cache_reuse_ignores_only_campaign_preflight_fingerprint() -> None:
+    expected = {
+        "preflight_fingerprint": "new",
+        "source_sha256": "source",
+        "mask_sha256": "mask",
+        "analysis_mpp": 4.0,
+    }
+    observed = {**expected, "preflight_fingerprint": "old"}
+
+    assert _equivalent_fit_provenance(observed, expected)
+    assert not _equivalent_fit_provenance(
+        {**observed, "mask_sha256": "different"}, expected
+    )
 
 
 def test_nonnegative_unmixing_recovers_known_concentrations() -> None:
@@ -166,7 +305,42 @@ def test_cohort_method_selection_and_shrinkage_are_deterministic() -> None:
 
     assert selected in {"fixed", "legacy"}
     assert set(metrics) == {"fixed", "legacy"}
+    assert all("counterstain_leakage" in row for row in metrics.values())
     np.testing.assert_allclose(np.linalg.norm(shrunk, axis=1), 1)
+
+
+def test_counterstain_only_leakage_contributes_to_method_selection() -> None:
+    vectors = canonical_vectors(StainFamily.H_DAB)
+    tissue = np.array([[0.5, 0.02], [0.4, 0.01], [0.3, 0.03]]) @ vectors
+    baseline = fit_candidate(
+        tissue,
+        np.zeros((20, 3)),
+        StainFamily.H_DAB,
+        "fixed",
+        seed=5,
+    )
+    clean = replace(baseline, method="clean", counterstain_leakage=0.01)
+    leaky = replace(baseline, method="leaky", counterstain_leakage=0.5)
+
+    selected, metrics = select_family_method([[leaky, clean]])
+
+    assert selected == "clean"
+    assert (
+        metrics["clean"]["counterstain_leakage"]
+        < metrics["leaky"]["counterstain_leakage"]
+    )
+
+
+def test_counterstain_only_mask_selects_strong_counterstain_low_target() -> None:
+    concentrations = np.array(
+        [[0.8, 0.01], [0.7, 0.02], [0.1, 0.8], [0.2, 0.7]] * 4,
+        dtype=np.float32,
+    )
+
+    selected = counterstain_only_mask(concentrations)
+
+    assert selected.shape == (16,)
+    assert np.all(concentrations[selected, 0] > concentrations[selected, 1])
 
 
 def test_nonconverged_adaptive_method_is_ineligible() -> None:

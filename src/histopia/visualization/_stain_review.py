@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import shutil
 from collections.abc import Mapping, Sequence
 from importlib.resources import files
 from pathlib import Path, PurePosixPath
@@ -12,6 +13,7 @@ from typing import Any
 from urllib.parse import quote
 
 from histopia._atomic import write_json_atomic, write_text_atomic
+from histopia.visualization._review_theme import themed_review_css
 
 _ASSET_PACKAGE = "histopia.visualization._stain_review_assets"
 
@@ -83,10 +85,15 @@ def build_stain_review(
         f"globalThis.HISTOPIA_STAIN_REVIEW={encoded};\n",
     )
     for name in ("index.html", "stain-review.css", "stain-review.js"):
+        content = files(_ASSET_PACKAGE).joinpath(name).read_text(encoding="utf-8")
+        if name.endswith(".css"):
+            content = themed_review_css(content)
         write_text_atomic(
             output_dir / name,
-            files(_ASSET_PACKAGE).joinpath(name).read_text(encoding="utf-8"),
+            content,
         )
+    vendor = Path(__file__).with_name("_vendor")
+    shutil.copy2(vendor / "openseadragon.min.js", output_dir / "openseadragon.min.js")
     return output_dir / "index.html"
 
 
@@ -250,6 +257,7 @@ def _review_slide(
     return {
         "id": slide_id,
         "order": order,
+        "section": f"{order:03d}",
         "label": str(slide.get("label") or stain.get("marker") or slide_id),
         "family": str(stain.get("family", "")),
         "assets": assets,
@@ -274,6 +282,14 @@ def _review_slide(
                 qc.get("corrected_glass_leakage"),
                 "corrected_glass_leakage",
             ),
+            "raw_counterstain_leakage": _finite_optional(
+                qc.get("raw_counterstain_leakage"),
+                "raw_counterstain_leakage",
+            ),
+            "corrected_counterstain_leakage": _finite_optional(
+                qc.get("corrected_counterstain_leakage"),
+                "corrected_counterstain_leakage",
+            ),
             "background_cv_before": _finite(
                 qc.get("background_spatial_cv_before"),
                 "background_spatial_cv_before",
@@ -286,11 +302,21 @@ def _review_slide(
                 qc.get("median_reconstruction_residual"),
                 "median_reconstruction_residual",
             ),
+            "adaptive_background": (
+                dict(qc["adaptive_background"])
+                if isinstance(qc.get("adaptive_background"), dict)
+                else None
+            ),
         },
         "quantiles": {
             key: _finite(value, f"quantile {key}")
             for key, value in _mapping(
-                stain.get("quantiles"),
+                (
+                    (stain.get("adaptive_quantiles") or stain.get("quantiles"))
+                    if isinstance(qc.get("adaptive_background"), dict)
+                    and qc["adaptive_background"].get("accepted") is True
+                    else stain.get("quantiles")
+                ),
                 "stain quantiles",
             ).items()
             if key in {"0.5", "0.9", "0.95", "0.99"}
@@ -317,6 +343,11 @@ def _assign_priorities(slides: list[dict[str, object]]) -> None:
             _priority(priority, 70, "rank guard failed")
         if qc["corrected_glass_leakage"] > qc["raw_glass_leakage"] + 1e-8:
             _priority(priority, 60, "glass leakage increased")
+        if (
+            qc["corrected_counterstain_leakage"]
+            > qc["raw_counterstain_leakage"] * 1.05 + 0.002
+        ):
+            _priority(priority, 65, "counterstain-only target leakage increased")
 
     _mark_extremes(
         slides,
@@ -324,6 +355,17 @@ def _assign_priorities(slides: list[dict[str, object]]) -> None:
         reverse=True,
         reason="highest corrected glass leakage",
     )
+    if any(
+        slide["qc"]["raw_counterstain_leakage"] > 0
+        or slide["qc"]["corrected_counterstain_leakage"] > 0
+        for slide in slides
+    ):
+        _mark_extremes(
+            slides,
+            "corrected_counterstain_leakage",
+            reverse=True,
+            reason="highest counterstain-only target leakage",
+        )
     _mark_extremes(
         slides,
         "reconstruction_residual",
@@ -420,6 +462,12 @@ def _finite(value: object, name: str) -> float:
     if not math.isfinite(parsed):
         raise ValueError(f"{name} must be finite")
     return parsed
+
+
+def _finite_optional(value: object, name: str) -> float:
+    """Parse an additive metric while keeping schema-1 viewer compatibility."""
+
+    return 0.0 if value is None else _finite(value, name)
 
 
 def _integer(value: object, name: str) -> int:

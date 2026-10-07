@@ -18,6 +18,11 @@ from histopia._validation import (
 from histopia.stain._assays import StainFamily
 
 STAIN_METHODS = ("legacy", "fixed", "macenko", "nmf")
+ADAPTIVE_BACKGROUND_METHODS = (
+    "off",
+    "inferred_floor",
+    "counterstain_conditioned",
+)
 
 
 @dataclass(slots=True)
@@ -34,6 +39,7 @@ class StainQuantificationConfig:
     white_sample_pixels: int = 50_000
     vector_shrinkage: float = 0.25
     correction_rank_guard: float = 0.98
+    adaptive_background: str = "off"
     seed: int = 0
     workers: int = 1
     vips_threads: int | None = None
@@ -68,6 +74,12 @@ class StainQuantificationConfig:
         )
         if not 0 <= self.correction_rank_guard <= 1:
             raise ValueError("correction_rank_guard must be between zero and one")
+        self.adaptive_background = self.adaptive_background.strip().lower()
+        if self.adaptive_background not in ADAPTIVE_BACKGROUND_METHODS:
+            raise ValueError(
+                "adaptive_background must be one of: "
+                + ", ".join(ADAPTIVE_BACKGROUND_METHODS)
+            )
         self.seed = nonnegative_int("seed", self.seed)
         self.workers = positive_int("workers", self.workers)
         if self.vips_threads is not None:

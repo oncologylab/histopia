@@ -1164,6 +1164,30 @@ def test_group_consensus_preserves_displaced_neighbor_supported_tissue() -> None
     assert refined["target"].mask[105:145, 215:265].all()
 
 
+def test_group_consensus_preserves_small_recurring_compact_tissue_island() -> None:
+    """Keep a real secondary lobule below 10% of the dominant tissue area."""
+
+    rows, cols = np.indices((300, 400))
+    dominant = ((rows - 130) / 75) ** 2 + ((cols - 245) / 85) ** 2 <= 1
+    island = ((rows - 235) / 22) ** 2 + ((cols - 75) / 24) ** 2 <= 1
+    mask = dominant | island
+
+    def result(value: np.ndarray) -> TissueMaskResult:
+        return TissueMaskResult(value.copy(), "synthetic", {}, True, [])
+
+    refined = refine_group_tissue_masks(
+        {
+            "first": result(mask),
+            "target": result(mask),
+            "third": result(mask),
+        },
+        normalized_shape=mask.shape,
+    )
+
+    assert 0.06 <= island.sum() / dominant.sum() < 0.10
+    assert refined["target"].mask[island].all()
+
+
 def test_group_consensus_preserves_low_fill_curved_tissue() -> None:
     rows, cols = np.indices((240, 320))
     radius = np.hypot(rows - 120, cols - 90)

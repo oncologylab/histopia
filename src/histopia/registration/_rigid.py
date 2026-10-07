@@ -1,4 +1,10 @@
-"""Rigid registration primitives."""
+"""Global registration primitives with historical ``rigid`` API names.
+
+The feature and mask-moment estimators fit similarity transforms, including
+uniform scale. Optional mask refinement fits an affine transform. Only the
+phase-correlation initializer is translation-only. These APIs do not enforce
+rotation-and-translation-only registration, even with ``refine=False``.
+"""
 
 from __future__ import annotations
 
@@ -15,7 +21,12 @@ MIN_MASK_FALLBACK_DICE = 0.25
 
 @dataclass(slots=True)
 class RigidTransformResult:
-    """Rigid transform estimate from moving image into fixed image coordinates."""
+    """Global transform from moving image into fixed image coordinates.
+
+    The historical class name does not constrain the matrix: similarity and
+    affine estimates are also represented here. Assess physical rigidity only
+    after accounting for both slides' thumbnail geometry and pixel spacing.
+    """
 
     matrix: np.ndarray
     method: str
@@ -55,7 +66,7 @@ def prepare_rigid_features(
     image: np.ndarray,
     mask: np.ndarray | None = None,
 ) -> PreparedRigidFeatures:
-    """Detect one slide's rigid-registration features exactly once."""
+    """Detect one slide's global-registration features exactly once."""
 
     try:
         import cv2
@@ -94,7 +105,13 @@ def estimate_rigid_transform(
     fixed_features: PreparedRigidFeatures | None = None,
     moving_features: PreparedRigidFeatures | None = None,
 ) -> RigidTransformResult:
-    """Estimate a rigid transform from ``moving`` into ``fixed`` coordinates."""
+    """Estimate a global transform from ``moving`` into ``fixed`` coordinates.
+
+    ``feature`` and ``mask_moments`` allow fitted scale; ``phase_correlation``
+    estimates translation only. ``refine=True`` permits affine refinement for
+    any initializer when both masks are supplied. Disabling refinement alone
+    therefore does not guarantee a strictly rigid result.
+    """
 
     if method == "phase_correlation":
         result = _estimate_translation_phase_correlation(fixed, moving)

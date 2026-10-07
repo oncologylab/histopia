@@ -12,6 +12,7 @@ from typing import Any
 
 from histopia._atomic import write_text_atomic
 from histopia.registration._errors import OptionalDependencyError
+from histopia.visualization._review_theme import themed_review_css
 
 _PANE_COUNT = 6
 _PANE_GAP = 8
@@ -112,7 +113,7 @@ def build_non_rigid_review(
         + ";\n",
     )
     write_text_atomic(output / "index.html", _HTML)
-    write_text_atomic(output / "nonrigid-review.css", _CSS)
+    write_text_atomic(output / "nonrigid-review.css", themed_review_css(_CSS))
     write_text_atomic(output / "nonrigid-review.js", _JS)
     return output / "index.html"
 

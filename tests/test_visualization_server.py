@@ -26,6 +26,11 @@ def test_server_ignores_expected_cancelled_texture_writes(error: type[OSError]) 
 
     handler.copyfile(io.BytesIO(b"cancelled texture"), CancelledOutput())
 
+    handler.wfile = CancelledOutput()
+    handler.close_connection = False
+    handler._write_body(b"cancelled API tile")
+    assert handler.close_connection is True
+
 
 def test_server_redirects_root_to_stable_endpoint(tmp_path: Path) -> None:
     stable = tmp_path / "histopia"
@@ -40,7 +45,7 @@ def test_server_redirects_root_to_stable_endpoint(tmp_path: Path) -> None:
         redirect = connection.getresponse()
         assert redirect.status == 302
         assert redirect.version == 11
-        assert redirect.getheader("Location") == "/histopia/"
+        assert redirect.getheader("Location") == "histopia/"
         assert redirect.getheader("Content-Length") == "0"
         redirect.read()
 
@@ -78,7 +83,13 @@ def test_server_requires_and_reports_all_stable_routes(tmp_path: Path) -> None:
         connection.request("GET", "/review")
         redirect = connection.getresponse()
         assert redirect.status == 302
-        assert redirect.getheader("Location") == "/review/"
+        assert redirect.getheader("Location") == "review/"
+        redirect.read()
+
+        connection.request("GET", "/review?view=cells")
+        redirect = connection.getresponse()
+        assert redirect.status == 302
+        assert redirect.getheader("Location") == "review/?view=cells"
         redirect.read()
 
         connection.request("GET", "/healthz")
@@ -315,13 +326,43 @@ def test_server_serves_fingerprinted_wsi_metadata_and_tiles(
                 "sections": [{"section": "001"}],
             }
 
-        def metadata(self, cohort: str, section: str) -> dict[str, object]:
+        def metadata(
+            self,
+            cohort: str,
+            section: str,
+            protein_model: str | None = None,
+        ) -> dict[str, object]:
             assert (cohort, section) == ("mouse", "001")
-            return {"schema_version": 1, "cohort": cohort, "section": section}
+            return {
+                "schema_version": 1,
+                "cohort": cohort,
+                "section": section,
+                "protein_model_id": protein_model,
+            }
 
-        def render_tile(self, *args):
-            assert args == ("mouse", "001", "registered", digest, 0, 0, 0)
-            return b"jpeg-tile", "image/jpeg", f'"{digest}-0-0-0"'
+        def render_tile(self, *args, protein_model: str | None = None):
+            if protein_model is not None:
+                assert protein_model == "yap-extra-trees"
+                assert args == (
+                    "mouse",
+                    "001",
+                    "protein_predicted",
+                    digest,
+                    0,
+                    0,
+                    0,
+                )
+                return b"png-model", "image/png", f'"{digest}-0-0-0"'
+            if args[2] == "registered":
+                assert args == ("mouse", "001", "registered", digest, 0, 0, 0)
+                return b"jpeg-tile", "image/jpeg", f'"{digest}-0-0-0"'
+            assert args in {
+                ("mouse", "001", "stain_raw", digest, 0, 0, 0),
+                ("mouse", "001", "stain_adaptive", digest, 0, 0, 0),
+                ("mouse", "001", "stain_adaptive_v3", digest, 0, 0, 0),
+                ("mouse", "001", "stain_adaptive_v3_map", digest, 0, 0, 0),
+            }
+            return b"png-tile", "image/png", f'"{digest}-0-0-0"'
 
     monkeypatch.setattr(
         WsiTileService,
@@ -349,6 +390,23 @@ def test_server_serves_fingerprinted_wsi_metadata_and_tiles(
         assert metadata.status == 200
         assert json.loads(metadata.read())["section"] == "001"
 
+        connection.request(
+            "GET",
+            "/api/wsi/mouse/001/protein/yap-extra-trees",
+        )
+        model_metadata = connection.getresponse()
+        assert model_metadata.status == 200
+        assert json.loads(model_metadata.read())["protein_model_id"] == (
+            "yap-extra-trees"
+        )
+
+        connection.request("HEAD", "/api/wsi/mouse/001")
+        metadata_head = connection.getresponse()
+        assert metadata_head.status == 200
+        assert metadata_head.getheader("Content-Type") == "application/json"
+        assert int(metadata_head.getheader("Content-Length", "0")) > 0
+        assert metadata_head.read() == b""
+
         connection.request("GET", "/api/wsi/unknown")
         missing_catalog = connection.getresponse()
         assert missing_catalog.status == 200
@@ -365,6 +423,67 @@ def test_server_serves_fingerprinted_wsi_metadata_and_tiles(
         etag = tile.getheader("ETag")
         assert tile.read() == b"jpeg-tile"
 
+        dzi_path = f"/api/wsi/mouse/001/registered/{digest}/dzi/8/8/0_0.jpg"
+        connection.request("GET", dzi_path)
+        dzi_tile = connection.getresponse()
+        assert dzi_tile.status == 200
+        assert dzi_tile.read() == b"jpeg-tile"
+
+        stain_path = f"/api/wsi/mouse/001/stain_raw/{digest}/dzi/0/0/0_0.png"
+        connection.request("GET", stain_path)
+        stain_tile = connection.getresponse()
+        assert stain_tile.status == 200
+        assert stain_tile.getheader("Content-Type") == "image/png"
+        assert stain_tile.getheader("ETag") == f'"{digest}-0-0-0"'
+        assert stain_tile.getheader("Cache-Control") == (
+            "public, max-age=31536000, immutable"
+        )
+        assert stain_tile.read() == b"png-tile"
+
+        adaptive_path = f"/api/wsi/mouse/001/stain_adaptive/{digest}/dzi/0/0/0_0.png"
+        connection.request("GET", adaptive_path)
+        adaptive_tile = connection.getresponse()
+        assert adaptive_tile.status == 200
+        assert adaptive_tile.getheader("Content-Type") == "image/png"
+        assert adaptive_tile.read() == b"png-tile"
+
+        for layer in ("stain_adaptive_v3", "stain_adaptive_v3_map"):
+            v3_path = f"/api/wsi/mouse/001/{layer}/{digest}/dzi/0/0/0_0.png"
+            connection.request("GET", v3_path)
+            v3_tile = connection.getresponse()
+            assert v3_tile.status == 200
+            assert v3_tile.getheader("Content-Type") == "image/png"
+            assert v3_tile.read() == b"png-tile"
+
+        model_path = (
+            f"/api/wsi/mouse/001/protein/yap-extra-trees/"
+            f"protein_predicted/{digest}/dzi/0/0/0_0.png"
+        )
+        connection.request("GET", model_path)
+        model_tile = connection.getresponse()
+        assert model_tile.status == 200
+        assert model_tile.getheader("Content-Type") == "image/png"
+        assert model_tile.read() == b"png-model"
+
+        connection.request("HEAD", stain_path)
+        stain_head = connection.getresponse()
+        assert stain_head.status == 200
+        assert stain_head.getheader("Content-Type") == "image/png"
+        assert stain_head.getheader("Content-Length") == str(len(b"png-tile"))
+        assert stain_head.getheader("ETag") == f'"{digest}-0-0-0"'
+        assert stain_head.getheader("Cache-Control") == (
+            "public, max-age=31536000, immutable"
+        )
+        assert stain_head.read() == b""
+
+        connection.request(
+            "GET",
+            f"/api/wsi/mouse/001/stain_raw/{digest}/dzi/0/0/0_0.jpg",
+        )
+        malformed_stain = connection.getresponse()
+        assert malformed_stain.status == 404
+        malformed_stain.read()
+
         connection.request("GET", tile_path, headers={"If-None-Match": etag})
         cached = connection.getresponse()
         assert cached.status == 304
@@ -379,6 +498,58 @@ def test_server_serves_fingerprinted_wsi_metadata_and_tiles(
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+
+
+def test_server_passes_optional_stain_runs_to_tile_registry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    stable = tmp_path / "histopia"
+    stable.mkdir()
+    (stable / "index.html").write_text("stable")
+    registration = tmp_path / "registration"
+    stain = tmp_path / "stain"
+    registration.mkdir()
+    stain.mkdir()
+    config = tmp_path / "review-config.json"
+    config.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "cohorts": {
+                    "mouse": {
+                        "registration": str(registration),
+                        "stain": str(stain),
+                    }
+                },
+            }
+        )
+    )
+    captured: dict[str, object] = {}
+
+    class FakeTiles:
+        pass
+
+    def fake_from_runs(cls, runs, **options):
+        captured["runs"] = runs
+        captured["options"] = options
+        return FakeTiles()
+
+    monkeypatch.setattr(WsiTileService, "from_runs", classmethod(fake_from_runs))
+    server = create_viewer_server(
+        tmp_path,
+        bind="127.0.0.1",
+        port=0,
+        review_config=config,
+        public_review_write=True,
+    )
+    try:
+        assert captured == {
+            "runs": {"mouse": (registration, None)},
+            "options": {"stain_runs": {"mouse": stain}},
+        }
+    finally:
+        server.server_close()
 
 
 def test_server_rejects_missing_stable_viewer(tmp_path: Path) -> None:

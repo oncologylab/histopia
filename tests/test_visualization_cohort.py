@@ -13,7 +13,9 @@ import histopia.visualization._viewer as viewer_module
 from histopia.semantic._result import _seal_semantic_result
 from histopia.visualization import build_section_viewer as _build_section_viewer
 from histopia.visualization._viewer import (
+    _build_semantic_polygon_raster,
     _rasterize_semantic_rectangles,
+    _semantic_patch_polygons,
     _semantic_rgba,
 )
 
@@ -605,6 +607,36 @@ def test_semantic_rectangle_rasterizer_matches_ordered_pillow_paint(
     actual = _rasterize_semantic_rectangles(labels, bounds, colors, shape)
 
     assert np.array_equal(actual, np.asarray(expected))
+
+
+def test_semantic_patch_polygons_preserve_rotated_reference_grid() -> None:
+    angle = np.deg2rad(34.0)
+    row_vector = np.array([-7.0 * np.sin(angle), 7.0 * np.cos(angle)])
+    column_vector = np.array([7.0 * np.cos(angle), 7.0 * np.sin(angle)])
+    grid = np.asarray([(row, col) for row in range(4) for col in range(5)])
+    points = np.asarray(
+        [
+            np.array([30.0, 25.0]) + row * row_vector + col * column_vector
+            for row, col in grid
+        ]
+    )
+    geometry = {
+        "mpp_xy": [1.0, 1.0],
+        "content_bbox_xywh": [0.0, 0.0, 80.0, 80.0],
+    }
+
+    polygons = _semantic_patch_polygons(points, grid, geometry, (80, 80))
+    raster = _build_semantic_polygon_raster(polygons, (80, 80))
+
+    assert raster.patch_count == len(grid)
+    for point in points:
+        x, y = np.rint(point).astype(int)
+        assert raster.last_patch[y, x] >= 0
+    painted = raster.last_patch >= 0
+    for y in range(painted.shape[0]):
+        occupied = np.flatnonzero(painted[y])
+        if len(occupied):
+            assert painted[y, occupied[0] : occupied[-1] + 1].all()
 
 
 def test_semantic_rgba_reuses_exact_patch_raster_across_k_layers(

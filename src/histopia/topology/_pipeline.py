@@ -50,7 +50,7 @@ from histopia.topology._volume import (
 )
 
 Progress = Callable[[str], None]
-TOPOLOGY_ALGORITHM_VERSION = 13
+TOPOLOGY_ALGORITHM_VERSION = 16
 _LINK_COVERAGE_GATE = 0.05
 _LINK_CONFIDENCE_GATE = 0.45
 _VIEWER_FACE_TARGET = 200_000
@@ -237,8 +237,12 @@ def build_topology(
             )
             z_source = "morphology_inferred"
         else:
-            decisions = _uniform_assumed_decisions(evidence)
-            z_source = "uniform_assumed_after_failed_gap_calibration"
+            decisions = _failed_calibration_decisions(evidence, sections)
+            z_source = (
+                "segmented_assumed_after_failed_gap_calibration"
+                if any(row.status == "unresolved" for row in decisions)
+                else "uniform_assumed_after_failed_gap_calibration"
+            )
         z_positions = _inferred_z_positions(
             decisions,
             thickness_um=config.section_thickness_um,
@@ -262,16 +266,17 @@ def build_topology(
     )
     plane_rows = _write_planes(output, planes)
     report("Benchmarking registered-mask envelope reconstruction")
+    section_segments = _section_segments(decisions)
     envelope_qc = benchmark_envelope_methods(
         mask_stack.masks,
         sections,
         z_positions,
+        segments=section_segments,
         origin_um_xy=origin,
         spacing_um=mask_stack.spacing_um,
     )
     selected_envelope_method = str(envelope_qc["selected_method"])
     report(f"Envelope method: {selected_envelope_method} ({envelope_qc['status']})")
-    section_segments = _section_segments(decisions)
     report("Reconstructing dense numerical topology fields")
     dense = reconstruct_dense_volume(
         mask_stack.masks,
@@ -658,22 +663,80 @@ def _manifest_decisions(
     return tuple(decisions)
 
 
-def _uniform_assumed_decisions(
+def _failed_calibration_decisions(
     evidence: tuple[PairEvidence, ...],
+    sections: tuple[ObservedSection, ...] | None = None,
 ) -> tuple[GapDecision, ...]:
-    return tuple(
-        GapDecision(
-            source_section=index,
-            target_section=index + 1,
-            intervals=1,
-            missing_sections=0,
-            status="assumed",
-            confidence=0.0,
-            score=item.score,
-            reasons=("holdout_gap_calibration_failed",),
+    """Fall back to uniform z while preserving clear stack discontinuities.
+
+    A failed hidden-section calibrator does not establish that every adjacent
+    pair is biologically continuous.  Mark only robust aggregate-score
+    outliers that also have poor tissue overlap and poor semantic-label
+    agreement as unresolved.  This prevents a disconnected tissue block from
+    being bridged by an invented surface while leaving ordinary sharp
+    morphology changes in the assumed 5-um sequence. Strongly registered
+    terminal masks that contain at least 83% of the smaller mask are retained
+    as partial serial sections; abrupt tissue taper at the end of a block is
+    not evidence of a missing physical interval.
+    """
+
+    if sections is not None and len(sections) != len(evidence) + 1:
+        raise ValueError("topology sections and pair evidence do not align")
+    scores = np.asarray([item.score for item in evidence], dtype=float)
+    median = float(np.median(scores)) if scores.size else 0.0
+    mad = float(np.median(np.abs(scores - median))) if scores.size else 0.0
+    # A 2.5-sigma robust fence still detects a short terminal run of
+    # discontinuities; a 4-sigma fence becomes self-masking when several
+    # consecutive outliers broaden the stack's MAD.
+    robust_threshold = median + 2.5 * 1.4826 * mad
+    score_threshold = max(0.22, robust_threshold)
+    decisions: list[GapDecision] = []
+    for index, item in enumerate(evidence):
+        discontinuity = (
+            item.score >= score_threshold
+            and item.support_dice < 0.85
+            and item.matched_label_agreement < 0.50
         )
-        for index, item in enumerate(evidence)
-    )
+        reasons = ["holdout_gap_calibration_failed"]
+        if discontinuity and sections is not None and index >= len(evidence) - 4:
+            source_support = np.asarray(sections[index].support, dtype=bool)
+            target_support = np.asarray(sections[index + 1].support, dtype=bool)
+            source_area = int(np.count_nonzero(source_support))
+            target_area = int(np.count_nonzero(target_support))
+            smaller_area = min(source_area, target_area)
+            containment = (
+                float(np.count_nonzero(source_support & target_support)) / smaller_area
+                if smaller_area
+                else 0.0
+            )
+            if (
+                containment >= 0.83
+                and item.correspondence_coverage >= 0.45
+                and item.median_confidence >= 0.55
+            ):
+                discontinuity = False
+                reasons.append("terminal_nested_partial_section_continuity")
+        if discontinuity:
+            reasons.extend(
+                (
+                    "robust_morphology_score_outlier",
+                    "low_registered_support_overlap",
+                    "low_semantic_label_agreement",
+                )
+            )
+        decisions.append(
+            GapDecision(
+                source_section=index,
+                target_section=index + 1,
+                intervals=1,
+                missing_sections=0,
+                status="unresolved" if discontinuity else "assumed",
+                confidence=0.0,
+                score=item.score,
+                reasons=tuple(reasons),
+            )
+        )
+    return tuple(decisions)
 
 
 def _inferred_z_positions(

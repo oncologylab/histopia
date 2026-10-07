@@ -30,6 +30,8 @@ def export_static_showcase(
     *,
     review_config: Path | str | None = None,
     wsi_sections: dict[str, Sequence[str]] | None = None,
+    protein_atlas: Path | str | None = None,
+    protein_atlas_max_bytes: int = 650 * 1024 * 1024,
     max_bytes: int = 900 * 1024 * 1024,
 ) -> Path:
     """Export selected viewer mice without retaining unrelated artifacts.
@@ -54,6 +56,12 @@ def export_static_showcase(
         raise FileExistsError(f"showcase output directory is not empty: {output}")
     if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes <= 0:
         raise ValueError("showcase max_bytes must be a positive integer")
+    if (
+        isinstance(protein_atlas_max_bytes, bool)
+        or not isinstance(protein_atlas_max_bytes, int)
+        or protein_atlas_max_bytes <= 0
+    ):
+        raise ValueError("protein atlas max bytes must be a positive integer")
     unknown_wsi_mice = set(wsi_sections) - set(selected_ids)
     if unknown_wsi_mice:
         raise ValueError(
@@ -146,13 +154,24 @@ def export_static_showcase(
         if wsi_sections
         else {}
     )
+    protein_atlas_inventory = (
+        _export_protein_atlas(
+            Path(protein_atlas),
+            output / "protein-atlas",
+            selected_ids,
+            max_bytes=protein_atlas_max_bytes,
+        )
+        if protein_atlas is not None
+        else None
+    )
 
     inventory = {
-        "schema_version": 4,
+        "schema_version": 5,
         "mouse_ids": list(selected_ids),
         "semantic_results": semantic_results,
         "stain_results": stain_results,
         "wsi_sections": wsi_inventory,
+        "protein_atlas": protein_atlas_inventory,
         "files": _file_inventory(output),
     }
     (output / "showcase.json").write_text(json.dumps(inventory, indent=2) + "\n")
@@ -160,6 +179,45 @@ def export_static_showcase(
     if final_size > max_bytes:
         raise ValueError(f"showcase size {final_size} exceeds max_bytes {max_bytes}")
     return output / "index.html"
+
+
+def _export_protein_atlas(
+    source: Path,
+    destination: Path,
+    selected_ids: tuple[str, ...],
+    *,
+    max_bytes: int,
+) -> dict[str, object]:
+    """Copy one already validated, static atlas without widening its cohort."""
+
+    manifest_path = source / "manifest.json"
+    inventory_path = source / "atlas-inventory.json"
+    if not manifest_path.is_file() or not inventory_path.is_file():
+        raise FileNotFoundError(
+            "cellular protein atlas manifest or inventory is missing"
+        )
+    manifest = json.loads(manifest_path.read_text())
+    inventory = json.loads(inventory_path.read_text())
+    cohorts = manifest.get("cohorts")
+    if manifest.get("schema_version") not in {1, 2} or not isinstance(cohorts, list):
+        raise ValueError("cellular protein atlas manifest is invalid")
+    atlas_ids = tuple(str(row.get("id")) for row in cohorts)
+    if set(atlas_ids) != set(selected_ids):
+        raise ValueError("cellular protein atlas cohorts differ from showcase mice")
+    _reject_local_paths(manifest)
+    source_size = _directory_size(source)
+    if source_size > max_bytes:
+        raise ValueError(
+            f"cellular protein atlas size {source_size} exceeds max_bytes {max_bytes}"
+        )
+    if any(path.is_symlink() for path in source.rglob("*")):
+        raise ValueError("cellular protein atlas must not contain symbolic links")
+    shutil.copytree(source, destination)
+    return {
+        "cohort_ids": list(atlas_ids),
+        "cell_count": inventory.get("cell_count"),
+        "size_bytes": source_size,
+    }
 
 
 def _export_static_wsi(

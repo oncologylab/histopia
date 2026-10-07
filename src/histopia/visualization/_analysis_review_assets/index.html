@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" href="data:,"><title>Histopia · Scientific review</title><link rel="stylesheet" href="workspace.css"></head>
+<body>
+<aside class="navigation"><a class="brand" href="index.html"><span class="brand-mark">H</span><span>Histopia<small>Scientific review</small></span></a>
+<label class="mobile-navigation">Analysis<select id="mobile-view" aria-label="Analysis workspace"></select></label>
+<nav id="navigation" aria-label="Analysis workspaces"></nav><div class="nav-foot">Images · evidence · review</div></aside>
+<main id="workspace">
+<header class="workspace-heading"><div><h1 id="workspace-title">Scientific review</h1><p id="context-line"></p></div>
+<div class="actions"><button id="controls-toggle" aria-pressed="false" aria-controls="review" hidden>Controls</button><button id="review-toggle" aria-pressed="false">Review</button><button id="details-button">Details</button><button id="export-button">Export</button><button id="fullscreen" aria-label="Fullscreen image workspace" title="Fullscreen">⛶</button></div></header>
+<nav id="modes" aria-label="Analysis modes"></nav>
+<section id="context-bar" aria-label="Result selection">
+<label>Source<select id="source"></select></label><label>Organ<select id="organ"></select></label>
+<label><span id="subject-label">Specimen</span><select id="subject"></select></label>
+<label id="result-label">Result<select id="result"></select></label>
+<button id="history-button" title="Include previous versions" aria-pressed="false">Previous versions</button>
+</section>
+<div id="selection-notice" role="status" hidden><span></span><button aria-label="Dismiss selection notice">×</button></div>
+<section id="result-heading"><div><h2 id="result-title"></h2><span id="scope-label"></span></div>
+<div id="section-control" hidden><button id="previous-section" aria-label="Previous section">‹</button><label>Section<select id="section"></select></label><button id="next-section" aria-label="Next section">›</button></div></section>
+<section id="stage" aria-label="Scientific evidence">
+<div id="unavailable" hidden><h2>Result unavailable</h2><p id="unavailable-reason"></p><div id="alternatives"></div></div>
+<div id="media-view" hidden><div class="media-toolbar"><button id="previous-field" aria-label="Previous image">‹</button><label>Image<select id="field"></select></label><button id="next-field" aria-label="Next image">›</button><button id="native-size" aria-pressed="false">Native size</button><a id="open-image" target="_blank" rel="noopener">Open image ↗</a></div>
+<div id="image-viewport"><img id="image" alt=""><p id="image-state" role="status">Loading image…</p></div><p id="image-caption"></p></div>
+<iframe id="review" title="Scientific result viewer" hidden></iframe>
+</section>
+</main>
+<dialog id="detail-dialog"><header><h2 id="dialog-title">Details</h2><button id="close-dialog" aria-label="Close panel">×</button></header><div id="dialog-content"></div></dialog>
+<noscript><style>.navigation,#workspace,dialog{display:none}body{display:block;overflow:auto;height:auto}noscript main{padding:24px;max-width:1000px}</style><main><h1>Published scientific evidence</h1><p>Interactive review requires JavaScript. Published images and viewers remain available below.</p><!-- FALLBACK --></main></noscript>
+<script src="workspace-data.js"></script><script src="workspace.js"></script>
+</body></html>

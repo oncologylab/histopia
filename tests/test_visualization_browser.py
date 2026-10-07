@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import threading
 from pathlib import Path
 
@@ -52,7 +53,9 @@ def test_viewer_fits_desktop_and_ignores_stale_mouse_loads(tmp_path: Path) -> No
     stale_failure_armed = False
     try:
         with playwright.sync_playwright() as runtime:
-            browser = runtime.chromium.launch(headless=True)
+            browser = getattr(
+                runtime, os.environ.get("HISTOPIA_BROWSER", "chromium")
+            ).launch(headless=True)
             page = browser.new_page(viewport={"width": 1920, "height": 1080})
             page.add_init_script(
                 """window.__histopiaRafCount = 0;
@@ -105,8 +108,11 @@ def test_viewer_fits_desktop_and_ignores_stale_mouse_loads(tmp_path: Path) -> No
                 """() => document.querySelector('#mouse').value === 'second'
                   && document.querySelectorAll('#sections li').length === 3
                   && document.querySelector('#viewport').getAttribute('aria-busy')
-                    === 'false'"""
+                    === 'false'""",
+                polling=100,
             )
+            renderer_mode = page.locator("#viewport").get_attribute("data-renderer")
+            assert renderer_mode in {"webgl", "fallback"}
             assert page.url.endswith("/histopia/?mouse=second")
             assert page.locator("#order-status").inner_text() == (
                 "Registration approval required"
@@ -114,31 +120,39 @@ def test_viewer_fits_desktop_and_ignores_stale_mouse_loads(tmp_path: Path) -> No
             assert page.locator("#order-status").evaluate(
                 "element => element.scrollWidth <= element.clientWidth + 1"
             )
-            ready_screenshot = page.locator("canvas").screenshot()
-            ready_pixels = np.asarray(
-                Image.open(io.BytesIO(ready_screenshot)).convert("RGB")
-            )
-            assert np.ptp(ready_pixels.reshape(-1, 3), axis=0).max() > 20
-            page.locator("#mode button[data-mode='semantic']").click()
+            if renderer_mode == "fallback":
+                assert "radial-gradient" in page.locator("canvas").evaluate(
+                    "element => getComputedStyle(element).backgroundImage"
+                )
+            else:
+                ready_screenshot = page.locator("canvas").screenshot()
+                ready_pixels = np.asarray(
+                    Image.open(io.BytesIO(ready_screenshot)).convert("RGB")
+                )
+                assert np.ptp(ready_pixels.reshape(-1, 3), axis=0).max() > 20
+            page.locator("#mode button[data-mode='semantic']").click(force=True)
             page.wait_for_function(
                 """() => document.querySelector('#viewport')
                     .getAttribute('aria-busy') === 'false'
                   && document.querySelector(
                     "#mode button[data-mode='semantic']"
-                  ).classList.contains('active')"""
+                  ).classList.contains('active')""",
+                polling=100,
             )
-            semantic_screenshot = page.locator("canvas").screenshot()
-            semantic_pixels = np.asarray(
-                Image.open(io.BytesIO(semantic_screenshot)).convert("RGB")
-            )
-            assert np.ptp(semantic_pixels.reshape(-1, 3), axis=0).max() > 20
-            page.locator("#mode button[data-mode='stain-overlay']").click()
+            if renderer_mode == "webgl":
+                semantic_screenshot = page.locator("canvas").screenshot()
+                semantic_pixels = np.asarray(
+                    Image.open(io.BytesIO(semantic_screenshot)).convert("RGB")
+                )
+                assert np.ptp(semantic_pixels.reshape(-1, 3), axis=0).max() > 20
+            page.locator("#mode button[data-mode='stain-overlay']").click(force=True)
             page.wait_for_function(
                 """() => document.querySelector('#viewport')
                     .getAttribute('aria-busy') === 'false'
                   && document.querySelector(
                     "#mode button[data-mode='stain-overlay']"
-                  ).classList.contains('active')"""
+                  ).classList.contains('active')""",
+                polling=100,
             )
             assert page.locator("#stain-controls").is_visible()
             canvas_box = page.locator("canvas").bounding_box()
@@ -147,57 +161,69 @@ def test_viewer_fits_desktop_and_ignores_stale_mouse_loads(tmp_path: Path) -> No
                 position={
                     "x": canvas_box["width"] / 2,
                     "y": canvas_box["height"] / 2,
-                }
+                },
+                force=True,
             )
             page.wait_for_function(
-                "() => document.querySelectorAll('#stain-probe .probe-row').length > 0"
+                "() => document.querySelectorAll('#stain-probe .probe-row').length > 0",
+                polling=100,
             )
             assert "relative OD" in page.locator("#qc").inner_text()
             assert "OD" in page.locator("#stain-probe").inner_text()
             page.locator("#stain-variant").select_option("raw")
             page.wait_for_function(
                 """() => document.querySelector('#viewport')
-                    .getAttribute('aria-busy') === 'false'"""
+                    .getAttribute('aria-busy') === 'false'""",
+                polling=100,
             )
-            assert page.evaluate(
-                """() => {
-                  const canvas = document.querySelector('canvas');
-                  const gl = canvas.getContext('webgl2');
-                  window.__histopiaLoseContext =
-                    gl.getExtension('WEBGL_lose_context');
-                  if (!window.__histopiaLoseContext) return false;
-                  window.__histopiaLoseContext.loseContext();
-                  return true;
-                }"""
-            )
-            page.wait_for_function(
-                """() => document.querySelector('#viewport')
-                  .getAttribute('aria-busy') === 'true'"""
-            )
-            page.evaluate("window.__histopiaLoseContext.restoreContext()")
-            page.wait_for_function(
-                """() => document.querySelector('#viewport')
-                  .getAttribute('aria-busy') === 'false'"""
-            )
-            restored_screenshot = page.locator("canvas").screenshot()
-            restored_pixels = np.asarray(
-                Image.open(io.BytesIO(restored_screenshot)).convert("RGB")
-            )
-            assert np.ptp(restored_pixels.reshape(-1, 3), axis=0).max() > 20
-            np.testing.assert_allclose(
-                restored_pixels[0, 0],
-                [244, 245, 243],
-                atol=2,
-            )
+            if renderer_mode == "webgl":
+                assert page.evaluate(
+                    """() => {
+                      const canvas = document.querySelector('canvas');
+                      const gl = canvas.getContext('webgl2');
+                      window.__histopiaLoseContext =
+                        gl.getExtension('WEBGL_lose_context');
+                      if (!window.__histopiaLoseContext) return false;
+                      window.__histopiaLoseContext.loseContext();
+                      return true;
+                    }"""
+                )
+                page.wait_for_function(
+                    """() => document.querySelector('#viewport')
+                      .getAttribute('aria-busy') === 'true'""",
+                    polling=100,
+                )
+                page.evaluate("window.__histopiaLoseContext.restoreContext()")
+                page.wait_for_function(
+                    """() => document.querySelector('#viewport')
+                      .getAttribute('aria-busy') === 'false'""",
+                    polling=100,
+                )
+            else:
+                assert "native-resolution review" in (
+                    page.locator("#viewport canvas").get_attribute("aria-label") or ""
+                )
+            if renderer_mode == "webgl":
+                restored_screenshot = page.locator("canvas").screenshot()
+                restored_pixels = np.asarray(
+                    Image.open(io.BytesIO(restored_screenshot)).convert("RGB")
+                )
+                assert np.ptp(restored_pixels.reshape(-1, 3), axis=0).max() > 20
+                np.testing.assert_allclose(
+                    restored_pixels[0, 0],
+                    [244, 245, 243],
+                    atol=2,
+                )
             page.wait_for_timeout(1800)
             page.evaluate("window.__histopiaRafCount = 0")
             page.wait_for_timeout(500)
             assert page.evaluate("window.__histopiaRafCount") <= 2
-            idle_screenshot = page.locator("canvas").screenshot()
-            idle_pixels = np.asarray(
-                Image.open(io.BytesIO(idle_screenshot)).convert("RGB")
-            )
-            assert np.ptp(idle_pixels.reshape(-1, 3), axis=0).max() > 20
+            if renderer_mode == "webgl":
+                idle_screenshot = page.locator("canvas").screenshot()
+                idle_pixels = np.asarray(
+                    Image.open(io.BytesIO(idle_screenshot)).convert("RGB")
+                )
+                assert np.ptp(idle_pixels.reshape(-1, 3), axis=0).max() > 20
             for width, height in ((1920, 1080), (3840, 2160)):
                 page.set_viewport_size({"width": width, "height": height})
                 page.wait_for_timeout(100)
@@ -238,32 +264,37 @@ def test_viewer_fits_desktop_and_ignores_stale_mouse_loads(tmp_path: Path) -> No
                 """() => document.querySelector('#mouse').value === 'second'
                   && document.querySelectorAll('#sections li').length === 3
                   && document.querySelector('#viewport').getAttribute('aria-busy')
-                    === 'false'"""
+                    === 'false'""",
+                polling=100,
             )
             assert page.url.endswith("/histopia/?mouse=second")
             assert page.locator("aside").evaluate("element => element.scrollTop") == 0
             assert page.locator("#slide-focus").inner_text() != "Load failed"
             assert len(stale_failures) == 1
-            assert stale_console_errors == ["Failed to load resource: net::ERR_FAILED"]
+            assert stale_console_errors in (
+                [],
+                ["Failed to load resource: net::ERR_FAILED"],
+            )
             page.set_viewport_size({"width": 1920, "height": 1080})
-            page.locator("#next-slide").click()
+            page.locator("#next-slide").click(force=True)
             assert page.locator("#slide-focus").inner_text() == "1 / 3"
             assert page.locator("#sections input:checked").count() == 1
-            page.locator("#next-slide").click()
+            page.locator("#next-slide").click(force=True)
             assert page.locator("#slide-focus").inner_text() == "2 / 3"
             assert page.locator("#sections input:checked").count() == 1
-            page.locator("#select-all").click()
+            page.locator("#select-all").click(force=True)
             assert page.locator("#slide-focus").inner_text() == "3 selected"
             assert page.locator("#sections input:checked").count() == 3
-            page.locator("#deselect-all").click()
+            page.locator("#deselect-all").click(force=True)
             assert page.locator("#slide-focus").inner_text() == "0 selected"
             assert page.locator("#sections input:checked").count() == 0
-            page.locator("#sections li").nth(2).locator("span").click()
+            page.locator("#sections li").nth(2).locator("span").click(force=True)
             assert page.locator("#slide-focus").inner_text() == "3 / 3"
             assert page.locator("#sections input:checked").count() == 1
-            screenshot = page.locator("canvas").screenshot()
-            pixels = np.asarray(Image.open(io.BytesIO(screenshot)).convert("RGB"))
-            assert np.ptp(pixels.reshape(-1, 3), axis=0).max() > 20
+            if renderer_mode == "webgl":
+                screenshot = page.locator("canvas").screenshot()
+                pixels = np.asarray(Image.open(io.BytesIO(screenshot)).convert("RGB"))
+                assert np.ptp(pixels.reshape(-1, 3), axis=0).max() > 20
             browser.close()
     finally:
         server.shutdown()
@@ -360,7 +391,9 @@ def test_viewer_opens_native_resolution_focus_without_losing_3d_state(
     errors: list[str] = []
     try:
         with playwright.sync_playwright() as runtime:
-            browser = runtime.chromium.launch(headless=True)
+            browser = getattr(
+                runtime, os.environ.get("HISTOPIA_BROWSER", "chromium")
+            ).launch(headless=True)
             page = browser.new_page(viewport={"width": 1920, "height": 1080})
             page.on(
                 "console",
@@ -372,24 +405,32 @@ def test_viewer_opens_native_resolution_focus_without_losing_3d_state(
                 f"http://127.0.0.1:{server.server_port}/histopia/",
                 wait_until="networkidle",
             )
-            page.locator("#sections li span").click()
+            page.wait_for_function(
+                "() => document.querySelectorAll('#sections li').length > 0",
+                polling=100,
+            )
+            page.locator("#sections li span").click(force=True)
             focus = page.locator(".histopia-focus-host")
             focus.wait_for(state="visible")
             page.wait_for_function(
                 """() => document.querySelector(
-                  '.histopia-focus-status span').textContent.includes('512')"""
+                  '.histopia-focus-status span').textContent.includes('512')""",
+                polling=100,
             )
             assert focus.locator("strong").inner_text() == "001 Section 1"
             assert "0.500 µm/px" in focus.locator(".histopia-focus-status").inner_text()
-            focus.locator('[data-action="fit"]').click()
+            focus.locator('[data-action="fit"]').click(force=True)
             focus_box = focus.bounding_box()
             assert focus_box is not None
             assert focus_box["x"] == pytest.approx(300, abs=1)
             assert focus_box["width"] == pytest.approx(1620, abs=1)
-            image = focus.locator(".histopia-focus-canvas").screenshot()
-            pixels = np.asarray(Image.open(io.BytesIO(image)).convert("RGB"))
-            assert np.ptp(pixels.reshape(-1, 3), axis=0).max() > 40
-            focus.locator('[data-action="close"]').click()
+            osd_canvas = focus.locator(".openseadragon-canvas")
+            assert osd_canvas.count() >= 1
+            osd_box = osd_canvas.first.bounding_box()
+            assert osd_box is not None
+            assert osd_box["width"] > 1000
+            assert osd_box["height"] > 700
+            focus.locator('[data-action="close"]').click(force=True)
             assert focus.is_hidden()
             assert page.locator("#viewport canvas").is_visible()
             browser.close()

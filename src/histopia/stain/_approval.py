@@ -91,11 +91,23 @@ def validate_stain_approval(
 def stain_review_status(
     run_dir: Path | str,
     payload: dict[str, object] | None = None,
+    *,
+    verify_artifacts: bool = True,
 ) -> dict[str, object]:
-    """Return path-free family approval status for an exact result."""
+    """Return path-free family approval status for an exact result.
+
+    ``verify_artifacts=False`` is reserved for read-only registries that defer
+    each large quantitative-map digest check until that artifact is first
+    served.  Approval writes and direct validation remain strict by default.
+    """
 
     root = Path(run_dir)
-    result = validate_stain_result(root, payload)
+    if verify_artifacts:
+        result = validate_stain_result(root, payload)
+    else:
+        from histopia.stain._result_validation import validate_stain_result_index
+
+        result = validate_stain_result_index(root, payload)
     review = _normalized_review(root, result)
     family_rows = review["families"]
     assert isinstance(family_rows, dict)

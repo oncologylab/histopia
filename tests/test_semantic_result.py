@@ -16,6 +16,10 @@ from histopia.semantic._result import (
     validate_semantic_result,
     write_atlas_result,
 )
+from histopia.semantic._result_validation import (
+    validate_semantic_artifact,
+    validate_semantic_result_index,
+)
 
 
 def test_write_atlas_result_is_review_gated_and_keeps_per_slide_grids(
@@ -138,6 +142,12 @@ def test_result_fingerprint_rejects_changed_artifact_bytes(tmp_path: Path) -> No
 
     np.savez_compressed(label_path, labels=np.array([1, 1], dtype=np.int16))
 
+    indexed = validate_semantic_result_index(tmp_path)
+    with pytest.raises(ValueError, match="artifact digest"):
+        validate_semantic_artifact(
+            label_path,
+            indexed["artifacts"][indexed["slides"][0]["labels"]["2"]],
+        )
     with pytest.raises(ValueError, match="artifact digest"):
         validate_semantic_result(tmp_path)
 

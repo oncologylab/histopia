@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="icon" href="data:,">
   <title>Histopia stain decision review</title>
   <link rel="stylesheet" href="stain-review.css">
 </head>
@@ -20,7 +21,7 @@
   </header>
   <section id="scope">
     <strong>Decision scope</strong>
-    <span>Continuous relative target OD at 4 &micro;m/px</span>
+    <span>Native source coordinates and histology | OD measured at 4 &micro;m/px</span>
     <span class="excluded">Excludes binary calls, cross-antibody comparison, absolute concentration, and cell-level expression</span>
   </section>
   <main>
@@ -51,19 +52,31 @@
       </div>
       <div id="image-grid">
         <figure>
-          <div class="image-stage"><img data-image="histology" alt=""></div>
-          <figcaption>Registered histology</figcaption>
+          <div class="image-stage" data-pane="histology">
+            <div class="osd-viewer" data-viewer="histology"></div>
+            <img class="fallback-image" data-image="histology" alt="">
+          </div>
+          <figcaption>Native-resolution histology</figcaption>
         </figure>
         <figure>
-          <div class="image-stage"><img data-image="raw_overlay" alt=""></div>
+          <div class="image-stage" data-pane="raw_overlay">
+            <div class="osd-viewer" data-viewer="raw_overlay"></div>
+            <img class="fallback-image" data-image="raw_overlay" alt="">
+          </div>
           <figcaption>Raw target OD + histology</figcaption>
         </figure>
         <figure>
-          <div class="image-stage"><img data-image="corrected_overlay" alt=""></div>
+          <div class="image-stage" data-pane="corrected_overlay">
+            <div class="osd-viewer" data-viewer="corrected_overlay"></div>
+            <img class="fallback-image" data-image="corrected_overlay" alt="">
+          </div>
           <figcaption id="output-overlay-label">Output target OD + histology</figcaption>
         </figure>
         <figure>
-          <div class="image-stage"><img data-image="corrected" alt=""></div>
+          <div class="image-stage" data-pane="corrected">
+            <div class="osd-viewer" data-viewer="corrected"></div>
+            <img class="fallback-image" data-image="corrected" alt="">
+          </div>
           <figcaption id="output-map-label">Output target OD only</figcaption>
         </figure>
       </div>
@@ -110,6 +123,7 @@
     </aside>
   </main>
   <script src="manifest-data.js"></script>
+  <script src="openseadragon.min.js"></script>
   <script src="stain-review.js"></script>
 </body>
 </html>

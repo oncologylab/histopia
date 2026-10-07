@@ -34,6 +34,9 @@ def _build_parser() -> argparse.ArgumentParser:
             child.add_argument("--overwrite-fits", action="store_true")
         if name == "run":
             child.add_argument("--overwrite-maps", action="store_true")
+    derive = commands.add_parser("derive-adaptive")
+    derive.add_argument("--config", type=Path, required=True)
+    derive.add_argument("--source-run", type=Path, required=True)
     approve = commands.add_parser("approve")
     approve.add_argument("--run", type=Path, required=True)
     approve.add_argument("--reviewer", required=True)
@@ -100,6 +103,17 @@ def _main(argv: list[str] | None = None) -> int:
         print(write_stain_cohort_qc(dict(args.run), args.output))
         return 0
     config = load_stain_config(args.config)
+    if args.command == "derive-adaptive":
+        from histopia.stain._upgrade import derive_adaptive_stain_run
+
+        print(
+            derive_adaptive_stain_run(
+                config,
+                args.source_run,
+                progress=print,
+            )
+        )
+        return 0
     if args.command == "preflight":
         from histopia.stain._preflight import (
             preflight_stain_run,

@@ -3,6 +3,18 @@
 from importlib import import_module
 
 _PUBLIC_IMPORTS = {
+    "GuardedRegistrationConfig": (
+        "histopia.registration._guarded",
+        "GuardedRegistrationConfig",
+    ),
+    "GuardedRegistrationResult": (
+        "histopia.registration._guarded",
+        "GuardedRegistrationResult",
+    ),
+    "estimate_guarded_registration": (
+        "histopia.registration._guarded",
+        "estimate_guarded_registration",
+    ),
     "AlignmentMetrics": ("histopia.registration._pipeline", "AlignmentMetrics"),
     "BrightfieldMaskConfig": (
         "histopia.registration._config",
@@ -71,6 +83,10 @@ _PUBLIC_IMPORTS = {
         "histopia.registration._approval",
         "SectionOrderApproval",
     ),
+    "SectionOrderAdoption": (
+        "histopia.registration._approval",
+        "SectionOrderAdoption",
+    ),
     "SectionOrderProposal": (
         "histopia.registration._ordering",
         "SectionOrderProposal",
@@ -94,6 +110,10 @@ _PUBLIC_IMPORTS = {
     "approve_section_order": (
         "histopia.registration._approval",
         "approve_section_order",
+    ),
+    "adopt_section_order_review": (
+        "histopia.registration._approval",
+        "adopt_section_order_review",
     ),
     "prepare_completed_registration_review": (
         "histopia.registration._approval",

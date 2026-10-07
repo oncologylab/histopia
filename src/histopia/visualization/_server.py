@@ -32,18 +32,65 @@ _COMPRESSIBLE_SUFFIXES = frozenset(
 _MAX_GZIP_BYTES = 16 * 1024 * 1024
 _MIN_GZIP_BYTES = 512
 _MAX_API_BODY_BYTES = 16 * 1024
+_MAX_ANNOTATION_BODY_BYTES = 4 * 1024 * 1024
 _ROUTE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 _WSI_METADATA_RE = re.compile(
     r"/api/wsi/(?P<cohort>[A-Za-z0-9][A-Za-z0-9_.-]*)/"
     r"(?P<section>[0-9]{3,6})"
 )
+_WSI_MODEL_METADATA_RE = re.compile(
+    r"/api/wsi/(?P<cohort>[A-Za-z0-9][A-Za-z0-9_.-]*)/"
+    r"(?P<section>[0-9]{3,6})/protein/"
+    r"(?P<model>[A-Za-z0-9][A-Za-z0-9_.-]*)"
+)
 _WSI_CATALOG_RE = re.compile(r"/api/wsi/(?P<cohort>[A-Za-z0-9][A-Za-z0-9_.-]*)")
 _WSI_TILE_RE = re.compile(
     r"/api/wsi/(?P<cohort>[A-Za-z0-9][A-Za-z0-9_.-]*)/"
     r"(?P<section>[0-9]{3,6})/"
-    r"(?P<layer>raw|registered|mask)/"
+    r"(?P<layer>raw|registered|mask|cells|stain_raw|stain_corrected|stain_adaptive(?:_v3)?(?:_map)?|"
+    r"stain_output|stain_output_map|stain_counterstain|stain_residual|"
+    r"stain_support|protein_predicted(?:_contrast)?|protein_dense(?:_contrast)?|protein_probability|protein_uncertainty|"
+    r"protein_measured(?:_contrast)?|protein_residual|protein_observed_target|"
+    r"protein_nearest_observed_target|protein_tissue_support)/"
     r"(?P<digest>[0-9a-f]{64})/"
     r"(?P<level>[0-9]+)/(?P<x>[0-9]+)/(?P<y>[0-9]+)\.(?P<format>jpg|png)"
+)
+_WSI_DZI_TILE_RE = re.compile(
+    r"/api/wsi/(?P<cohort>[A-Za-z0-9][A-Za-z0-9_.-]*)/"
+    r"(?P<section>[0-9]{3,6})/"
+    r"(?P<layer>raw|registered|mask|cells|stain_raw|stain_corrected|stain_adaptive(?:_v3)?(?:_map)?|"
+    r"stain_output|stain_output_map|stain_counterstain|stain_residual|"
+    r"stain_support|protein_predicted(?:_contrast)?|protein_dense(?:_contrast)?|protein_probability|protein_uncertainty|"
+    r"protein_measured(?:_contrast)?|protein_residual|protein_observed_target|"
+    r"protein_nearest_observed_target|protein_tissue_support)/"
+    r"(?P<digest>[0-9a-f]{64})/dzi/(?P<min_level>[0-9]+)/"
+    r"(?P<level>[0-9]+)/(?P<x>[0-9]+)_(?P<y>[0-9]+)\.(?P<format>jpg|png)"
+)
+_WSI_MODEL_TILE_RE = re.compile(
+    r"/api/wsi/(?P<cohort>[A-Za-z0-9][A-Za-z0-9_.-]*)/"
+    r"(?P<section>[0-9]{3,6})/protein/"
+    r"(?P<model>[A-Za-z0-9][A-Za-z0-9_.-]*)/"
+    r"(?P<layer>protein_predicted(?:_contrast)?|protein_dense(?:_contrast)?|"
+    r"protein_probability|protein_uncertainty|protein_measured(?:_contrast)?|"
+    r"protein_residual|protein_observed_target|protein_nearest_observed_target|"
+    r"protein_tissue_support|stain_raw|stain_corrected|"
+    r"stain_adaptive(?:_v3)?(?:_map)?|stain_output|stain_output_map|"
+    r"stain_counterstain|stain_residual|stain_support|mask|raw)/"
+    r"(?P<digest>[0-9a-f]{64})/"
+    r"(?P<level>[0-9]+)/(?P<x>[0-9]+)/(?P<y>[0-9]+)\.(?P<format>jpg|png)"
+)
+_WSI_MODEL_DZI_TILE_RE = re.compile(
+    r"/api/wsi/(?P<cohort>[A-Za-z0-9][A-Za-z0-9_.-]*)/"
+    r"(?P<section>[0-9]{3,6})/protein/"
+    r"(?P<model>[A-Za-z0-9][A-Za-z0-9_.-]*)/"
+    r"(?P<layer>protein_predicted(?:_contrast)?|protein_dense(?:_contrast)?|"
+    r"protein_probability|protein_uncertainty|protein_measured(?:_contrast)?|"
+    r"protein_residual|protein_observed_target|protein_nearest_observed_target|"
+    r"protein_tissue_support|stain_raw|stain_corrected|"
+    r"stain_adaptive(?:_v3)?(?:_map)?|stain_output|stain_output_map|"
+    r"stain_counterstain|stain_residual|stain_support|mask|raw)/"
+    r"(?P<digest>[0-9a-f]{64})/dzi/(?P<min_level>[0-9]+)/"
+    r"(?P<level>[0-9]+)/(?P<x>[0-9]+)_(?P<y>[0-9]+)\.(?P<format>jpg|png)"
 )
 
 
@@ -77,13 +124,17 @@ class _ViewerRequestHandler(SimpleHTTPRequestHandler):
         return self.server.wsi_tiles  # type: ignore[attr-defined,no-any-return]
 
     def _redirect_root(self) -> bool:
-        path = urlsplit(self.path).path
+        parsed = urlsplit(self.path)
+        path = parsed.path
         if path == "/":
-            target = "/histopia/"
+            target = "histopia/"
         elif path.removeprefix("/") in self._required_routes:
-            target = f"{path}/"
+            target = f"{path.removeprefix('/')}/"
         else:
             return False
+        # Relative redirects preserve a port-proxy prefix stripped upstream.
+        if parsed.query:
+            target += f"?{parsed.query}"
         self.send_response(302)
         self.send_header("Location", target)
         self.send_header("Content-Length", "0")
@@ -100,22 +151,29 @@ class _ViewerRequestHandler(SimpleHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         if (
             self._serve_health(head=False)
+            or self._serve_annotation_api()
             or self._serve_review_api()
-            or self._serve_wsi_api()
+            or self._serve_wsi_api(head=False)
         ):
             return
         if not self._reject_hidden_path() and not self._redirect_root():
             super().do_GET()
 
     def do_HEAD(self) -> None:  # noqa: N802
-        if self._serve_health(head=True):
+        if self._serve_health(head=True) or self._serve_wsi_api(head=True):
             return
         if not self._reject_hidden_path() and not self._redirect_root():
             super().do_HEAD()
 
     def do_POST(self) -> None:  # noqa: N802
         path = urlsplit(self.path).path
-        if path not in {"/api/reviews/approve", "/api/reviews/feedback"}:
+        if path not in {
+            "/api/annotations/section",
+            "/api/reviews/approve",
+            "/api/reviews/feedback",
+            "/api/reviews/cell-section",
+            "/api/reviews/provisional",
+        }:
             self.send_error(404, "File not found")
             return
         if not self._api_authorized():
@@ -125,7 +183,12 @@ class _ViewerRequestHandler(SimpleHTTPRequestHandler):
             size = int(length or "")
         except ValueError:
             size = -1
-        if size < 1 or size > _MAX_API_BODY_BYTES:
+        maximum_size = (
+            _MAX_ANNOTATION_BODY_BYTES
+            if path == "/api/annotations/section"
+            else _MAX_API_BODY_BYTES
+        )
+        if size < 1 or size > maximum_size:
             self._send_json(400, {"error": "invalid request size"})
             return
         try:
@@ -138,9 +201,25 @@ class _ViewerRequestHandler(SimpleHTTPRequestHandler):
             return
         assert self._review_service is not None
         try:
-            if path == "/api/reviews/approve":
+            if path == "/api/annotations/section":
+                result = {
+                    "annotations": self._review_service.save_annotation_section(
+                        payload
+                    ),
+                }
+            elif path == "/api/reviews/approve":
                 result = {
                     "cohort": self._review_service.approve(payload),
+                }
+            elif path == "/api/reviews/cell-section":
+                result = {
+                    "cell_review": self._review_service.review_cell_section(payload),
+                }
+            elif path == "/api/reviews/provisional":
+                result = {
+                    "provisional_review": (
+                        self._review_service.save_provisional_feedback(payload)
+                    ),
                 }
             else:
                 result = {
@@ -150,6 +229,30 @@ class _ViewerRequestHandler(SimpleHTTPRequestHandler):
             self._send_json(409, {"error": str(exc)})
             return
         self._send_json(200, {"ok": True, **result})
+
+    def _serve_annotation_api(self) -> bool:
+        parsed = urlsplit(self.path)
+        if parsed.path not in {
+            "/api/annotations",
+            "/api/annotations/section",
+        }:
+            return False
+        if not self._api_authorized():
+            return True
+        assert self._review_service is not None
+        try:
+            query = parse_qs(parsed.query)
+            cohort = _single_query_value(query, "cohort")
+            if parsed.path == "/api/annotations":
+                payload = self._review_service.annotation_catalog(cohort)
+            else:
+                section = _single_query_value(query, "section")
+                payload = self._review_service.annotation_section(cohort, section)
+        except (FileNotFoundError, OSError, TypeError, ValueError) as exc:
+            self._send_json(409, {"error": str(exc)})
+            return True
+        self._send_json(200, payload)
+        return True
 
     def _serve_health(self, *, head: bool) -> bool:
         if urlsplit(self.path).path != "/healthz":
@@ -175,6 +278,7 @@ class _ViewerRequestHandler(SimpleHTTPRequestHandler):
             "/api/reviews",
             "/api/reviews/feedback",
             "/api/reviews/feedback-summary",
+            "/api/reviews/provisional",
         }:
             return False
         if parsed.path == "/api/reviews/access":
@@ -198,6 +302,12 @@ class _ViewerRequestHandler(SimpleHTTPRequestHandler):
                 payload = self._review_service.status()
             elif parsed.path == "/api/reviews/feedback-summary":
                 payload = self._review_service.feedback_summary()
+            elif parsed.path == "/api/reviews/provisional":
+                query = parse_qs(parsed.query)
+                payload = self._review_service.provisional_feedback(
+                    _single_query_value(query, "cohort"),
+                    _single_query_value(query, "stage"),
+                )
             else:
                 query = parse_qs(parsed.query)
                 cohort = _single_query_value(query, "cohort")
@@ -209,7 +319,7 @@ class _ViewerRequestHandler(SimpleHTTPRequestHandler):
         self._send_json(200, payload)
         return True
 
-    def _serve_wsi_api(self) -> bool:
+    def _serve_wsi_api(self, *, head: bool) -> bool:
         path = urlsplit(self.path).path
         if not path.startswith("/api/wsi/"):
             return False
@@ -224,9 +334,14 @@ class _ViewerRequestHandler(SimpleHTTPRequestHandler):
                         "cohort": catalog_match.group("cohort"),
                         "sections": [],
                     },
+                    head=head,
                 )
                 return True
-            self._send_json(404, {"error": "WSI tiles are not configured"})
+            self._send_json(
+                404,
+                {"error": "WSI tiles are not configured"},
+                head=head,
+            )
             return True
         if catalog_match is not None:
             try:
@@ -237,7 +352,20 @@ class _ViewerRequestHandler(SimpleHTTPRequestHandler):
                     "cohort": catalog_match.group("cohort"),
                     "sections": [],
                 }
-            self._send_json(200, payload)
+            self._send_json(200, payload, head=head)
+            return True
+        model_metadata_match = _WSI_MODEL_METADATA_RE.fullmatch(path)
+        if model_metadata_match is not None:
+            try:
+                payload = service.metadata(
+                    model_metadata_match.group("cohort"),
+                    model_metadata_match.group("section"),
+                    protein_model=model_metadata_match.group("model"),
+                )
+            except FileNotFoundError as error:
+                self._send_json(404, {"error": str(error)}, head=head)
+                return True
+            self._send_json(200, payload, head=head)
             return True
         metadata_match = _WSI_METADATA_RE.fullmatch(path)
         if metadata_match is not None:
@@ -247,36 +375,78 @@ class _ViewerRequestHandler(SimpleHTTPRequestHandler):
                     metadata_match.group("section"),
                 )
             except FileNotFoundError as error:
-                self._send_json(404, {"error": str(error)})
+                self._send_json(404, {"error": str(error)}, head=head)
                 return True
-            self._send_json(200, payload)
+            self._send_json(200, payload, head=head)
             return True
         tile_match = _WSI_TILE_RE.fullmatch(path)
+        protein_model: str | None = None
         if tile_match is None:
-            self._send_json(404, {"error": "unknown WSI tile"})
-            return True
+            tile_match = _WSI_MODEL_TILE_RE.fullmatch(path)
+            if tile_match is not None:
+                protein_model = tile_match.group("model")
+        source_level: int | None = None
+        if tile_match is None:
+            tile_match = _WSI_DZI_TILE_RE.fullmatch(path)
+            if tile_match is None:
+                tile_match = _WSI_MODEL_DZI_TILE_RE.fullmatch(path)
+                if tile_match is not None:
+                    protein_model = tile_match.group("model")
+            if tile_match is None:
+                self._send_json(
+                    404,
+                    {"error": "unknown WSI tile"},
+                    head=head,
+                )
+                return True
+            source_level = int(tile_match.group("level")) - int(
+                tile_match.group("min_level")
+            )
+            if source_level < 0:
+                self._send_json(
+                    404,
+                    {"error": "invalid WSI tile level"},
+                    head=head,
+                )
+                return True
         layer = tile_match.group("layer")
-        expected_format = "png" if layer == "mask" else "jpg"
+        expected_format = "png" if layer not in {"raw", "registered"} else "jpg"
         if tile_match.group("format") != expected_format:
-            self._send_json(404, {"error": "invalid WSI tile format"})
+            self._send_json(
+                404,
+                {"error": "invalid WSI tile format"},
+                head=head,
+            )
             return True
         try:
-            payload, media_type, etag = service.render_tile(
+            tile_arguments = (
                 tile_match.group("cohort"),
                 tile_match.group("section"),
                 layer,
                 tile_match.group("digest"),
-                int(tile_match.group("level")),
+                (
+                    source_level
+                    if source_level is not None
+                    else int(tile_match.group("level"))
+                ),
                 int(tile_match.group("x")),
                 int(tile_match.group("y")),
             )
+            if protein_model is None:
+                payload, media_type, etag = service.render_tile(*tile_arguments)
+            else:
+                payload, media_type, etag = service.render_tile(
+                    *tile_arguments,
+                    protein_model=protein_model,
+                )
         except FileNotFoundError as error:
-            self._send_json(404, {"error": str(error)})
+            self._send_json(404, {"error": str(error)}, head=head)
             return True
         except WsiTileCapacityError as error:
             self._send_json(
                 503,
                 {"error": str(error)},
+                head=head,
                 extra_headers={"Retry-After": "1"},
             )
             return True
@@ -292,7 +462,8 @@ class _ViewerRequestHandler(SimpleHTTPRequestHandler):
         self.send_header("ETag", etag)
         self.send_header("Cache-Control", "public, max-age=31536000, immutable")
         self.end_headers()
-        self.wfile.write(payload)
+        if not head:
+            self._write_body(payload)
         return True
 
     def _api_authorized(self) -> bool:
@@ -340,7 +511,15 @@ class _ViewerRequestHandler(SimpleHTTPRequestHandler):
             self.send_header(name, value)
         self.end_headers()
         if not head:
-            self.wfile.write(encoded)
+            self._write_body(encoded)
+
+    def _write_body(self, payload: bytes) -> None:
+        """Ignore a browser cancelling a stale tile or API response."""
+
+        try:
+            self.wfile.write(payload)
+        except (BrokenPipeError, ConnectionResetError):
+            self.close_connection = True
 
     def send_head(self):  # type: ignore[no-untyped-def]
         path = Path(self.translate_path(self.path))
@@ -461,7 +640,29 @@ def create_viewer_server(
         else None
     )
     wsi_runs = review_service.wsi_runs() if review_service is not None else {}
-    wsi_tiles = WsiTileService.from_runs(wsi_runs) if wsi_runs else None
+    cell_runs = review_service.cell_runs() if review_service is not None else {}
+    stain_runs = review_service.stain_runs() if review_service is not None else {}
+    protein_runs = review_service.protein_runs() if review_service is not None else {}
+    protein_model_runs = (
+        review_service.protein_model_runs() if review_service is not None else {}
+    )
+    protein_model_stain_runs = (
+        review_service.protein_model_stain_runs() if review_service is not None else {}
+    )
+    tile_options = {}
+    if cell_runs:
+        tile_options["cell_runs"] = cell_runs
+    if review_service is not None and review_service.cell_section_scopes():
+        tile_options["cell_section_scopes"] = review_service.cell_section_scopes()
+    if stain_runs:
+        tile_options["stain_runs"] = stain_runs
+    if protein_runs:
+        tile_options["protein_runs"] = protein_runs
+    if protein_model_runs:
+        tile_options["protein_model_runs"] = protein_model_runs
+    if protein_model_stain_runs:
+        tile_options["protein_model_stain_runs"] = protein_model_stain_runs
+    wsi_tiles = WsiTileService.from_runs(wsi_runs, **tile_options) if wsi_runs else None
     if public_review_write and review_service is None:
         raise ValueError("public review writes require a review configuration")
     if review_service is not None and not public_review_write:

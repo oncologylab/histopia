@@ -60,7 +60,10 @@ def summarize_topology_run(run_dir: Path | str) -> TopologyRunQc:
             or reconstruction_qc.get("status") != "passed"
         ):
             flags.append("envelope_reconstruction_qc_failed")
-    if payload.get("z_source") == "uniform_assumed_after_failed_gap_calibration":
+    if payload.get("z_source") in {
+        "uniform_assumed_after_failed_gap_calibration",
+        "segmented_assumed_after_failed_gap_calibration",
+    }:
         flags.append("uniform_z_assumed")
     if not benchmark_summary.get("supports_flow_interpolation"):
         flags.append("flow_interpolation_not_supported")

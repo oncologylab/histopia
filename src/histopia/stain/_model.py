@@ -46,6 +46,7 @@ class CandidateFit:
     prior_angle_degrees: float
     bootstrap_angle_degrees: float
     target_q95: float
+    counterstain_leakage: float = 0.0
     converged: bool = True
     optimization_iterations: int = 0
     target_rank_correlation: float = 1.0
@@ -60,6 +61,7 @@ class CandidateFit:
             "bootstrap_angle_degrees",
             "target_q95",
             "target_rank_correlation",
+            "counterstain_leakage",
         ):
             if not math.isfinite(float(getattr(self, name))):
                 raise ValueError(f"{name} must be finite")
@@ -92,6 +94,7 @@ class CandidateFit:
             prior_angle_degrees=float(payload["prior_angle_degrees"]),
             bootstrap_angle_degrees=float(payload["bootstrap_angle_degrees"]),
             target_q95=float(payload["target_q95"]),
+            counterstain_leakage=float(payload.get("counterstain_leakage", 0.0)),
             converged=bool(payload.get("converged", True)),
             optimization_iterations=int(payload.get("optimization_iterations", 0)),
             target_rank_correlation=float(payload.get("target_rank_correlation", 1.0)),
@@ -122,9 +125,12 @@ class StainModel:
     correction_rank_correlation: float
     raw_glass_leakage: float
     corrected_glass_leakage: float
+    raw_counterstain_leakage: float = 0.0
+    corrected_counterstain_leakage: float = 0.0
     content_bbox_native_xywh: tuple[int, int, int, int] | None = None
     positive_threshold_od: float | None = None
     threshold_accepted: bool = False
+    adaptive_background: dict[str, object] | None = None
 
     def __post_init__(self) -> None:
         if self.family is StainFamily.CONTEXT_HE:
@@ -141,6 +147,8 @@ class StainModel:
             "correction_rank_correlation",
             "raw_glass_leakage",
             "corrected_glass_leakage",
+            "raw_counterstain_leakage",
+            "corrected_counterstain_leakage",
         ):
             if not math.isfinite(float(getattr(self, name))):
                 raise ValueError(f"{name} must be finite")
@@ -229,7 +237,7 @@ class StainModel:
 
     def to_json_dict(self) -> dict[str, object]:
         return {
-            "schema_version": 2,
+            "schema_version": 4,
             "family": self.family.value,
             "marker": self.marker,
             "method": self.method,
@@ -240,6 +248,8 @@ class StainModel:
             "correction_rank_correlation": self.correction_rank_correlation,
             "raw_glass_leakage": self.raw_glass_leakage,
             "corrected_glass_leakage": self.corrected_glass_leakage,
+            "raw_counterstain_leakage": self.raw_counterstain_leakage,
+            "corrected_counterstain_leakage": self.corrected_counterstain_leakage,
             "content_bbox_native_xywh": (
                 list(self.content_bbox_native_xywh)
                 if self.content_bbox_native_xywh is not None
@@ -247,11 +257,12 @@ class StainModel:
             ),
             "positive_threshold_od": self.positive_threshold_od,
             "threshold_accepted": self.threshold_accepted,
+            "adaptive_background": self.adaptive_background,
         }
 
     @classmethod
     def from_json_dict(cls, payload: dict[str, Any]) -> StainModel:
-        if payload.get("schema_version") not in {1, 2}:
+        if payload.get("schema_version") not in {1, 2, 3, 4}:
             raise ValueError("unsupported stain model schema")
         return cls(
             family=StainFamily(str(payload["family"])),
@@ -264,6 +275,12 @@ class StainModel:
             correction_rank_correlation=float(payload["correction_rank_correlation"]),
             raw_glass_leakage=float(payload["raw_glass_leakage"]),
             corrected_glass_leakage=float(payload["corrected_glass_leakage"]),
+            raw_counterstain_leakage=float(
+                payload.get("raw_counterstain_leakage", 0.0)
+            ),
+            corrected_counterstain_leakage=float(
+                payload.get("corrected_counterstain_leakage", 0.0)
+            ),
             content_bbox_native_xywh=(
                 tuple(int(value) for value in payload["content_bbox_native_xywh"])
                 if payload.get("content_bbox_native_xywh") is not None
@@ -275,6 +292,11 @@ class StainModel:
                 else None
             ),
             threshold_accepted=bool(payload.get("threshold_accepted", False)),
+            adaptive_background=(
+                dict(payload["adaptive_background"])
+                if isinstance(payload.get("adaptive_background"), dict)
+                else None
+            ),
         )
 
 
@@ -375,6 +397,7 @@ def fit_candidate(
     concentrations, residual = unmix_od(tissue, vectors)
     reference_concentrations, _ = unmix_od(tissue, prior)
     glass_concentrations, _ = unmix_od(glass, vectors)
+    counterstain_only = counterstain_only_mask(reference_concentrations)
     denominator = max(float(np.sqrt(np.mean(tissue**2))), 1e-8)
     bootstrap, bootstrap_converged = _bootstrap_angle(
         tissue,
@@ -391,6 +414,9 @@ def fit_candidate(
         prior_angle_degrees=float(np.mean(_row_angles(vectors, prior))),
         bootstrap_angle_degrees=bootstrap,
         target_q95=float(np.quantile(concentrations[:, 1], 0.95)),
+        counterstain_leakage=float(
+            np.quantile(concentrations[counterstain_only, 1], 0.95)
+        ),
         converged=converged and bootstrap_converged,
         optimization_iterations=optimization_iterations,
         target_rank_correlation=_rank_correlation(
@@ -521,6 +547,7 @@ def select_family_method(
         "glass_leakage",
         "prior_angle_degrees",
         "bootstrap_angle_degrees",
+        "counterstain_leakage",
     )
     summary: dict[str, dict[str, float]] = {}
     for method in methods:
@@ -569,6 +596,27 @@ def select_family_method(
         ),
     )
     return selected, summary
+
+
+def counterstain_only_mask(concentrations: np.ndarray) -> np.ndarray:
+    """Select strong-counterstain, low-target pixels for cross-talk diagnostics."""
+
+    values = np.asarray(concentrations, dtype=np.float32)
+    if values.ndim != 2 or values.shape[1] != 2 or not len(values):
+        raise ValueError("counterstain diagnostics require an Nx2 concentration array")
+    counterstain = values[:, 0]
+    target = values[:, 1]
+    selected = (counterstain >= np.quantile(counterstain, 0.60)) & (
+        target <= np.quantile(target, 0.35)
+    )
+    minimum = min(8, len(values))
+    if np.count_nonzero(selected) < minimum:
+        score = counterstain / (target + 1e-6)
+        count = min(len(values), max(8, len(values) // 10))
+        indices = np.argpartition(score, -count)[-count:]
+        selected = np.zeros(len(values), dtype=bool)
+        selected[indices] = True
+    return selected
 
 
 def _bootstrap_angle(

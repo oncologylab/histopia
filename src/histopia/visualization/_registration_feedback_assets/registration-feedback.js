@@ -105,7 +105,7 @@ async function configureFeedbackAccess() {
     feedbackElements.status.textContent = "Static review";
     return;
   }
-  const response = await fetch("/api/reviews/access", {cache: "no-store"});
+  const response = await fetch(histopiaUrl("/api/reviews/access"), {cache: "no-store"});
   const payload = await response.json();
   if (!response.ok) throw new Error(payload.error || "Review service unavailable");
   if (!payload.review_configured) {
@@ -170,7 +170,7 @@ async function connectFeedback() {
     cohort: feedbackConfig.cohort,
     stage: feedbackConfig.stage,
   });
-  const response = await fetch(`/api/reviews/feedback?${query}`, {
+  const response = await fetch(histopiaUrl(`/api/reviews/feedback?${query}`), {
     headers: authorizationHeaders(),
     cache: "no-store",
   });
@@ -289,7 +289,7 @@ async function saveFeedback({advance = false} = {}) {
   feedbackElements.message.textContent =
     currentDecision === "accept" ? "Saving acceptance" : "Saving slide review";
   try {
-    const response = await fetch("/api/reviews/feedback", {
+    const response = await fetch(histopiaUrl("/api/reviews/feedback"), {
       method: "POST",
       headers: authorizationHeaders(),
       body: JSON.stringify(payload),
@@ -323,3 +323,9 @@ configureFeedbackAccess().catch((error) => {
   feedbackElements.status.textContent = "Feedback unavailable";
   feedbackElements.message.textContent = error.message;
 });
+
+// Keep same-origin data requests inside a code-server port proxy.
+function histopiaUrl(path) {
+  const match = location.pathname.match(/^.*?\/proxy\/[0-9]+(?=\/|$)/);
+  return (match ? match[0] : "") + path;
+}

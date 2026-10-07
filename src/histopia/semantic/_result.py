@@ -50,6 +50,8 @@ def write_atlas_result(
     balanced_patch_cap: int = 4096,
     seed: int = 0,
     max_cross_section_distance_um: float = 112.0,
+    min_stack_component_neighbor_fraction: float = 0.0,
+    stack_component_filter: dict[str, object] | None = None,
 ) -> Path:
     """Write sealed atlas artifacts and fingerprint-bound review state."""
 
@@ -178,6 +180,7 @@ def write_atlas_result(
         balanced_patch_cap=balanced_patch_cap,
         seed=seed,
         max_cross_section_distance_um=max_cross_section_distance_um,
+        min_stack_component_neighbor_fraction=(min_stack_component_neighbor_fraction),
     )
     core = {
         "schema_version": 3,
@@ -204,6 +207,8 @@ def write_atlas_result(
         "slides": slide_rows,
         "topology_pairs": topology_rows,
     }
+    if stack_component_filter is not None:
+        core["stack_component_filter"] = stack_component_filter
     payload = _seal_semantic_result(output_dir, core)
     fingerprint = str(payload["fingerprint"])
     result_path = output_dir / "semantic_result.json"
@@ -256,8 +261,9 @@ def _fit_config_payload(
     balanced_patch_cap: int,
     seed: int,
     max_cross_section_distance_um: float,
+    min_stack_component_neighbor_fraction: float = 0.0,
 ) -> dict[str, object]:
-    return {
+    payload: dict[str, object] = {
         "algorithm": "global-semantic-atlas",
         "algorithm_version": SEMANTIC_FIT_ALGORITHM_VERSION,
         "requested_pca_components": requested_pca_components,
@@ -265,6 +271,14 @@ def _fit_config_payload(
         "seed": seed,
         "max_cross_section_distance_um": float(max_cross_section_distance_um),
     }
+    if min_stack_component_neighbor_fraction > 0:
+        payload["stack_component_filter"] = {
+            "method": "adjacent-component-support-v1",
+            "min_neighbor_fraction": float(min_stack_component_neighbor_fraction),
+            "neighbor_radius_patch_widths": 1.5,
+            "preserve_relative_area": 0.5,
+        }
+    return payload
 
 
 def _common_feature_provenance(

@@ -7,6 +7,7 @@ import shutil
 from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
 
+from histopia.visualization._review_theme import themed_review_css
 from histopia.visualization._showcase import (
     _VIEWER_DIRECTORIES,
     _VIEWER_FILES,
@@ -257,7 +258,7 @@ def export_registration_qc_showcase(
         json.dumps(portal_manifest, indent=2) + "\n"
     )
     (output / "index.html").write_text(_INDEX_HTML)
-    (output / "styles.css").write_text(_STYLES_CSS)
+    (output / "styles.css").write_text(themed_review_css(_STYLES_CSS))
     (output / "portal.js").write_text(_PORTAL_JS)
     (output / ".nojekyll").touch()
     _reject_unsafe_text(output)

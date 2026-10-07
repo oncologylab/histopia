@@ -147,6 +147,23 @@ class Uni2hEncoder:
         )
 
     def encode(self, images: np.ndarray) -> np.ndarray:
+        """Return one global UNI2-h representation per 224-pixel image."""
+
+        return self._encode_images(images, spatial_tokens=False)
+
+    def encode_tokens(self, images: np.ndarray) -> np.ndarray:
+        """Return the real spatial UNI2-h token lattice for each image.
+
+        UNI2-h uses a 14-pixel patch embedding for its 224-pixel input, so the
+        returned array has shape ``(batch, 16, 16, 1536)``.  The class token
+        and all register tokens are deliberately excluded; repeating the
+        global representation across this grid would not create spatial
+        information and is therefore rejected.
+        """
+
+        return self._encode_images(images, spatial_tokens=True)
+
+    def _encode_images(self, images: np.ndarray, *, spatial_tokens: bool) -> np.ndarray:
         try:
             import torch
             from PIL import Image
@@ -162,15 +179,19 @@ class Uni2hEncoder:
                 source = source.copy()
             batch = torch.from_numpy(source).permute(0, 3, 1, 2)
             if self.device.startswith("cuda"):
-                return self._encode_cuda_uint8_batch(torch, batch)
+                return self._encode_cuda_uint8_batch(
+                    torch, batch, spatial_tokens=spatial_tokens
+                )
             batch = self.transform(batch.to(dtype=torch.float32).div_(255))
         else:
             batch = torch.stack(
                 [self.transform(Image.fromarray(image, mode="RGB")) for image in images]
             )
-        return self._encode_tensor_batch(torch, batch)
+        return self._encode_tensor_batch(torch, batch, spatial_tokens=spatial_tokens)
 
-    def _encode_cuda_uint8_batch(self, torch: Any, batch: Any) -> np.ndarray:
+    def _encode_cuda_uint8_batch(
+        self, torch: Any, batch: Any, *, spatial_tokens: bool = False
+    ) -> np.ndarray:
         """Transfer compact RGB input before conversion and normalization."""
 
         device_batch = None
@@ -178,7 +199,7 @@ class Uni2hEncoder:
             device_batch = batch.to(self.device, non_blocking=True)
             device_batch = device_batch.to(dtype=torch.float32).div_(255)
             device_batch = self.transform(device_batch)
-            return self._run_model(torch, device_batch)
+            return self._run_model(torch, device_batch, spatial_tokens=spatial_tokens)
         except torch.OutOfMemoryError:
             if len(batch) == 1:
                 raise
@@ -187,19 +208,25 @@ class Uni2hEncoder:
         midpoint = len(batch) // 2
         return np.concatenate(
             [
-                self._encode_cuda_uint8_batch(torch, batch[:midpoint]),
-                self._encode_cuda_uint8_batch(torch, batch[midpoint:]),
+                self._encode_cuda_uint8_batch(
+                    torch, batch[:midpoint], spatial_tokens=spatial_tokens
+                ),
+                self._encode_cuda_uint8_batch(
+                    torch, batch[midpoint:], spatial_tokens=spatial_tokens
+                ),
             ]
         )
 
-    def _encode_tensor_batch(self, torch: Any, batch: Any) -> np.ndarray:
+    def _encode_tensor_batch(
+        self, torch: Any, batch: Any, *, spatial_tokens: bool = False
+    ) -> np.ndarray:
         """Encode one transformed CPU batch, splitting only after device OOM."""
 
         uses_cuda = self.device.startswith("cuda")
         device_batch = None
         try:
             device_batch = batch.to(self.device, non_blocking=uses_cuda)
-            return self._run_model(torch, device_batch)
+            return self._run_model(torch, device_batch, spatial_tokens=spatial_tokens)
         except torch.OutOfMemoryError:
             if len(batch) == 1:
                 raise
@@ -208,12 +235,18 @@ class Uni2hEncoder:
         midpoint = len(batch) // 2
         return np.concatenate(
             [
-                self._encode_tensor_batch(torch, batch[:midpoint]),
-                self._encode_tensor_batch(torch, batch[midpoint:]),
+                self._encode_tensor_batch(
+                    torch, batch[:midpoint], spatial_tokens=spatial_tokens
+                ),
+                self._encode_tensor_batch(
+                    torch, batch[midpoint:], spatial_tokens=spatial_tokens
+                ),
             ]
         )
 
-    def _run_model(self, torch: Any, device_batch: Any) -> np.ndarray:
+    def _run_model(
+        self, torch: Any, device_batch: Any, *, spatial_tokens: bool = False
+    ) -> np.ndarray:
         uses_cuda = self.device.startswith("cuda")
         autocast_dtype = _autocast_dtype(torch, self.precision)
         with (
@@ -224,8 +257,16 @@ class Uni2hEncoder:
                 enabled=uses_cuda and autocast_dtype is not None,
             ),
         ):
-            output = self.model(device_batch)
-        return output.float().cpu().numpy()
+            output = (
+                self.model.forward_features(device_batch)
+                if spatial_tokens
+                else self.model(device_batch)
+            )
+        values = output.float().cpu().numpy()
+        if not spatial_tokens:
+            return values
+        prefix_tokens = int(getattr(self.model, "num_prefix_tokens", 0))
+        return _reshape_spatial_tokens(values, prefix_tokens=prefix_tokens)
 
 
 @dataclass(frozen=True, slots=True)
@@ -259,6 +300,14 @@ class _LazyUni2hEncoder:
         self._encoder: Uni2hEncoder | None = None
 
     def encode(self, images: np.ndarray) -> np.ndarray:
+        return self._materialized().encode(images)
+
+    def encode_tokens(self, images: np.ndarray) -> np.ndarray:
+        """Lazily return the spatial token lattice for each image."""
+
+        return self._materialized().encode_tokens(images)
+
+    def _materialized(self) -> Uni2hEncoder:
         if self._encoder is None:
             self._encoder = Uni2hEncoder.from_cache(
                 self._cache_dir,
@@ -271,7 +320,23 @@ class _LazyUni2hEncoder:
                 or self._encoder.runtime_provenance != self.runtime_provenance
             ):
                 raise RuntimeError("UNI2-h runtime changed during lazy model loading")
-        return self._encoder.encode(images)
+        return self._encoder
+
+
+def _reshape_spatial_tokens(output: np.ndarray, *, prefix_tokens: int) -> np.ndarray:
+    """Strip non-spatial tokens and restore a square token lattice."""
+
+    values = np.asarray(output)
+    if values.ndim != 3 or prefix_tokens < 0 or prefix_tokens >= values.shape[1]:
+        raise ValueError("UNI2-h forward features have an invalid token shape")
+    spatial = values[:, prefix_tokens:, :]
+    side = int(round(spatial.shape[1] ** 0.5))
+    if side * side != spatial.shape[1]:
+        raise ValueError("UNI2-h spatial token count is not a square lattice")
+    return np.ascontiguousarray(
+        spatial.reshape(values.shape[0], side, side, values.shape[2]),
+        dtype=np.float32,
+    )
 
 
 def _prepare_uni2h_runtime(

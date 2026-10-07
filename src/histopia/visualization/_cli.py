@@ -94,6 +94,18 @@ def _named_text(value: str) -> tuple[str, str]:
     return name, text
 
 
+def _scoped_named_path(value: str) -> tuple[str, str, Path]:
+    """Parse a model-scoped path as ``COHORT:MODEL=PATH``."""
+
+    if "=" not in value or ":" not in value.split("=", 1)[0]:
+        raise argparse.ArgumentTypeError("expected COHORT:MODEL=PATH")
+    scope, raw_path = value.split("=", 1)
+    cohort, model = scope.split(":", 1)
+    if not cohort or not model or not raw_path:
+        raise argparse.ArgumentTypeError("expected non-empty COHORT:MODEL=PATH")
+    return cohort, model, Path(raw_path)
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run viewer commands with graceful launcher cancellation."""
 
@@ -218,6 +230,46 @@ def _main(argv: list[str] | None = None) -> int:
         default=[],
     )
     workflow_review.add_argument(
+        "--cell-run",
+        type=_named_path,
+        action="append",
+        default=[],
+    )
+    workflow_review.add_argument(
+        "--cell-geometry",
+        type=_named_path,
+        action="append",
+        default=[],
+        help=(
+            "Reusable multiscale cell-geometry cache as NAME=PATH; repeat for "
+            "cohorts included in the static cellular protein atlas."
+        ),
+    )
+    workflow_review.add_argument(
+        "--protein-run",
+        type=_named_path,
+        action="append",
+        default=[],
+        help="Sealed protein prediction run as NAME=PATH; repeat per cohort.",
+    )
+    workflow_review.add_argument(
+        "--protein-model",
+        type=_scoped_named_path,
+        action="append",
+        default=[],
+        help=(
+            "Model-scoped protein run as COHORT:MODEL=PATH; repeat to expose "
+            "targets, architectures, or training-data variants."
+        ),
+    )
+    workflow_review.add_argument(
+        "--annotation-run",
+        type=_named_path,
+        action="append",
+        default=[],
+        help="Annotation store as NAME=PATH; repeat for a cohort.",
+    )
+    workflow_review.add_argument(
         "--registered-wsi",
         type=_named_path,
         action="append",
@@ -257,6 +309,67 @@ def _main(argv: list[str] | None = None) -> int:
         action="append",
         required=True,
     )
+    cell_review = commands.add_parser(
+        "cell-review",
+        help="Build a native-resolution cell-boundary reviewer.",
+    )
+    cell_review.add_argument("output", type=Path)
+    cell_review.add_argument(
+        "--run",
+        type=_named_path,
+        action="append",
+        required=True,
+    )
+    protein_review = commands.add_parser(
+        "protein-review",
+        help="Build a three-pane protein-expression prediction reviewer.",
+    )
+    protein_review.add_argument("output", type=Path)
+    protein_review.add_argument(
+        "--run", type=_named_path, action="append", required=True
+    )
+    protein_atlas = commands.add_parser(
+        "protein-atlas",
+        help="Build a static cell-resolved 3D and orthogonal protein atlas.",
+    )
+    protein_atlas.add_argument("output", type=Path)
+    protein_atlas.add_argument(
+        "--run", type=_named_path, action="append", required=True
+    )
+    protein_atlas.add_argument(
+        "--cell-run", type=_named_path, action="append", required=True
+    )
+    protein_atlas.add_argument(
+        "--protein-model",
+        type=_scoped_named_path,
+        action="append",
+        required=True,
+    )
+    protein_atlas.add_argument(
+        "--cell-geometry", type=_named_path, action="append", required=True
+    )
+    protein_atlas.add_argument(
+        "--topology-run", type=_named_path, action="append", default=[]
+    )
+    protein_atlas.add_argument("--overview-cells", type=int, default=500_000)
+    protein_atlas.add_argument("--max-bytes", type=int, default=650 * 1024 * 1024)
+    protein_atlas.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Bounded label-artifact validation workers. Default: 1.",
+    )
+    protein_atlas.add_argument(
+        "--default-layer",
+        choices=("cells", "protein"),
+        default="protein",
+        help="Initial atlas layer. Default: protein.",
+    )
+    protein_atlas.add_argument(
+        "--default-target",
+        action="append",
+        help="Initial protein target; repeat to define a multichannel composite.",
+    )
     order_review = commands.add_parser(
         "order-review",
         help="Build a fixed-viewport section-order review.",
@@ -295,6 +408,17 @@ def _main(argv: list[str] | None = None) -> int:
         type=int,
         default=900 * 1024 * 1024,
         help="Hard size limit when embedding WSI tiles. Default: 900 MiB.",
+    )
+    showcase.add_argument(
+        "--protein-atlas",
+        type=Path,
+        help="Include a prebuilt static cellular protein atlas.",
+    )
+    showcase.add_argument(
+        "--protein-atlas-max-bytes",
+        type=int,
+        default=650 * 1024 * 1024,
+        help="Independent size limit for the cellular protein atlas.",
     )
     qc_showcase = commands.add_parser(
         "qc-showcase",
@@ -350,6 +474,18 @@ def _main(argv: list[str] | None = None) -> int:
         type=Path,
         help="Optional path for the portable JSON audit.",
     )
+    completeness = commands.add_parser(
+        "completeness",
+        help="Report registration, stain, and reference-cell coverage.",
+    )
+    completeness.add_argument("--review-config", type=Path, required=True)
+    completeness.add_argument(
+        "--cohort",
+        action="append",
+        default=[],
+        help="Exact configured cohort ID; repeat to restrict the audit.",
+    )
+    completeness.add_argument("--output", type=Path)
     feedback_export = commands.add_parser(
         "feedback-export",
         help="Export latest registration feedback as flat learning rows.",
@@ -403,18 +539,65 @@ def _main(argv: list[str] | None = None) -> int:
     if args.command == "review":
         from histopia.visualization._review_portal import build_workflow_review
 
-        index = build_workflow_review(
-            _unique_named_paths(args.run, "registration"),
-            args.output,
-            semantic_runs=_unique_named_paths(args.semantic_run, "semantic"),
-            stain_runs=_unique_named_paths(args.stain_run, "stain"),
-            topology_runs=_unique_named_paths(args.topology_run, "topology"),
-            registered_wsi=_unique_named_paths(
+        cell_runs = _unique_named_paths(args.cell_run, "cell")
+        annotation_runs = _unique_named_paths(args.annotation_run, "annotation")
+        options = {
+            "semantic_runs": _unique_named_paths(args.semantic_run, "semantic"),
+            "stain_runs": _unique_named_paths(args.stain_run, "stain"),
+            "topology_runs": _unique_named_paths(args.topology_run, "topology"),
+            "registered_wsi": _unique_named_paths(
                 args.registered_wsi,
                 "registered WSI",
             ),
-            cohort_qc=args.cohort_qc,
+            "cohort_qc": args.cohort_qc,
+            "workers": args.workers,
+        }
+        if cell_runs:
+            options["cell_runs"] = cell_runs
+        cell_geometry_runs = _unique_named_paths(args.cell_geometry, "cell geometry")
+        if cell_geometry_runs:
+            options["cell_geometry_runs"] = cell_geometry_runs
+        if annotation_runs:
+            options["annotation_runs"] = annotation_runs
+        protein_runs = _unique_named_paths(args.protein_run, "protein")
+        if protein_runs:
+            options["protein_runs"] = protein_runs
+        protein_models = _unique_scoped_paths(args.protein_model, "protein model")
+        if protein_models:
+            options["protein_models"] = protein_models
+        index = build_workflow_review(
+            _unique_named_paths(args.run, "registration"),
+            args.output,
+            **options,
+        )
+        print(index)
+        return 0
+    if args.command == "protein-review":
+        from histopia.visualization._protein_review import build_protein_review
+
+        index = build_protein_review(
+            _unique_named_paths(args.run, "protein"), args.output
+        )
+        print(index)
+        return 0
+    if args.command == "protein-atlas":
+        from histopia.visualization._cellular_protein_atlas import (
+            build_cellular_protein_atlas,
+        )
+
+        index = build_cellular_protein_atlas(
+            _unique_named_paths(args.run, "registration"),
+            _unique_named_paths(args.cell_run, "cell"),
+            _unique_scoped_paths(args.protein_model, "protein model"),
+            _unique_named_paths(args.cell_geometry, "cell geometry"),
+            args.output,
+            topology_runs=_unique_named_paths(args.topology_run, "topology"),
+            max_overview_cells=args.overview_cells,
+            max_bytes=args.max_bytes,
+            default_layer=args.default_layer,
+            default_targets=args.default_target,
             workers=args.workers,
+            progress=print,
         )
         print(index)
         return 0
@@ -423,6 +606,15 @@ def _main(argv: list[str] | None = None) -> int:
 
         index = build_topology_review(
             _unique_named_paths(args.run, "topology"),
+            args.output,
+        )
+        print(index)
+        return 0
+    if args.command == "cell-review":
+        from histopia.visualization._cell_review import build_cell_review
+
+        index = build_cell_review(
+            _unique_named_paths(args.run, "cell"),
             args.output,
         )
         print(index)
@@ -477,6 +669,14 @@ def _main(argv: list[str] | None = None) -> int:
                 "wsi_sections": sections,
                 "max_bytes": args.max_bytes,
             }
+        if args.protein_atlas is not None:
+            options.update(
+                {
+                    "protein_atlas": args.protein_atlas,
+                    "protein_atlas_max_bytes": args.protein_atlas_max_bytes,
+                    "max_bytes": args.max_bytes,
+                }
+            )
         index = export_static_showcase(
             args.source,
             args.output,
@@ -503,6 +703,29 @@ def _main(argv: list[str] | None = None) -> int:
             write_workflow_audit(report, args.output)
         print(json.dumps(report.to_json_dict(), sort_keys=True))
         return report.exit_code
+    if args.command == "completeness":
+        from histopia.visualization._completeness import (
+            audit_analysis_completeness,
+            write_analysis_completeness,
+        )
+        from histopia.visualization._review_api import ReviewDecisionService
+
+        configured = ReviewDecisionService.from_file(
+            args.review_config
+        ).configured_runs()
+        unknown = sorted(set(args.cohort) - set(configured))
+        if unknown:
+            raise ValueError("unknown completeness cohorts: " + ", ".join(unknown))
+        selected = (
+            {name: configured[name] for name in args.cohort}
+            if args.cohort
+            else configured
+        )
+        report = audit_analysis_completeness(selected)
+        if args.output is not None:
+            write_analysis_completeness(report, args.output)
+        print(json.dumps(report.to_json_dict(), sort_keys=True))
+        return 0 if report.complete else 2
     if args.command == "feedback-export":
         from histopia._atomic import write_json_atomic
         from histopia.visualization._feedback import (
@@ -540,6 +763,19 @@ def _unique_named_paths(
         if name in result:
             raise ValueError(f"duplicate {kind} run name: {name}")
         result[name] = path
+    return result
+
+
+def _unique_scoped_paths(
+    values: list[tuple[str, str, Path]],
+    kind: str,
+) -> dict[str, dict[str, Path]]:
+    result: dict[str, dict[str, Path]] = {}
+    for cohort, name, path in values:
+        scoped = result.setdefault(cohort, {})
+        if name in scoped:
+            raise ValueError(f"duplicate {kind} run name: {cohort}:{name}")
+        scoped[name] = path
     return result
 
 

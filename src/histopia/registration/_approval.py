@@ -45,7 +45,102 @@ class SectionOrderApproval:
     reviewed_at: str
 
 
-def prepare_completed_registration_review(run_dir: Path | str) -> Path:
+@dataclass(frozen=True, slots=True)
+class SectionOrderAdoption:
+    """Audit record for promoting an externally reviewed order candidate."""
+
+    run_dir: Path
+    candidate: Path
+    archived_order: Path
+    slide_count: int
+    order_fingerprint: str
+
+
+def adopt_section_order_review(
+    run_dir: Path | str,
+    candidate: Path | str,
+) -> SectionOrderAdoption:
+    """Safely replace a pending order proposal with an exact reviewed candidate.
+
+    Adoption does not grant approval.  It verifies that the candidate is bound
+    to the current registration result, contains that result's exact slide
+    order, and carries the current mask fingerprints.  The prior canonical
+    proposal is archived byte-for-byte before the candidate becomes canonical.
+    """
+
+    root = Path(run_dir)
+    candidate_path = Path(candidate)
+    canonical_path = root / "section_order_review.json"
+    if (root / "registration_approval.json").exists():
+        raise ValueError("approved registration runs cannot adopt another order")
+    if candidate_path.resolve() == canonical_path.resolve():
+        raise ValueError("candidate must be distinct from the canonical order")
+
+    result_path = root / "registration_result.json"
+    mask_path = root / "mask_review.json"
+    result = _load_object(result_path)
+    masks = _load_object(mask_path)
+    proposed = _load_object(candidate_path)
+    if proposed.get("schema_version") != 3:
+        raise ValueError("section order candidate must use schema version 3")
+    if proposed.get("approved") is True:
+        raise ValueError("section order candidate must not already be approved")
+    _require_current_order_source(root, proposed)
+
+    result_rows = _object_rows(result, "slides", result_path)
+    mask_rows = _object_rows(masks, "slides", mask_path)
+    proposal_rows = _object_rows(proposed, "slides", candidate_path)
+    result_names = [
+        Path(_required_string(row, "path", result_path)).name for row in result_rows
+    ]
+    proposed_names: list[str] = []
+    for expected_order, row in enumerate(proposal_rows, start=1):
+        if row.get("order") != expected_order:
+            raise ValueError("section order candidate positions must be consecutive")
+        proposed_names.append(_required_string(row, "slide", candidate_path))
+    if proposed_names != result_names:
+        raise ValueError(
+            "section order candidate does not match registration result slide order"
+        )
+    if len(set(proposed_names)) != len(proposed_names):
+        raise ValueError("section order candidate contains duplicate slides")
+
+    masks_by_name = _unique_rows_by_name(mask_rows, "slide", mask_path)
+    if set(masks_by_name) != set(proposed_names):
+        raise ValueError("section order candidate does not match mask review slides")
+    inputs = proposed.get("input_fingerprints")
+    if not isinstance(inputs, dict) or set(inputs) != set(proposed_names):
+        raise ValueError("section order candidate input fingerprints are incomplete")
+    for name in proposed_names:
+        expected = _required_string(masks_by_name[name], "thumbnail_sha256", mask_path)
+        if inputs.get(name) != expected:
+            raise ValueError(
+                f"section order candidate mask fingerprint mismatch: {name}"
+            )
+        _require_processed_review_artifacts(root, name)
+
+    fingerprint = _required_string(proposed, "fingerprint", candidate_path)
+    if not canonical_path.is_file():
+        raise FileNotFoundError(canonical_path)
+    archive_path = root / f"section_order_review.superseded-{fingerprint[:12]}.json"
+    if archive_path.exists():
+        raise FileExistsError(archive_path)
+    _write_bytes_atomic(archive_path, canonical_path.read_bytes())
+    _write_bytes_atomic(canonical_path, candidate_path.read_bytes())
+    return SectionOrderAdoption(
+        run_dir=root,
+        candidate=candidate_path,
+        archived_order=archive_path,
+        slide_count=len(proposed_names),
+        order_fingerprint=fingerprint,
+    )
+
+
+def prepare_completed_registration_review(
+    run_dir: Path | str,
+    *,
+    output_path: Path | str | None = None,
+) -> Path:
     """Prepare a review manifest for a completed run that predates order review.
 
     The completed slide order is preserved exactly because changing it would
@@ -57,12 +152,21 @@ def prepare_completed_registration_review(run_dir: Path | str) -> Path:
     root = Path(run_dir)
     result_path = root / "registration_result.json"
     mask_path = root / "mask_review.json"
-    order_path = root / "section_order_review.json"
+    order_path = (
+        Path(output_path)
+        if output_path is not None
+        else root / "section_order_review.json"
+    )
     if (root / "registration_approval.json").exists():
         raise ValueError("approved registration runs cannot be migrated")
 
     result = _load_object(result_path)
-    mask_review = _load_object(mask_path)
+    mask_review = _load_or_restore_embedded_mask_review(
+        root,
+        result,
+        result_path=result_path,
+        mask_path=mask_path,
+    )
     if mask_review.get("schema_version") != 2:
         raise ValueError("mask review must use schema version 2")
     result_rows = _object_rows(result, "slides", result_path)
@@ -442,6 +546,50 @@ def _load_object(path: Path) -> dict[str, object]:
     return payload
 
 
+def _load_or_restore_embedded_mask_review(
+    root: Path,
+    result: dict[str, object],
+    *,
+    result_path: Path,
+    mask_path: Path,
+) -> dict[str, object]:
+    """Restore a missing legacy mask sidecar from exact embedded review rows.
+
+    Older completed runs sometimes sealed each reviewed mask inside
+    ``registration_result.json`` but omitted the redundant ``mask_review.json``
+    sidecar required by the current approval gate. Restoration is deliberately
+    fail-closed: every result row must contain an accepted mask, an exact slide
+    name, a non-empty thumbnail digest, and both processed review artifacts.
+    This migration creates review input only and never grants approval.
+    """
+
+    if mask_path.is_file():
+        return _load_object(mask_path)
+    rows: list[dict[str, object]] = []
+    seen: set[str] = set()
+    for result_row in _object_rows(result, "slides", result_path):
+        name = Path(_required_string(result_row, "path", result_path)).name
+        if name in seen:
+            raise ValueError(f"registration result contains duplicate slide: {name}")
+        mask = result_row.get("mask")
+        if not isinstance(mask, dict) or mask.get("accepted") is not True:
+            raise ValueError(f"registration mask is not accepted: {name}")
+        embedded = result_row.get("mask_review")
+        if not isinstance(embedded, dict):
+            raise ValueError(f"registration result has no mask review: {name}")
+        row = dict(embedded)
+        reviewed_name = Path(_required_string(row, "slide", result_path)).name
+        if reviewed_name != name:
+            raise ValueError(f"embedded mask review slide mismatch: {name}")
+        _required_string(row, "thumbnail_sha256", result_path)
+        _require_processed_review_artifacts(root, name)
+        rows.append(row)
+        seen.add(name)
+    payload: dict[str, object] = {"schema_version": 2, "slides": rows}
+    _write_json_atomic(mask_path, payload)
+    return payload
+
+
 def _object_rows(
     payload: dict[str, object],
     key: str,
@@ -579,6 +727,22 @@ def _write_json_atomic(
         with os.fdopen(descriptor, "w") as stream:
             json.dump(payload, stream, indent=2, sort_keys=sort_keys)
             stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        Path(temporary).unlink(missing_ok=True)
+        raise
+
+
+def _write_bytes_atomic(path: Path, content: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent
+    )
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(content)
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)

@@ -207,28 +207,44 @@ def benchmark_envelope_methods(
     sections: tuple[ObservedSection, ...],
     z_positions_um: tuple[float, ...],
     *,
+    segments: tuple[int, ...] | None = None,
     origin_um_xy: tuple[float, float],
     spacing_um: float,
 ) -> dict[str, object]:
-    """Select an interpolation method with leave-one-section-out evidence."""
+    """Select interpolation using leave-one-out evidence within 3D segments."""
 
     if len(masks) < 3:
         raise ValueError("envelope benchmarking requires at least three masks")
     if len(masks) != len(sections) or len(masks) != len(z_positions_um):
         raise ValueError("envelope benchmark inputs must have equal section counts")
+    if segments is None:
+        segments = tuple(0 for _ in sections)
+    if len(segments) != len(sections):
+        raise ValueError("envelope benchmark segments must match section count")
     from scipy.ndimage import distance_transform_edt
 
     sdfs = np.stack(
         [_signed_distance(mask, distance_transform_edt) for mask in masks]
     ).astype(np.float32)
     methods = ("linear_sdf", "flow_sdf", "pchip_sdf")
-    cases: dict[str, list[dict[str, float]]] = {method: [] for method in methods}
+    cases: dict[str, list[dict[str, object]]] = {method: [] for method in methods}
     for index in range(1, len(masks) - 1):
         source = index - 1
         target = index + 1
+        if not (segments[source] == segments[index] == segments[target]):
+            continue
         fraction = (z_positions_um[index] - z_positions_um[source]) / (
             z_positions_um[target] - z_positions_um[source]
         )
+        segment_indices = np.asarray(
+            [
+                position
+                for position, segment in enumerate(segments)
+                if segment == segments[index]
+            ],
+            dtype=np.int64,
+        )
+        local_hidden = int(np.flatnonzero(segment_indices == index)[0])
         predictions = {
             "linear_sdf": ((1.0 - fraction) * sdfs[source] + fraction * sdfs[target])
             >= 0,
@@ -243,14 +259,25 @@ def benchmark_envelope_methods(
             )[0]
             >= 0,
             "pchip_sdf": _heldout_pchip_sdf(
-                sdfs,
-                z_positions_um,
-                hidden=index,
+                sdfs[segment_indices],
+                tuple(z_positions_um[position] for position in segment_indices),
+                hidden=local_hidden,
             )
             >= 0,
         }
         for method, predicted in predictions.items():
-            cases[method].append(_mask_metrics(predicted, masks[index]))
+            cases[method].append(
+                {
+                    "section_index": index,
+                    "slide_id": sections[index].slide_id,
+                    **_mask_metrics(predicted, masks[index]),
+                }
+            )
+
+    if not cases["linear_sdf"]:
+        raise ValueError(
+            "envelope benchmarking requires three continuous observed sections"
+        )
 
     candidates: list[dict[str, object]] = []
     for method in methods:
@@ -275,7 +302,46 @@ def benchmark_envelope_methods(
         ),
         reverse=True,
     )
+    gates = {
+        "median_tissue_dice": 0.90,
+        "tenth_percentile_tissue_dice": 0.80,
+        "median_boundary_f1": 0.75,
+    }
+    selected = _select_envelope_candidate(candidates, gates)
+    passed = _candidate_passes_gates(selected, gates)
+    return {
+        "method": "leave_one_section_out_registered_mask",
+        "selected_method": selected["method"],
+        "status": "passed" if passed else "failed",
+        "evaluated_section_indices": [
+            int(row["section_index"]) for row in cases["linear_sdf"]
+        ],
+        "gates": gates,
+        "candidates": candidates,
+    }
+
+
+def _candidate_passes_gates(
+    candidate: dict[str, object], gates: dict[str, float]
+) -> bool:
+    return all(float(candidate[name]) >= threshold for name, threshold in gates.items())
+
+
+def _select_envelope_candidate(
+    candidates: list[dict[str, object]], gates: dict[str, float]
+) -> dict[str, object]:
+    """Keep the guarded baseline unless only an alternative clears all gates."""
+
     baseline = next(row for row in candidates if row["method"] == "linear_sdf")
+    passing = [row for row in candidates if _candidate_passes_gates(row, gates)]
+    if passing and not _candidate_passes_gates(baseline, gates):
+        return max(
+            passing,
+            key=lambda row: (
+                float(row["median_tissue_dice"]),
+                float(row["median_boundary_f1"]),
+            ),
+        )
     eligible = [
         row
         for row in candidates
@@ -291,29 +357,13 @@ def benchmark_envelope_methods(
             >= float(baseline["median_tissue_dice"]) - 0.002
         )
     ]
-    selected = max(
+    return max(
         eligible,
         key=lambda row: (
             float(row["median_tissue_dice"]),
             float(row["median_boundary_f1"]),
         ),
     )
-    passed = (
-        float(selected["median_tissue_dice"]) >= 0.90
-        and float(selected["tenth_percentile_tissue_dice"]) >= 0.80
-        and float(selected["median_boundary_f1"]) >= 0.75
-    )
-    return {
-        "method": "leave_one_section_out_registered_mask",
-        "selected_method": selected["method"],
-        "status": "passed" if passed else "failed",
-        "gates": {
-            "median_tissue_dice": 0.90,
-            "tenth_percentile_tissue_dice": 0.80,
-            "median_boundary_f1": 0.75,
-        },
-        "candidates": candidates,
-    }
 
 
 def reconstruct_dense_volume(

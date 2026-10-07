@@ -17,7 +17,15 @@ import numpy as np
 
 from histopia._atomic import write_json_atomic
 from histopia.compute import configure_vips_threads
-from histopia.stain._artifacts import StainMap
+from histopia.stain._adaptive import (
+    AdaptiveBackgroundResult,
+    CounterstainAdaptiveResult,
+    apply_adaptive_background,
+    apply_counterstain_conditioned_background,
+    infer_adaptive_background,
+    infer_counterstain_conditioned_background,
+)
+from histopia.stain._artifacts import AdaptiveStainMap, StainMap
 from histopia.stain._assays import StainFamily
 from histopia.stain._config import StainQuantificationConfig
 from histopia.stain._io import AnalysisSlide, read_analysis_slide
@@ -27,6 +35,7 @@ from histopia.stain._model import (
     _rank_correlation,
     canonical_vectors,
     cohort_vector_template,
+    counterstain_only_mask,
     fit_candidate,
     select_family_method,
     shrink_vectors,
@@ -74,6 +83,7 @@ def benchmark_stain_methods(
         slide
         for slide in preflight.slides
         if slide.assay.family is not StainFamily.CONTEXT_HE
+        and slide.assay.analysis_included
     ]
     registration_order = {
         Path(str(row["path"])).name: order
@@ -316,6 +326,23 @@ def _map_slide_task(
     ],
 ) -> tuple[dict[str, object], str]:
     config, preflight, slide, order, benchmark, fit_row, overwrite_maps = task
+    if not slide.assay.analysis_included:
+        return (
+            {
+                "id": slide.slide_name,
+                "order": order,
+                "marker": slide.assay.marker,
+                "family": slide.assay.family.value,
+                "batch_id": slide.assay.batch_id,
+                "analysis_included": False,
+                "exclusion_reason": slide.assay.exclusion_reason,
+                "quantified": False,
+                "map": None,
+                "model": None,
+                "qc": {"flags": ["analysis_excluded"]},
+            },
+            "excluded",
+        )
     if slide.assay.family is StainFamily.CONTEXT_HE:
         return (
             {
@@ -324,6 +351,8 @@ def _map_slide_task(
                 "marker": slide.assay.marker,
                 "family": slide.assay.family.value,
                 "batch_id": slide.assay.batch_id,
+                "analysis_included": True,
+                "exclusion_reason": None,
                 "quantified": False,
                 "map": None,
                 "model": None,
@@ -359,9 +388,13 @@ def _map_slide_task(
         corrected_vectors,
     )
     maps_root = config.output_dir / "maps"
+    adaptive_maps_root = config.output_dir / "adaptive_maps"
     models_root = config.output_dir / "models"
     map_path = maps_root / f"{order:03d}-{_safe_name(slide.slide_name)}.npz"
     model_path = models_root / f"{order:03d}-{_safe_name(slide.slide_name)}.json"
+    adaptive_map_path = (
+        adaptive_maps_root / f"{order:03d}-{_safe_name(slide.slide_name)}.npz"
+    )
     cached = (
         _load_matching_map(map_path, provenance)
         if map_path.exists() and model_path.exists() and not overwrite_maps
@@ -389,6 +422,11 @@ def _map_slide_task(
         stain_map = cached
         model = StainModel.from_json_dict(json.loads(model_path.read_text()))
         outcome = "reused"
+    adaptive_map = _counterstain_adaptive_artifact(
+        stain_map,
+        model,
+        adaptive_map_path,
+    )
     return (
         _result_slide_row(
             config.output_dir,
@@ -398,6 +436,8 @@ def _map_slide_task(
             stain_map,
             map_path,
             model_path,
+            adaptive_map=adaptive_map,
+            adaptive_map_path=(adaptive_map_path if adaptive_map is not None else None),
         ),
         outcome,
     )
@@ -539,6 +579,13 @@ def _quantify_slide(
         corrected_vectors,
     )
     rank = _spearman(raw_sample[:, 1], corrected_sample[:, 1])
+    counterstain_only = counterstain_only_mask(raw_sample)
+    raw_counterstain_leakage = float(
+        np.quantile(raw_sample[counterstain_only, 1], 0.95)
+    )
+    corrected_counterstain_leakage = float(
+        np.quantile(corrected_sample[counterstain_only, 1], 0.95)
+    )
     glass = _glass_mask(analysis.rgb, analysis.tissue_mask)
     raw_glass_rgb = _sample_pixels(
         analysis.rgb,
@@ -565,6 +612,7 @@ def _quantify_slide(
     accepted = bool(
         rank >= config.correction_rank_guard
         and corrected_leakage <= raw_leakage * 1.05 + 0.002
+        and corrected_counterstain_leakage <= raw_counterstain_leakage * 1.05 + 0.002
         and background.after_spatial_cv <= background.before_spatial_cv * 1.05 + 1e-6
     )
     preliminary = StainModel(
@@ -578,9 +626,38 @@ def _quantify_slide(
         correction_rank_correlation=rank,
         raw_glass_leakage=raw_leakage,
         corrected_glass_leakage=corrected_leakage,
+        raw_counterstain_leakage=raw_counterstain_leakage,
+        corrected_counterstain_leakage=corrected_counterstain_leakage,
         content_bbox_native_xywh=slide.content_bbox_xywh,
     )
     concentrations = preliminary.transform_rgb(analysis.rgb)
+    selected_physical = (
+        concentrations.corrected_target_od
+        if preliminary.correction_accepted
+        else concentrations.raw_target_od
+    )
+    tissue = analysis.tissue_mask
+    residual = _mask_float(concentrations.reconstruction_residual, tissue)
+    residual_scale = max(float(np.quantile(residual[tissue], 0.95)), 0.02)
+    confidence = np.zeros(tissue.shape, dtype=np.float32)
+    confidence[tissue] = np.exp(-residual[tissue] / residual_scale)
+    if config.adaptive_background == "inferred_floor":
+        adaptive = infer_adaptive_background(
+            selected_physical,
+            concentrations.counterstain_od,
+            tissue,
+            seed=config.seed,
+        )
+    elif config.adaptive_background == "counterstain_conditioned":
+        adaptive = infer_counterstain_conditioned_background(
+            selected_physical,
+            concentrations.counterstain_od,
+            tissue,
+            confidence=confidence,
+            seed=config.seed,
+        )
+    else:
+        adaptive = None
     threshold, threshold_accepted = _positive_threshold(
         concentrations.corrected_target_od[analysis.tissue_mask],
         seed=config.seed,
@@ -596,18 +673,16 @@ def _quantify_slide(
         correction_rank_correlation=preliminary.correction_rank_correlation,
         raw_glass_leakage=preliminary.raw_glass_leakage,
         corrected_glass_leakage=preliminary.corrected_glass_leakage,
+        raw_counterstain_leakage=preliminary.raw_counterstain_leakage,
+        corrected_counterstain_leakage=(preliminary.corrected_counterstain_leakage),
         content_bbox_native_xywh=preliminary.content_bbox_native_xywh,
         positive_threshold_od=threshold,
         threshold_accepted=threshold_accepted,
+        adaptive_background=(adaptive.to_json_dict() if adaptive is not None else None),
     )
-    tissue = analysis.tissue_mask
     raw_target = _mask_float(concentrations.raw_target_od, tissue)
     corrected_target = _mask_float(concentrations.corrected_target_od, tissue)
     counterstain = _mask_float(concentrations.counterstain_od, tissue)
-    residual = _mask_float(concentrations.reconstruction_residual, tissue)
-    residual_scale = max(float(np.quantile(residual[tissue], 0.95)), 0.02)
-    confidence = np.zeros(tissue.shape, dtype=np.float32)
-    confidence[tissue] = np.exp(-residual[tissue] / residual_scale)
     positive = (
         tissue & (corrected_target >= threshold)
         if threshold_accepted and threshold is not None
@@ -638,8 +713,16 @@ def _result_slide_row(
     stain_map: StainMap,
     map_path: Path,
     model_path: Path,
+    *,
+    adaptive_map: AdaptiveStainMap | None = None,
+    adaptive_map_path: Path | None = None,
 ) -> dict[str, object]:
-    values = stain_map.corrected_target_od[stain_map.tissue_mask]
+    selected = (
+        stain_map.corrected_target_od
+        if model.correction_accepted
+        else stain_map.raw_target_od
+    )
+    values = selected[stain_map.tissue_mask]
     quantile_levels = (0.0, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99, 1.0)
     quantiles = np.quantile(values, quantile_levels)
     maximum = max(float(quantiles[-1]), 1e-6)
@@ -651,12 +734,44 @@ def _result_slide_row(
         flags.append("positive_threshold_unstable")
     if model.background.fallback_used:
         flags.append("background_fallback")
-    return {
+    adaptive_payload = model.adaptive_background
+    adaptive_method = (
+        str(adaptive_payload.get("method", ""))
+        if isinstance(adaptive_payload, dict)
+        else ""
+    )
+    if adaptive_method == "counterstain-conditioned-v3":
+        adaptive_result: AdaptiveBackgroundResult | CounterstainAdaptiveResult = (
+            CounterstainAdaptiveResult.from_json_dict(adaptive_payload)
+        )
+        if adaptive_result.accepted and adaptive_map is None:
+            raise ValueError("accepted counterstain correction has no derived map")
+        adaptive_values = (
+            np.asarray(adaptive_map.target_od)[stain_map.tissue_mask]
+            if adaptive_map is not None
+            else values
+        )
+    elif adaptive_payload is not None:
+        adaptive_result = AdaptiveBackgroundResult.from_json_dict(adaptive_payload)
+        adaptive_values = apply_adaptive_background(
+            selected,
+            stain_map.tissue_mask,
+            adaptive_result,
+        )[stain_map.tissue_mask]
+    else:
+        adaptive_result = None
+        adaptive_values = values
+    adaptive_quantiles = np.quantile(adaptive_values, quantile_levels)
+    if adaptive_result is not None and not adaptive_result.accepted:
+        flags.append("adaptive_background_rejected")
+    row: dict[str, object] = {
         "id": slide.slide_name,
         "order": order,
         "marker": slide.assay.marker,
         "family": slide.assay.family.value,
         "batch_id": slide.assay.batch_id,
+        "analysis_included": True,
+        "exclusion_reason": None,
         "quantified": True,
         "map": map_path.relative_to(output_dir).as_posix(),
         "model": model_path.relative_to(output_dir).as_posix(),
@@ -664,6 +779,10 @@ def _result_slide_row(
         "quantiles": {
             str(level): float(value)
             for level, value in zip(quantile_levels, quantiles, strict=True)
+        },
+        "adaptive_quantiles": {
+            str(level): float(value)
+            for level, value in zip(quantile_levels, adaptive_quantiles, strict=True)
         },
         "histogram": {
             "edges": edges.tolist(),
@@ -678,16 +797,70 @@ def _result_slide_row(
             "rank_correlation": model.correction_rank_correlation,
             "raw_glass_leakage": model.raw_glass_leakage,
             "corrected_glass_leakage": model.corrected_glass_leakage,
+            "raw_counterstain_leakage": model.raw_counterstain_leakage,
+            "corrected_counterstain_leakage": (model.corrected_counterstain_leakage),
             "background_spatial_cv_before": model.background.before_spatial_cv,
             "background_spatial_cv_after": model.background.after_spatial_cv,
             "threshold_accepted": model.threshold_accepted,
             "positive_threshold_od": model.positive_threshold_od,
+            "adaptive_background": adaptive_payload,
             "median_reconstruction_residual": float(
                 np.median(stain_map.reconstruction_residual[stain_map.tissue_mask])
             ),
             "flags": flags,
         },
     }
+    if adaptive_map is not None and adaptive_map_path is not None:
+        row["adaptive_map"] = adaptive_map_path.relative_to(output_dir).as_posix()
+        row["adaptive_map_fingerprint"] = adaptive_map.content_fingerprint
+    return row
+
+
+def _counterstain_adaptive_artifact(
+    stain_map: StainMap,
+    model: StainModel,
+    path: Path,
+) -> AdaptiveStainMap | None:
+    payload = model.adaptive_background
+    if not isinstance(payload, dict) or payload.get("method") != (
+        "counterstain-conditioned-v3"
+    ):
+        return None
+    result = CounterstainAdaptiveResult.from_json_dict(payload)
+    if not result.accepted:
+        return None
+    if path.is_file():
+        existing = AdaptiveStainMap.load(path)
+        if (
+            existing.slide_id == stain_map.slide_id
+            and existing.source_content_fingerprint == stain_map.content_fingerprint
+            and existing.diagnostics == payload
+        ):
+            return existing
+    selected = (
+        stain_map.corrected_target_od
+        if model.correction_accepted
+        else stain_map.raw_target_od
+    )
+    target = apply_counterstain_conditioned_background(
+        selected,
+        stain_map.counterstain_od,
+        stain_map.tissue_mask,
+        result,
+    )
+    derived = AdaptiveStainMap(
+        slide_id=stain_map.slide_id,
+        target_od=target,
+        tissue_mask=stain_map.tissue_mask,
+        analysis_mpp=stain_map.analysis_mpp,
+        content_origin_native_xy=stain_map.content_origin_native_xy,
+        source_mpp_xy=stain_map.source_mpp_xy,
+        source_content_fingerprint=str(stain_map.content_fingerprint),
+        method=result.method,
+        diagnostics=payload,
+    )
+    derived.save(path)
+    return derived
 
 
 def _positive_threshold(
@@ -843,6 +1016,7 @@ def _map_provenance(
         "corrected_vectors": np.asarray(corrected_vectors).tolist(),
         "vector_shrinkage": config.vector_shrinkage,
         "correction_rank_guard": config.correction_rank_guard,
+        "adaptive_background": config.adaptive_background,
     }
 
 
@@ -853,6 +1027,7 @@ def _benchmark_request(config: StainQuantificationConfig) -> dict[str, object]:
         "sample_pixels": config.sample_pixels,
         "white_sample_pixels": config.white_sample_pixels,
         "vector_shrinkage": config.vector_shrinkage,
+        "adaptive_background": config.adaptive_background,
         "seed": config.seed,
     }
 
@@ -865,7 +1040,7 @@ def _load_matching_fit(
         payload = json.loads(path.read_text())
         if (
             payload.get("schema_version") == 1
-            and payload.get("provenance") == provenance
+            and _equivalent_fit_provenance(payload.get("provenance"), provenance)
             and isinstance(payload.get("candidates"), list)
         ):
             for candidate in payload["candidates"]:
@@ -875,6 +1050,20 @@ def _load_matching_fit(
     except (OSError, TypeError, ValueError, json.JSONDecodeError):
         return None
     return None
+
+
+def _equivalent_fit_provenance(
+    observed: object,
+    expected: dict[str, object],
+) -> bool:
+    """Permit fit reuse across campaigns only when exact fit inputs match."""
+
+    if not isinstance(observed, dict):
+        return False
+    ignored = {"preflight_fingerprint"}
+    return {key: value for key, value in observed.items() if key not in ignored} == {
+        key: value for key, value in expected.items() if key not in ignored
+    }
 
 
 def _load_matching_map(

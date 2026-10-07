@@ -137,6 +137,42 @@ def test_export_static_showcase_accepts_one_mouse_as_a_string(tmp_path: Path) ->
     assert inventory["mouse_ids"] == ["5997"]
 
 
+def test_export_static_showcase_includes_matching_cellular_protein_atlas(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    output = tmp_path / "showcase"
+    atlas = tmp_path / "protein-atlas"
+    _write_viewer(source)
+    atlas.mkdir()
+    (atlas / "index.html").write_text("<p>cellular atlas</p>")
+    (atlas / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "cohorts": [{"id": "5997"}],
+            }
+        )
+    )
+    (atlas / "atlas-inventory.json").write_text(
+        json.dumps({"schema_version": 1, "cell_count": 17, "files": {}})
+    )
+
+    export_static_showcase(
+        source,
+        output,
+        "5997",
+        protein_atlas=atlas,
+        protein_atlas_max_bytes=1024 * 1024,
+    )
+
+    assert (output / "protein-atlas" / "index.html").is_file()
+    inventory = json.loads((output / "showcase.json").read_text())
+    assert inventory["protein_atlas"]["cohort_ids"] == ["5997"]
+    assert inventory["protein_atlas"]["cell_count"] == 17
+    assert "protein-atlas/index.html" in inventory["files"]
+
+
 def test_export_static_showcase_rejects_unknown_mouse(tmp_path: Path) -> None:
     source = tmp_path / "source"
     _write_viewer(source)

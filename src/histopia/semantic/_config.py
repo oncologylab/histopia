@@ -24,6 +24,7 @@ class SemanticAtlasConfig:
     registration_run: Path
     output_dir: Path
     model_cache_dir: Path | None = None
+    feature_reuse_dir: Path | None = None
     analysis_mpp: float = 0.5
     patch_size_px: int = 224
     min_tissue_fraction: float = 0.5
@@ -39,6 +40,7 @@ class SemanticAtlasConfig:
     pca_components: int = 64
     balanced_patch_cap: int = 4096
     max_cross_section_distance_um: float = 112.0
+    min_stack_component_neighbor_fraction: float = 0.0
     seed: int = 0
     device: str = "auto"
 
@@ -47,6 +49,8 @@ class SemanticAtlasConfig:
         self.output_dir = Path(self.output_dir)
         if self.model_cache_dir is not None:
             self.model_cache_dir = Path(self.model_cache_dir)
+        if self.feature_reuse_dir is not None:
+            self.feature_reuse_dir = Path(self.feature_reuse_dir)
         self.analysis_mpp = positive_float("analysis_mpp", self.analysis_mpp)
         self.patch_size_px = positive_int("patch_size_px", self.patch_size_px)
         self.batch_size = positive_int("batch_size", self.batch_size)
@@ -83,6 +87,14 @@ class SemanticAtlasConfig:
             "max_cross_section_distance_um",
             self.max_cross_section_distance_um,
         )
+        self.min_stack_component_neighbor_fraction = finite_float(
+            "min_stack_component_neighbor_fraction",
+            self.min_stack_component_neighbor_fraction,
+        )
+        if not 0 <= self.min_stack_component_neighbor_fraction <= 1:
+            raise ValueError(
+                "min_stack_component_neighbor_fraction must be between zero and one"
+            )
         self.seed = nonnegative_int("seed", self.seed)
         if self.seed > 2**32 - 1:
             raise ValueError("seed must not exceed 2**32 - 1")

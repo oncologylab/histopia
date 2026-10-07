@@ -17,15 +17,12 @@ from histopia.stain._result_validation import validate_stain_result
 _PROBE_MAX_DIMENSION = 256
 _PROBE_NODATA = np.iinfo(np.uint16).max
 _PROBE_MAX_VALUE = _PROBE_NODATA - 1
-_HEATMAP_STOPS = np.asarray(
-    [
-        [246, 247, 244],
-        [39, 128, 126],
-        [238, 190, 70],
-        [181, 49, 48],
-    ],
-    dtype=np.float32,
-)
+_CHROMOGEN_STOPS = {
+    "h-dab": ((250, 248, 242), (211, 174, 112), (139, 91, 45), (76, 43, 21)),
+    "sirius-red": ((255, 248, 246), (246, 177, 162), (211, 70, 59), (125, 21, 26)),
+    "pas": ((255, 247, 252), (238, 167, 210), (189, 65, 146), (103, 23, 83)),
+    "alcian-blue": ((247, 251, 255), (158, 202, 225), (49, 130, 189), (14, 61, 107)),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,10 +54,17 @@ def load_stain_viewer_run(
     registration_run: Path,
     registration_payload: dict[str, object],
     stain_run: Path,
+    *,
+    verify_artifacts: bool = True,
 ) -> StainViewerRun:
     """Validate a stain result and its exact registration/order binding."""
 
-    payload = validate_stain_result(stain_run)
+    if verify_artifacts:
+        payload = validate_stain_result(stain_run)
+    else:
+        from histopia.stain._result_validation import validate_stain_result_index
+
+        payload = validate_stain_result_index(stain_run)
     registration_sha = _file_sha256(registration_run / "registration_result.json")
     if payload.get("registration_result_sha256") != registration_sha:
         raise ValueError("stain result belongs to a different registration result")
@@ -77,7 +81,16 @@ def load_stain_viewer_run(
         raise ValueError("stain result slide identities must be unique")
     rows = {str(row["id"]): row for row in stain_rows if isinstance(row, dict)}
     q99 = [
-        float(row["quantiles"]["0.99"])
+        float(
+            (
+                row.get("adaptive_quantiles")
+                if (dict(row.get("qc", {})).get("adaptive_background") or {}).get(
+                    "accepted"
+                )
+                is True
+                else row.get("quantiles")
+            )["0.99"]
+        )
         for row in stain_rows
         if row.get("quantified")
         and isinstance(row.get("quantiles"), dict)
@@ -85,7 +98,11 @@ def load_stain_viewer_run(
     ]
     if not q99 or not np.all(np.isfinite(q99)):
         raise ValueError("stain result has no finite quantified display range")
-    review = stain_review_status(stain_run, payload)
+    review = stain_review_status(
+        stain_run,
+        payload,
+        verify_artifacts=verify_artifacts,
+    )
     return StainViewerRun(
         root=stain_run,
         payload=payload,
@@ -104,6 +121,10 @@ def build_stain_viewer_assets(
     registered_rgb: np.ndarray,
     registered_mask: np.ndarray,
     display_max_od: float,
+    correction_accepted: bool = True,
+    family: str = "h-dab",
+    adaptive_background: dict[str, object] | None = None,
+    adaptive_target_od: np.ndarray | None = None,
 ) -> StainViewerAssets:
     """Warp one source-space map and derive bounded viewer artifacts."""
 
@@ -113,8 +134,35 @@ def build_stain_viewer_assets(
         matrix,
         output_shape,
     )
+    selected = (
+        stain_map.corrected_target_od
+        if correction_accepted
+        else stain_map.raw_target_od
+    )
+    if adaptive_background is not None:
+        if adaptive_background.get("method") == "counterstain-conditioned-v3":
+            if adaptive_background.get("accepted") is not True:
+                pass
+            elif adaptive_target_od is None:
+                raise ValueError(
+                    "counterstain-conditioned viewer output requires its sealed map"
+                )
+            else:
+                selected = np.asarray(adaptive_target_od, dtype=np.float32)
+        else:
+            from histopia.stain._adaptive import (
+                AdaptiveBackgroundResult,
+                apply_adaptive_background,
+            )
+
+            adaptive = AdaptiveBackgroundResult.from_json_dict(adaptive_background)
+            selected = apply_adaptive_background(
+                selected,
+                stain_map.tissue_mask,
+                adaptive,
+            )
     corrected = _resize_and_warp_float(
-        stain_map.corrected_target_od,
+        selected,
         source_shape,
         matrix,
         output_shape,
@@ -128,8 +176,14 @@ def build_stain_viewer_assets(
     tissue = np.asarray(registered_mask, dtype=bool) & map_tissue
     raw = np.where(tissue, np.maximum(raw, 0), 0).astype(np.float32)
     corrected = np.where(tissue, np.maximum(corrected, 0), 0).astype(np.float32)
-    raw_rgba = _heatmap_rgba(raw, tissue, display_max_od)
-    corrected_rgba = _heatmap_rgba(corrected, tissue, display_max_od)
+    raw_rgba = _heatmap_rgba(raw, tissue, display_max_od, family=family)
+    corrected_rgba = _heatmap_rgba(
+        corrected,
+        tissue,
+        display_max_od,
+        opaque_tissue=True,
+        family=family,
+    )
     probe, probe_width, probe_height, probe_scale = _probe_grid(
         raw,
         corrected,
@@ -241,21 +295,30 @@ def _heatmap_rgba(
     values: np.ndarray,
     tissue: np.ndarray,
     maximum: float,
+    *,
+    opaque_tissue: bool = False,
+    family: str = "h-dab",
 ) -> np.ndarray:
+    stops = np.asarray(
+        _CHROMOGEN_STOPS.get(family, _CHROMOGEN_STOPS["h-dab"]),
+        dtype=np.float32,
+    )
     normalized = np.clip(np.asarray(values, dtype=np.float32) / maximum, 0, 1)
     segment = np.minimum(
-        (normalized * (len(_HEATMAP_STOPS) - 1)).astype(np.intp),
-        len(_HEATMAP_STOPS) - 2,
+        (normalized * (len(stops) - 1)).astype(np.intp),
+        len(stops) - 2,
     )
-    local = normalized * (len(_HEATMAP_STOPS) - 1) - segment
+    local = normalized * (len(stops) - 1) - segment
     rgb = (
-        _HEATMAP_STOPS[segment] * (1 - local[..., None])
-        + _HEATMAP_STOPS[segment + 1] * local[..., None]
+        stops[segment] * (1 - local[..., None]) + stops[segment + 1] * local[..., None]
+    )
+    alpha = (
+        np.full(normalized.shape, 255) if opaque_tissue else np.sqrt(normalized) * 238
     )
     return np.dstack(
         [
             np.clip(rgb, 0, 255).astype(np.uint8),
-            np.where(tissue, 238, 0).astype(np.uint8),
+            np.where(tissue, alpha, 0).astype(np.uint8),
         ]
     )
 

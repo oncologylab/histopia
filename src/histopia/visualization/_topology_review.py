@@ -10,6 +10,8 @@ from pathlib import Path
 from statistics import median
 
 from histopia.topology import validate_topology_result
+from histopia.visualization._review_selection import REVIEW_SELECTION_JS
+from histopia.visualization._review_theme import themed_review_css
 
 
 def build_topology_review(
@@ -167,9 +169,74 @@ def build_topology_review(
         f"globalThis.HISTOPIA_TOPOLOGY_REVIEW={encoded};\n"
     )
     (output / "index.html").write_text(_HTML)
-    (output / "topology-review.css").write_text(_CSS)
+    (output / "topology-review.css").write_text(themed_review_css(_CSS))
     (output / "topology-review.js").write_text(_JS)
     return output / "index.html"
+
+
+def bind_cellular_depth_models(
+    topology_output: Path | str,
+    cellular_atlas_manifest: Path | str,
+) -> int:
+    """Bind the atlas cell-size display spacing into a built topology viewer.
+
+    The topology's measured coordinates remain unchanged.  This additive
+    display model only makes its default Z scale match the cellular protein
+    atlas for the same cohort, while retaining a separate 12× physical-spacing
+    presentation option.
+    """
+
+    output = Path(topology_output)
+    topology_path = output / "manifest.json"
+    atlas_path = Path(cellular_atlas_manifest)
+    if atlas_path.is_dir():
+        atlas_path = atlas_path / "manifest.json"
+    topology = json.loads(topology_path.read_text())
+    atlas = json.loads(atlas_path.read_text())
+    atlas_rows = {
+        str(row.get("id")): row
+        for row in atlas.get("cohorts", [])
+        if isinstance(row, dict)
+    }
+    bound = 0
+    for row in topology.get("cohorts", []):
+        if not isinstance(row, dict):
+            continue
+        atlas_row = atlas_rows.get(str(row.get("id")))
+        identity = (
+            atlas_row.get("cell_identity") if isinstance(atlas_row, dict) else None
+        )
+        model = (
+            identity.get("morphology_aware_z") if isinstance(identity, dict) else None
+        )
+        if not isinstance(model, dict):
+            continue
+        keys = (
+            "median_cell_diameter_um",
+            "physical_section_spacing_um",
+            "visual_section_spacing_um",
+            "visual_z_scale",
+        )
+        try:
+            values = {key: float(model[key]) for key in keys}
+        except (KeyError, TypeError, ValueError):
+            continue
+        if any(not (value > 0) for value in values.values()):
+            continue
+        row["cellular_depth_model"] = {
+            "method": str(
+                model.get("method", "boundary-size-local-packing-display-v1")
+            ),
+            **values,
+            "scope": "display only; topology measurements retain their original physical Z coordinates",
+        }
+        bound += 1
+    topology_path.write_text(json.dumps(topology, indent=2) + "\n")
+    encoded = json.dumps(topology, separators=(",", ":"))
+    (output / "manifest-data.js").write_text(
+        f"globalThis.HISTOPIA_TOPOLOGY_REVIEW={encoded};\n"
+    )
+    return bound
 
 
 def _region_review_score(
@@ -298,9 +365,9 @@ _HTML = """<!doctype html>
           Controls
         </button>
         <div class="segments" aria-label="Z-axis display scale">
-          <button data-z="1">Physical</button>
-          <button data-z="12" class="active">Review 12x</button>
-          <button data-z="25">Strong 25x</button>
+          <button data-z="cellular" class="active">Cell-sized</button>
+          <button data-z="physical">Z stretch ×12</button>
+          <button data-z="exploded">Exploded</button>
         </div>
         <div class="view-controls">
           <button data-view="home" title="Home view">Home</button>
@@ -376,23 +443,36 @@ _CSS = """
 """
 
 
-_JS = r"""
+_JS = (
+    REVIEW_SELECTION_JS
+    + r"""
 import * as THREE from "./vendor/three.module.min.js";
 import {OrbitControls} from "./vendor/OrbitControls.js";
 const data=globalThis.HISTOPIA_TOPOLOGY_REVIEW,el=id=>document.getElementById(id);
 let authenticationRequired=true;
 const scene=new THREE.Scene();scene.background=new THREE.Color(0x070a0e);
 const camera=new THREE.PerspectiveCamera(38,1,.1,1e8);
-const renderer=new THREE.WebGLRenderer({antialias:true,powerPreference:"high-performance"});
+function webglAvailable(){const probe=document.createElement("canvas");try{return Boolean(probe.getContext("webgl2")||probe.getContext("webgl"))}catch(_error){return false}}
+function fallbackRenderer(){const preview=document.createElement("div");preview.setAttribute("aria-label","3D topology preview unavailable; quantitative review controls remain available.");preview.style.cssText="display:grid;place-items:center;width:100%;height:100%;background:#f3f6fa;color:#111827;text-align:center";const box=document.createElement("div");box.style.cssText="display:grid;place-items:center;width:min(56%,620px);height:min(48%,430px);border:2px solid #cfd8e3;border-radius:8px;background:#fff;box-shadow:0 8px 24px rgba(15,23,42,.07)";const message=document.createElement("span");message.style.cssText="padding:10px;font:700 14px Arial,sans-serif;line-height:1.7";message.append("3D topology preview unavailable in this browser",document.createElement("br"));const detail=document.createElement("small");detail.style.font="12px Arial,sans-serif;color:#4b5563";detail.textContent="Quantitative metrics and review controls remain active";message.append(detail);box.append(message);preview.append(box);return{domElement:preview,isFallback:true,setPixelRatio(){},setSize(){preview.style.width="100%";preview.style.height="100%"},render(){}}}
+function createRenderer(){if(!webglAvailable())return fallbackRenderer();try{return new THREE.WebGLRenderer({antialias:true,powerPreference:"high-performance"})}catch(_error){return fallbackRenderer()}}
+let renderer=createRenderer();el("viewport").dataset.renderer=renderer.isFallback?"fallback":"webgl";
 renderer.setPixelRatio(Math.min(devicePixelRatio,1.5));renderer.outputColorSpace=THREE.SRGBColorSpace;renderer.localClippingEnabled=true;el("viewport").append(renderer.domElement);
-let contextLost=false;renderer.domElement.style.visibility="hidden";renderer.domElement.addEventListener("webglcontextlost",()=>{contextLost=true;renderer.domElement.style.visibility="hidden";el("loading").hidden=false;el("loading").textContent="Restoring 3D renderer..."});renderer.domElement.addEventListener("webglcontextrestored",()=>{contextLost=false;fit("home")});
-const controls=new OrbitControls(camera,renderer.domElement);controls.enableDamping=true;controls.screenSpacePanning=true;
+let contextLost=false,controls;renderer.domElement.style.visibility="hidden";
+function bindControls(){if(renderer.isFallback)return{target:new THREE.Vector3(),update(){return false},addEventListener(){},dispose(){}};const bound=new OrbitControls(camera,renderer.domElement);bound.enableDamping=false;bound.screenSpacePanning=true;bound.addEventListener("change",()=>requestRender(2));return bound}
+function activateFallbackRenderer(){if(renderer.isFallback)return;const loadingWasHidden=el("loading").hidden,previous=renderer.domElement;controls?.dispose();renderer=fallbackRenderer();renderer.setPixelRatio(Math.min(devicePixelRatio,1.5));const rect=el("viewport").getBoundingClientRect();renderer.setSize(rect.width,rect.height,false);previous.replaceWith(renderer.domElement);el("viewport").dataset.renderer="fallback";contextLost=false;controls=bindControls();renderer.domElement.style.visibility=loadingWasHidden?"visible":"hidden";if(loadingWasHidden)renderer.render(scene,camera)}
+renderer.domElement.addEventListener("webglcontextlost",event=>{event.preventDefault();contextLost=true;el("loading").hidden=false;el("loading").textContent="Switching to compatibility renderer...";activateFallbackRenderer()});renderer.domElement.addEventListener("webglcontextrestored",()=>{contextLost=false;fit("home")});
+controls=bindControls();controls.enableDamping=false;controls.screenSpacePanning=true;
+let framePending=false,renderFrames=0;
+function requestRender(frames=1){renderFrames=Math.max(renderFrames,frames);if(framePending)return;framePending=true;requestAnimationFrame(drawFrame)}
+function drawFrame(){framePending=false;const changed=controls.update();renderer.render(scene,camera);if(renderFrames>0)renderFrames--;if(changed||renderFrames>0)requestRender(0)}
 const app=document.querySelector(".app"),panelToggle=el("panel-toggle");
 panelToggle.onclick=()=>{const open=app.classList.toggle("panel-open");panelToggle.setAttribute("aria-expanded",String(open));panelToggle.textContent=open?"Close":"Controls"};
 scene.add(new THREE.HemisphereLight(0xffffff,0x23303c,2.5));const key=new THREE.DirectionalLight(0xffffff,2.4);key.position.set(1,2,2);scene.add(key);const fill=new THREE.DirectionalLight(0x9fc5e8,1.1);fill.position.set(-2,.5,-1);scene.add(fill);
 const root=new THREE.Group();scene.add(root);const clipping=new THREE.Plane(new THREE.Vector3(1,0,0),1e9);
-let current=null,generation=0,physicalCenter=new THREE.Vector3(),physicalSize=new THREE.Vector3(),envelope=null,uncertainty=null,locator=null,activeRegions=[],surfaceMode="core",zScale=12;
+let current=null,generation=0,physicalCenter=new THREE.Vector3(),physicalSize=new THREE.Vector3(),envelope=null,uncertainty=null,locator=null,activeRegions=[],surfaceMode="core",zMode="cellular",zScale=1;
 const regionCache=new Map();
+function depthScaleForMode(){if(zMode==="physical")return 12;if(zMode==="exploded")return 25;return Number(current?.cellular_depth_model?.visual_z_scale)||1}
+function applyDepthScale(){zScale=depthScaleForMode();root.scale.y=zScale;el("viewport").dataset.depthMode=zMode;el("viewport").dataset.zScale=zScale.toFixed(3);const model=current?.cellular_depth_model;el("viewport").dataset.sectionSpacingUm=zMode==="cellular"&&model?Number(model.visual_section_spacing_um).toFixed(2):"";document.querySelectorAll("[data-z]").forEach(item=>{const active=item.dataset.z===zMode;item.classList.toggle("active",active);item.setAttribute("aria-pressed",String(active))});updateLocator();requestRender(2)}
 function resize(){const rect=el("viewport").getBoundingClientRect();renderer.setSize(rect.width,rect.height,false);camera.aspect=Math.max(rect.width,1)/Math.max(rect.height,1);camera.updateProjectionMatrix()}addEventListener("resize",()=>{resize();fit("home")});
 function disposeObject(object){if(!object)return;root.remove(object);object.geometry?.dispose();object.material?.dispose()}
 function clear(){for(const item of [...root.children])disposeObject(item);regionCache.clear();envelope=uncertainty=locator=null;activeRegions=[]}
@@ -410,18 +490,21 @@ async function binaryMesh(row,role,loadId){
 }
 async function selectCohort(id){
  const loadId=++generation;current=data.cohorts.find(row=>row.id===id);clear();el("loading").hidden=false;el("loading").textContent="Loading tissue envelope...";
- el("provenance").textContent=`${current.observed_section_count} observed | ${current.numerical_sample_count} numerical samples | z: ${current.z_source}`;
+ el("cohort").value=current.id;histopiaReviewSelection.remember(current.id);
+ const depth=current?.cellular_depth_model,assumed=/assum/i.test(current.z_source||"assumed"),spacingLabel=`${assumed?"Assumed":"Recorded"} Z spacing · ${Number(current.section_thickness_um).toFixed(1)} µm`;
+ const stretch=document.querySelector('[data-z="physical"]');stretch.textContent="Z stretch ×12";stretch.title=`${spacingLabel}. Display depth is stretched 12 times.`;
+ applyDepthScale();el("provenance").textContent=`${current.observed_section_count} observed · ${spacingLabel}`+(depth?` · cell-sized display ${Number(depth.visual_section_spacing_um).toFixed(1)} µm`:"");el("provenance").title=`${current.numerical_sample_count} numerical samples; ${current.z_source}. Display spacing is not a measurement of tissue depth.`;
  const qc=current.reconstruction_qc,chosen=qc.candidates?.find(row=>row.method===qc.selected_method)||qc;
  el("metrics").innerHTML=`<div class="metric"><b>${current.observed_section_count}</b>observed sections</div><div class="metric"><b>${current.numerical_sample_count}</b>numerical samples</div><div class="metric"><b>${pct(chosen.median_tissue_dice||0)}</b>held-out tissue Dice</div><div class="metric ${qc.status==="passed"?"pass":"fail"}"><b>${qc.status}</b>envelope QC</div>`;
  el("qc-status").className=qc.status==="passed"?"pass":"fail";el("qc-status").textContent=current.legacy_diagnostic?"Legacy sparse diagnostic surface":`${qc.selected_method} | boundary F1 ${pct(chosen.median_boundary_f1||0)}`;
  updateRegionOptions();
  el("section").innerHTML=current.observed_sections.map((row,index)=>`<option value="${index}">${String(index+1).padStart(2,"0")} ${escapeHtml(row.slide_id||"Section")}</option>`).join("");
  const flagged=new Set(current.transition_qc.filter(row=>row.outlier).map(row=>row.id));el("review-target").innerHTML=`<option value="volume">Connected volume</option>`+current.gap_decisions.map((row,index)=>{const id=`${String(row.source_section).padStart(3,"0")}-${String(row.target_section).padStart(3,"0")}`;return `<option value="${index}">${flagged.has(id)?"Review · ":""}Transition ${row.source_section+1} to ${row.target_section+1}</option>`}).join("");el("transition-summary").textContent=`${flagged.size} flagged · ${current.gap_decisions.length-flagged.size} passing transitions`;
- updateReviewTarget();try{envelope=await binaryMesh(current.envelope,"envelope",loadId);if(!envelope)return;root.scale.y=zScale;await selectRegion(el("region").value,loadId);if(loadId!==generation)return;updateCutaway();updateLocator();fit("home");await settleRenderer(loadId)}catch(error){el("loading").textContent=error.message}
+ updateReviewTarget();try{envelope=await binaryMesh(current.envelope,"envelope",loadId);if(!envelope)return;applyDepthScale();await selectRegion(el("region").value,loadId);if(loadId!==generation)return;updateCutaway();updateLocator();fit("home");await settleRenderer(loadId)}catch(error){el("loading").textContent=error.message}
 }
 async function settleRenderer(loadId){let stableFrames=0;while(stableFrames<4){await new Promise(resolve=>setTimeout(resolve,120));if(loadId!==generation)return;if(contextLost){stableFrames=0;continue}renderer.render(scene,camera);stableFrames++}renderer.domElement.style.visibility="visible";el("loading").hidden=true}
 function surfaceRows(){return (surfaceMode==="full"?current.semantic_partition_regions:current.semantic_regions).filter(Boolean)}
-function updateRegionOptions(){const rows=surfaceRows(),metric=surfaceMode==="full"?"viewer_partition_volume_fraction_of_tissue":"viewer_core_volume_fraction_of_tissue";el("region").innerHTML=`<option value="all">All classes</option>`+rows.map((row,index)=>`<option value="${index}">Class ${row.class_index??index} · ${pct(row[metric]||0)}</option>`).join("");el("region").value=surfaceMode==="full"?"all":String(Math.min(current.default_region_index,Math.max(rows.length-1,0)))}
+function updateRegionOptions(){const rows=surfaceRows(),metric=surfaceMode==="full"?"viewer_partition_volume_fraction_of_tissue":"viewer_core_volume_fraction_of_tissue";el("region").innerHTML=`<option value="all">All classes</option>`+rows.map((row,index)=>`<option value="${index}">Class ${row.class_index??index} · ${pct(row[metric]||0)}</option>`).join("");el("region").value="all"}
 async function selectRegion(value,loadId=generation){for(const mesh of activeRegions)mesh.visible=false;activeRegions=[];const rows=surfaceRows(),indices=value==="all"?rows.map((_,index)=>index):[+value];for(const index of indices){const row=rows[index];if(!row)continue;const key=`${surfaceMode}:${index}`;let mesh=regionCache.get(key);if(!mesh){el("loading").hidden=false;el("loading").textContent=`Loading ${surfaceMode} class ${row.class_index??index}...`;mesh=await binaryMesh(row,"region",loadId);if(!mesh)return;regionCache.set(key,mesh)}mesh.visible=el("show-region").checked;activeRegions.push(mesh)}}
 async function toggleUncertainty(){if(!current.uncertainty){el("show-uncertainty").checked=false;return}if(!uncertainty)uncertainty=await binaryMesh(current.uncertainty,"uncertainty",generation);if(uncertainty)uncertainty.visible=el("show-uncertainty").checked}
 function updateLocator(){if(locator){root.remove(locator);locator.geometry.dispose();locator.material.dispose();locator=null}el("section-row").style.display=el("show-locator").checked?"flex":"none";if(!el("show-locator").checked||!current.observed_sections.length)return;const row=current.observed_sections[+el("section").value||0],x=physicalSize.x/2,z=physicalSize.z/2,y=row.z_um-physicalCenter.y,points=[-x,y,-z,x,y,-z,x,y,z,-x,y,z,-x,y,-z],geometry=new THREE.BufferGeometry().setFromPoints(Array.from({length:5},(_,i)=>new THREE.Vector3(points[3*i],points[3*i+1],points[3*i+2]))),material=new THREE.LineBasicMaterial({color:0xffffff,transparent:true,opacity:.85,depthTest:false});locator=new THREE.Line(geometry,material);locator.renderOrder=5;root.add(locator)}
@@ -432,16 +515,26 @@ function fit(view="home"){if(!envelope)return;root.updateMatrixWorld(true);const
 function updateReviewTarget(){const value=el("review-target").value,isVolume=value==="volume";el("interval-row").style.display=isVolume?"none":"block";if(!isVolume)el("intervals").value=current.gap_decisions[+value].intervals}
 function pct(value){return `${(100*value).toFixed(1)}%`}function escapeHtml(value){const node=document.createElement("span");node.textContent=value;return node.innerHTML}
 el("cohort").innerHTML=data.cohorts.map(row=>`<option>${row.id}</option>`).join("");el("cohort").onchange=()=>selectCohort(el("cohort").value);
-document.querySelectorAll("[data-z]").forEach(button=>button.onclick=()=>{zScale=+button.dataset.z;root.scale.y=zScale;document.querySelectorAll("[data-z]").forEach(item=>item.classList.toggle("active",item===button));updateLocator();fit("home")});
+document.querySelectorAll("[data-z]").forEach(button=>button.onclick=()=>{zMode=button.dataset.z;applyDepthScale();fit("home")});
 document.querySelectorAll("[data-view]").forEach(button=>button.onclick=()=>fit(button.dataset.view));
 document.querySelectorAll("[data-surface]").forEach(button=>button.onclick=async()=>{surfaceMode=button.dataset.surface;document.querySelectorAll("[data-surface]").forEach(item=>item.classList.toggle("active",item===button));updateRegionOptions();const loadId=generation;await selectRegion(el("region").value,loadId);fit("home");await settleRenderer(loadId)});
-el("region").onchange=async()=>{const loadId=generation;await selectRegion(el("region").value,loadId);fit("home");await settleRenderer(loadId)};el("region-opacity").oninput=()=>{for(const mesh of activeRegions)mesh.material.opacity=+el("region-opacity").value/100};el("envelope-opacity").oninput=()=>{if(envelope)envelope.material.opacity=+el("envelope-opacity").value/100};el("show-region").onchange=()=>{for(const mesh of activeRegions)mesh.visible=el("show-region").checked};el("show-envelope").onchange=()=>{if(envelope)envelope.visible=el("show-envelope").checked};el("show-uncertainty").onchange=toggleUncertainty;el("show-locator").onchange=updateLocator;el("section").onchange=updateLocator;el("cutaway").onchange=updateCutaway;el("cut-position").oninput=updateCutaway;el("review-target").onchange=updateReviewTarget;
+el("region").onchange=async()=>{const loadId=generation;await selectRegion(el("region").value,loadId);fit("home");await settleRenderer(loadId)};el("region-opacity").oninput=()=>{for(const mesh of activeRegions)mesh.material.opacity=+el("region-opacity").value/100;requestRender()};el("envelope-opacity").oninput=()=>{if(envelope)envelope.material.opacity=+el("envelope-opacity").value/100;requestRender()};el("show-region").onchange=()=>{for(const mesh of activeRegions)mesh.visible=el("show-region").checked;requestRender()};el("show-envelope").onchange=()=>{if(envelope)envelope.visible=el("show-envelope").checked;requestRender()};el("show-uncertainty").onchange=async()=>{await toggleUncertainty();requestRender()};el("show-locator").onchange=()=>{updateLocator();requestRender()};el("section").onchange=()=>{updateLocator();requestRender()};el("cutaway").onchange=()=>{updateCutaway();requestRender()};el("cut-position").oninput=()=>{updateCutaway();requestRender()};el("review-target").onchange=updateReviewTarget;
 const labels=["envelope_shape","missing_component","spurious_component","semantic_discontinuity","excess_uncertainty","wrong_z_spacing","framing","performance","other"];el("issues").innerHTML=labels.map(value=>`<label><input type="checkbox" value="${value}">${value.replaceAll("_"," ")}</label>`).join("");
 document.querySelectorAll("[data-decision]").forEach(button=>button.onclick=()=>save(button.dataset.decision));
 function reviewHeaders(){const headers={"Content-Type":"application/json"};if(authenticationRequired)headers.Authorization=`Bearer ${el("token").value}`;return headers}
-async function configureReviewAccess(){if(location.protocol==="file:")return;const response=await fetch("/api/reviews/access",{cache:"no-store"}),payload=await response.json();if(!response.ok)throw Error(payload.error||"Review service unavailable");if(!payload.review_configured)return;authenticationRequired=Boolean(payload.authentication_required);el("token").hidden=!authenticationRequired;el("token").parentElement.classList.toggle("public",!authenticationRequired)}
-async function postFeedback(body){const response=await fetch("/api/reviews/feedback",{method:"POST",headers:reviewHeaders(),body:JSON.stringify(body)}),payload=await response.json();if(!response.ok)throw Error(payload.error||"Review save failed");return payload}
+async function configureReviewAccess(){if(location.protocol==="file:")return;const response=await fetch(histopiaUrl("/api/reviews/access"),{cache:"no-store"}),payload=await response.json();if(!response.ok)throw Error(payload.error||"Review service unavailable");if(!payload.review_configured)return;authenticationRequired=Boolean(payload.authentication_required);el("token").hidden=!authenticationRequired;el("token").parentElement.classList.toggle("public",!authenticationRequired)}
+async function postFeedback(body){const response=await fetch(histopiaUrl("/api/reviews/feedback"),{method:"POST",headers:reviewHeaders(),body:JSON.stringify(body)}),payload=await response.json();if(!response.ok)throw Error(payload.error||"Review save failed");return payload}
 async function save(decision){const target=el("review-target").value,isVolume=target==="volume",row=isVolume?null:current.gap_decisions[+target],body={cohort:current.id,stage:"topology",fingerprint:current.fingerprint,slide_id:isVolume?"volume":`${String(row.source_section).padStart(3,"0")}-${String(row.target_section).padStart(3,"0")}`,decision,labels:[...el("issues").querySelectorAll("input:checked")].map(input=>input.value),comment:el("comment").value,reviewer:el("reviewer").value};if(!isVolume)body.suggested_intervals=+el("intervals").value;if(decision==="accept")body.labels=[];el("status").textContent="Saving...";try{await postFeedback(body);el("status").textContent=`Saved ${decision}`}catch(error){el("status").textContent=error.message}}
 el("accept-passing").onclick=async()=>{const reviewer=el("reviewer").value.trim(),passing=new Set(current.transition_qc.filter(row=>!row.outlier).map(row=>row.id));if(!reviewer){el("status").textContent="Reviewer is required";return}if(!confirm(`Accept ${passing.size} quantitatively passing transitions for ${current.id}?`))return;el("status").textContent=`Saving 0 of ${passing.size}...`;let saved=0;try{for(const row of current.gap_decisions){const id=`${String(row.source_section).padStart(3,"0")}-${String(row.target_section).padStart(3,"0")}`;if(!passing.has(id))continue;await postFeedback({cohort:current.id,stage:"topology",fingerprint:current.fingerprint,slide_id:id,decision:"accept",labels:[],comment:"Quantitative transition gates passed; accepted with cohort volume review.",reviewer,suggested_intervals:row.intervals});saved++;el("status").textContent=`Saving ${saved} of ${passing.size}...`}el("status").textContent=`Accepted ${saved} passing transitions`}catch(error){el("status").textContent=`Saved ${saved}; ${error.message}`}}
-function animate(){requestAnimationFrame(animate);controls.update();renderer.render(scene,camera)}resize();el("section-row").style.display="none";el("cut-row").style.display="none";configureReviewAccess().catch(error=>{el("status").textContent=error.message});selectCohort(data.cohorts[0].id);animate();
+resize();el("section-row").style.display="none";el("cut-row").style.display="none";configureReviewAccess().catch(error=>{el("status").textContent=error.message});
+try{selectCohort(histopiaReviewSelection.requested(data.cohorts));}
+catch(error){el("loading").textContent=error.message;}
+requestRender(2);
+
+// Keep same-origin data requests inside a code-server port proxy.
+function histopiaUrl(path) {
+  const match = location.pathname.match(/^.*?\/proxy\/[0-9]+(?=\/|$)/);
+  return (match ? match[0] : "") + path;
+}
 """
+)

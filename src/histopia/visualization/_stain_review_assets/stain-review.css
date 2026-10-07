@@ -130,7 +130,7 @@ aside { min-width: 0; min-height: 0; background: #fff; }
   content: "";
 }
 #color-scale { display: grid; grid-template-columns: auto 90px auto; align-items: center; gap: 5px; color: #65706a; font-size: 10px; }
-#color-scale i { width: 90px; height: 8px; border: 1px solid #8d9691; background: linear-gradient(90deg, #f6f7f4, #27807e, #eebe46, #b53130); }
+#color-scale i { width: 90px; height: 8px; border: 1px solid #8d9691; background: linear-gradient(90deg, #faf8f2, #d3ae70, #8b5b2d, #4c2b15); }
 .zoom-tools { display: flex; gap: 4px; }
 .zoom-tools button { min-width: 34px; padding: 3px 8px; }
 #image-grid {
@@ -168,7 +168,7 @@ figure {
   touch-action: none;
 }
 .image-stage.dragging { cursor: grabbing; }
-.image-stage img {
+.image-stage .fallback-image {
   width: 100%;
   height: 100%;
   object-fit: contain;
@@ -176,8 +176,46 @@ figure {
   user-select: none;
   will-change: transform;
 }
-.image-stage img.loading { opacity: 0; }
-.image-stage img.error { opacity: .18; }
+.image-stage .fallback-image.loading { opacity: 0; }
+.image-stage .fallback-image.error { opacity: .18; }
+.osd-viewer {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: none;
+  width: 100%;
+  height: 100%;
+  background: transparent;
+}
+.image-stage.live .osd-viewer { display: block; }
+.image-stage.live .fallback-image { visibility: hidden; }
+.image-stage.live.pane-loading .fallback-image { visibility: visible; }
+.image-stage.fallback::after {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  padding: 2px 5px;
+  border-radius: 3px;
+  background: rgba(32, 36, 38, .72);
+  color: #fff;
+  font-size: 9px;
+  content: "thumbnail fallback";
+}
+.image-stage.pane-loading::after,
+.image-stage.pane-error::after {
+  position: absolute;
+  z-index: 4;
+  right: 6px;
+  bottom: 6px;
+  padding: 2px 5px;
+  border-radius: 3px;
+  background: rgba(32, 36, 38, .78);
+  color: #fff;
+  font-size: 9px;
+  content: "loading native tiles";
+  pointer-events: none;
+}
+.image-stage.pane-error::after { content: "native tiles unavailable"; }
 figcaption {
   overflow: hidden;
   padding: 6px 8px;

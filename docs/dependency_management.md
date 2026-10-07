@@ -27,8 +27,12 @@ histopia-visualize audit --run sample=/path/to/registration-run
 Local development:
 
 ```bash
-python -m pip install -e ".[dev]"
+python -m pip install -e ".[dev]" -c constraints/dev-repro.txt
 ```
+
+The development constraint also pins the isolated build backend and release
+checker. Histopia's current wheel uses Core Metadata 2.5, so distribution
+validation requires Twine 7 or newer.
 
 Registration algorithms on standard images:
 
@@ -56,6 +60,9 @@ python -m pip install -e ".[semantic]"
 
 This profile fits the global atlas on CPU and does not install PyTorch. Use
 `fit_threads` to bound its independent fit tasks and native BLAS/OpenMP pools.
+It also includes h5py for explicit import of STAMP-compatible `feats` and
+`coords` HDF5 feature tables. The supervised semantic probe uses the same
+bounded NumPy, SciPy, and scikit-learn runtime.
 
 Semantic topology reconstruction from an approved atlas:
 
@@ -67,7 +74,8 @@ histopia-topology doctor
 ```
 
 This CPU profile operates on compact selected-K fields and does not install
-PyTorch or WSI readers.
+PyTorch or WSI readers. NetworkX supplies deterministic connected-region graph
+measurements for the interpretable 2D/2.5D/3D spatial feature spectrum.
 
 Quantitative brightfield stain profiling:
 
@@ -87,6 +95,19 @@ python -m pip install -e ".[dev,stain]" \
     -c constraints/stain-repro.txt
 ```
 
+Native whole-slide cell-boundary detection:
+
+```bash
+python -m pip install -e ".[cells]" -c constraints/cells-repro.txt
+histopia-cells doctor --device auto
+histopia-cells cache-model --model cpsam --device cpu
+```
+
+The cell profile supports CPU, CUDA, and Apple MPS through Cellpose and
+PyTorch. Production runs require an explicitly cached model; each result records
+the exact weight digest and resolved compute device. The model weights remain
+outside the package and constraint file.
+
 UNI2-h extraction from source whole-slide images:
 
 ```bash
@@ -97,6 +118,20 @@ python -m pip install -e ".[uni2h]" \
 The `uni2h` profile adds PyTorch and the WSI stack for CPU, CUDA, or Apple MPS
 feature extraction. The selected accelerator does not replace the CPU atlas
 fit.
+
+Cell-resolved protein fitting and sealed-model inference use a dedicated
+runtime when pickle-backed scikit-learn candidates are involved:
+
+```bash
+python -m pip install -e ".[protein,wsi]" \
+    -c constraints/protein-repro.txt
+```
+
+Portable neural protein artifacts do not use pickle, but ExtraTrees artifacts
+must be loaded with the exact scikit-learn version that trained them. Histopia
+fails closed on a version-mismatch warning instead of emitting predictions
+whose reproducibility is uncertain. Keep this environment separate from a
+workflow whose exact constraint file pins a different scikit-learn release.
 
 Reproducible KPF validation environment:
 
@@ -114,21 +149,22 @@ Full reproducible registration, topology, stain, UNI2-h, and QuPath workflow:
 
 ```bash
 python -m pip install -e \
-    ".[dev,registration,semantic,topology,stain,wsi,uni2h,qupath]" \
+    ".[dev,registration,semantic,topology,stain,cells,wsi,uni2h,qupath]" \
     -c constraints/dev-repro.txt \
     -c constraints/registration-repro.txt \
     -c constraints/semantic-repro.txt \
     -c constraints/topology-repro.txt \
-    -c constraints/stain-repro.txt
-histopia-qupath --doctor --workflow full --device auto --require-api 2
+    -c constraints/stain-repro.txt \
+    -c constraints/cells-repro.txt
+histopia-qupath --doctor --workflow full --device auto --require-api 3
 ```
 
 The QuPath doctor checks only the selected workflow's imports, validates their
 installed versions against Histopia's supported ranges, and loads libvips
 before the accelerator stack. It reports exact dependency and compute versions
 and rejects an extension that requires a newer workflow API. Use
-`--workflow registration`, `semantic`, `topology`, or `interchange` to validate
-a smaller installation.
+`--workflow registration`, `semantic`, `topology`, `cells`, or `interchange`
+to validate a smaller installation.
 
 ## System Dependencies
 
@@ -186,6 +222,10 @@ failure can terminate Python before Histopia can report a normal exception.
 - Use `constraints/stain-repro.txt` for quantitative brightfield validation.
 - Use `constraints/topology-repro.txt` for selected-K 3D reconstruction and
   surface extraction.
+- Use `constraints/cells-repro.txt` for native-WSI Cellpose inference and
+  QuPath ROI detection export.
+- Use `constraints/protein-repro.txt` for sealed cell-resolved protein model
+  fitting and inference, especially pickle-backed ExtraTrees artifacts.
 - The normal `uni2h` extra retains bounded ranges for portable CPU, CUDA, and
   Apple MPS installs.
 - Do not commit virtual environments, raw slides, generated masks, warped

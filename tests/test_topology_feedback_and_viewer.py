@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import threading
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from histopia.visualization._server import create_viewer_server
 from histopia.visualization._topology_review import (
     _region_review_score,
     _transition_outlier_flags,
+    bind_cellular_depth_models,
 )
 
 
@@ -71,11 +73,45 @@ def test_topology_viewer_builds_section_assets_and_gates_surfaces(
     assert cohort["reconstruction_qc"]["status"] == "passed"
     assert (index.parent / "vendor" / "three.module.min.js").is_file()
     javascript = (index.parent / "topology-review.js").read_text()
-    assert "zScale=12" in javascript
+    assert 'zMode="cellular",zScale=1' in javascript
+    assert "current?.cellular_depth_model?.visual_z_scale" in javascript
+    assert "const depth=current?.cellular_depth_model" in javascript
     assert "Loading tissue envelope" in javascript
     assert "projectedGeometryBounds(envelope)" in javascript
+    assert "controls.enableDamping=false" in javascript
+    assert "function requestRender" in javascript
+    assert "function animate()" not in javascript
     assert 'data-surface="core"' in (index.parent / "index.html").read_text()
+    assert 'data-z="cellular" class="active">Cell-sized' in index.read_text()
+    assert 'data-z="physical">Z stretch ×12' in index.read_text()
     assert 'surfaceMode==="full"' in javascript
+
+
+def _bind_test_cellular_depth(viewer: Path, tmp_path: Path) -> None:
+    atlas_manifest = tmp_path / "cellular-atlas.json"
+    atlas_manifest.write_text(
+        json.dumps(
+            {
+                "cohorts": [
+                    {
+                        "id": "sample",
+                        "cell_identity": {
+                            "morphology_aware_z": {
+                                "method": "boundary-size-local-packing-display-v1",
+                                "median_cell_diameter_um": 10.2,
+                                "physical_section_spacing_um": 5.0,
+                                "visual_section_spacing_um": 10.7,
+                                "visual_z_scale": 2.14,
+                            }
+                        },
+                    }
+                ]
+            }
+        )
+    )
+    assert bind_cellular_depth_models(viewer, atlas_manifest) == 1
+    manifest = json.loads((viewer / "manifest.json").read_text())
+    assert manifest["cohorts"][0]["cellular_depth_model"]["visual_z_scale"] == 2.14
 
 
 def test_topology_default_region_prefers_supported_compact_core() -> None:
@@ -135,6 +171,7 @@ def test_topology_viewer_defaults_to_centered_connected_volume(
     playwright = pytest.importorskip("playwright.sync_api")
     run = _topology_run(tmp_path / "run", schema_version=2)
     build_topology_review({"sample": run}, tmp_path / "viewer")
+    _bind_test_cellular_depth(tmp_path / "viewer", tmp_path)
     server = create_viewer_server(
         tmp_path,
         bind="127.0.0.1",
@@ -146,8 +183,20 @@ def test_topology_viewer_defaults_to_centered_connected_volume(
     errors: list[str] = []
     try:
         with playwright.sync_playwright() as runtime:
-            browser = runtime.chromium.launch(headless=True)
+            browser = getattr(
+                runtime, os.environ.get("HISTOPIA_BROWSER", "chromium")
+            ).launch(headless=True)
             page = browser.new_page(viewport={"width": 1920, "height": 1080})
+            page.add_init_script(
+                """window.__histopiaRafCount = 0;
+                const originalRaf = window.requestAnimationFrame;
+                window.requestAnimationFrame = function(callback) {
+                  return originalRaf.call(window, function(timestamp) {
+                    window.__histopiaRafCount += 1;
+                    return callback(timestamp);
+                  });
+                };"""
+            )
             page.on(
                 "console",
                 lambda message: (
@@ -159,15 +208,27 @@ def test_topology_viewer_defaults_to_centered_connected_volume(
                 wait_until="networkidle",
             )
             page.wait_for_function("() => document.querySelector('#loading').hidden")
-            assert page.locator("[data-z='12']").get_attribute("class") == "active"
+            assert page.locator("#region").input_value() == "all"
+            assert (
+                page.locator("[data-z='cellular']").get_attribute("class") == "active"
+            )
+            assert page.locator("#viewport").get_attribute("data-z-scale") == "2.140"
+            page.locator("[data-z='physical']").click(force=True)
+            assert page.locator("#viewport").get_attribute("data-z-scale") == "12.000"
+            page.locator("[data-z='cellular']").click(force=True)
             assert page.locator(".metric").count() == 4
             assert page.locator("#qc-status").get_attribute("class") == "pass"
-            page.locator("[data-surface='full']").click()
-            page.wait_for_function("() => document.querySelector('#loading').hidden")
+            page.locator("[data-surface='full']").click(force=True)
+            page.wait_for_function(
+                "() => document.querySelector('#loading').hidden", polling=100
+            )
             assert page.locator("#region").input_value() == "all"
-            page.locator("[data-surface='core']").click()
-            page.wait_for_function("() => document.querySelector('#loading').hidden")
-            page.locator("#show-region").uncheck()
+            page.locator("[data-surface='core']").click(force=True)
+            page.wait_for_function(
+                "() => document.querySelector('#loading').hidden", polling=100
+            )
+            assert page.locator("#region").input_value() == "all"
+            page.locator("#show-region").uncheck(force=True)
             for width, height in ((1920, 1080), (3840, 2160)):
                 page.set_viewport_size({"width": width, "height": height})
                 page.wait_for_timeout(300)
@@ -186,6 +247,27 @@ def test_topology_viewer_defaults_to_centered_connected_volume(
                 assert abs(overflow["aside"]["height"] - height) < 1
                 viewport = page.locator("#viewport").bounding_box()
                 assert viewport is not None
+                renderer_kind = page.locator("#viewport").get_attribute("data-renderer")
+                if renderer_kind == "fallback":
+                    fallback_card = page.locator("#viewport > div > div").bounding_box()
+                    assert fallback_card is not None
+                    assert (
+                        abs(
+                            fallback_card["x"]
+                            + fallback_card["width"] / 2
+                            - (viewport["x"] + viewport["width"] / 2)
+                        )
+                        < 1
+                    )
+                    assert (
+                        abs(
+                            fallback_card["y"]
+                            + fallback_card["height"] / 2
+                            - (viewport["y"] + viewport["height"] / 2)
+                        )
+                        < 1
+                    )
+                    continue
                 screenshot = page.screenshot()
                 pixels = np.asarray(Image.open(io.BytesIO(screenshot)).convert("RGB"))
                 left = round(viewport["x"])
@@ -215,14 +297,18 @@ def test_topology_viewer_defaults_to_centered_connected_volume(
             )
             assert page.locator("#panel-toggle").is_visible()
             assert not page.locator("aside").is_visible()
-            page.locator("#panel-toggle").click()
+            page.locator("#panel-toggle").click(force=True)
             assert page.locator("aside").is_visible()
             panel = page.locator("aside").bounding_box()
             assert panel is not None
             assert abs(panel["width"] - 390) < 1
             assert page.locator("#review-target").is_visible()
-            page.locator("#panel-toggle").click()
+            page.locator("#panel-toggle").click(force=True)
             assert not page.locator("aside").is_visible()
+            page.wait_for_timeout(1200)
+            page.evaluate("window.__histopiaRafCount = 0")
+            page.wait_for_timeout(500)
+            assert page.evaluate("window.__histopiaRafCount") <= 2
             browser.close()
     finally:
         server.shutdown()

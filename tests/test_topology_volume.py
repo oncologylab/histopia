@@ -10,6 +10,7 @@ from PIL import Image
 from histopia.topology._model import ObservedSection
 from histopia.topology._volume import (
     DenseVolume,
+    _select_envelope_candidate,
     _smooth_viewer_mesh,
     benchmark_envelope_methods,
     filter_persistent_components,
@@ -106,6 +107,55 @@ def test_envelope_benchmark_prefers_guarded_baseline_for_smooth_change() -> None
 
     assert result["selected_method"] == "linear_sdf"
     assert result["status"] == "passed"
+
+
+def test_envelope_benchmark_excludes_cross_segment_holdouts() -> None:
+    sections = tuple(_section(index) for index in range(8))
+    masks = np.stack([section.support for section in sections])
+
+    result = benchmark_envelope_methods(
+        masks,
+        sections,
+        tuple(float(index * 5) for index in range(8)),
+        segments=(0, 0, 0, 0, 0, 1, 2, 3),
+        origin_um_xy=(0, 0),
+        spacing_um=1,
+    )
+
+    assert result["evaluated_section_indices"] == [1, 2, 3]
+    assert all(row["case_count"] == 3 for row in result["candidates"])
+
+
+def test_envelope_candidate_uses_passing_alternative_when_baseline_fails() -> None:
+    gates = {
+        "median_tissue_dice": 0.90,
+        "tenth_percentile_tissue_dice": 0.80,
+        "median_boundary_f1": 0.75,
+    }
+    candidates = [
+        {
+            "method": "linear_sdf",
+            "median_tissue_dice": 0.96,
+            "tenth_percentile_tissue_dice": 0.91,
+            "median_boundary_f1": 0.749,
+        },
+        {
+            "method": "flow_sdf",
+            "median_tissue_dice": 0.961,
+            "tenth_percentile_tissue_dice": 0.91,
+            "median_boundary_f1": 0.751,
+        },
+        {
+            "method": "pchip_sdf",
+            "median_tissue_dice": 0.94,
+            "tenth_percentile_tissue_dice": 0.89,
+            "median_boundary_f1": 0.72,
+        },
+    ]
+
+    selected = _select_envelope_candidate(candidates, gates)
+
+    assert selected["method"] == "flow_sdf"
 
 
 def test_viewer_component_filter_rejects_large_single_section_regions() -> None:

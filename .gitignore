@@ -48,3 +48,16 @@ runs/
 .DS_Store
 .idea/
 .vscode/
+
+# Local research operations and generated presentation material
+.runtime-ops/
+docs/assets/talks/histopia-methods-presentation.pptx
+docs/kpf_registration_validation.md
+scripts/validate_kpf_full_resolution.py
+scripts/validate_kpf_nonrigid.py
+scripts/validate_kpf_nonrigid_full_resolution.py
+tests/test_full_resolution_validation_script.py
+scripts/audit_protein_feature_coverage.py
+scripts/evaluate_protein_morphology_refinement.py
+tests/test_protein_refinement_evaluation.py
+scripts/export_presentation_demo.py

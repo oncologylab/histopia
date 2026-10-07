@@ -30,11 +30,12 @@ from histopia.semantic._registration_binding import (
     SemanticRegistrationBinding,
     validate_semantic_registration_binding,
 )
-from histopia.stain._artifacts import StainMap
+from histopia.stain._artifacts import AdaptiveStainMap, StainMap
 from histopia.visualization._registration_state import (
     current_registration_review_stages,
     registration_artifact_slide_names,
 )
+from histopia.visualization._review_theme import themed_review_css
 from histopia.visualization._stain_viewer import (
     StainViewerRun,
     build_stain_viewer_assets,
@@ -610,6 +611,36 @@ def build_section_viewer(
                 }
                 if stain_slide["quantified"]:
                     stain_map = StainMap.load(stain_viewer.root / str(stain_row["map"]))
+                    stain_qc = dict(stain_row.get("qc", {}))
+                    adaptive_background = dict(
+                        stain_qc.get("adaptive_background") or {}
+                    )
+                    if (
+                        adaptive_background.get("method")
+                        == "counterstain-conditioned-v3"
+                        and adaptive_background.get("accepted") is not True
+                        and isinstance(stain_qc.get("legacy_adaptive_background"), dict)
+                    ):
+                        adaptive_background = dict(
+                            stain_qc["legacy_adaptive_background"]
+                        )
+                    adaptive_map = (
+                        AdaptiveStainMap.load(
+                            stain_viewer.root / str(stain_row["adaptive_map"])
+                        )
+                        if isinstance(stain_row.get("adaptive_map"), str)
+                        else None
+                    )
+                    if adaptive_map is not None and (
+                        adaptive_map.slide_id != stain_map.slide_id
+                        or adaptive_map.source_content_fingerprint
+                        != stain_map.content_fingerprint
+                        or adaptive_map.target_od.shape
+                        != stain_map.corrected_target_od.shape
+                    ):
+                        raise ValueError(
+                            "adaptive stain viewer map differs from its physical source"
+                        )
                     stain_assets = build_stain_viewer_assets(
                         stain_map,
                         source_shape=source.shape[:2],
@@ -618,6 +649,14 @@ def build_section_viewer(
                         registered_rgb=registered,
                         registered_mask=registered_mask,
                         display_max_od=float(stain_display_max_od),
+                        correction_accepted=bool(
+                            dict(stain_row.get("qc", {})).get("correction_accepted")
+                        ),
+                        family=family,
+                        adaptive_background=(adaptive_background or None),
+                        adaptive_target_od=(
+                            adaptive_map.target_od if adaptive_map is not None else None
+                        ),
                     )
                     stain_base = f"{order:03d}-{_safe_name(source_path.stem)}-stain"
                     stain_textures: dict[str, str] = {}
@@ -679,6 +718,7 @@ def build_section_viewer(
                             "positive_threshold_od": threshold,
                             "positive_fraction": stain_row.get("positive_fraction"),
                             "quantiles": stain_row.get("quantiles"),
+                            "adaptive_quantiles": stain_row.get("adaptive_quantiles"),
                         }
                     )
                 slide_payload["stain"] = stain_slide
@@ -730,12 +770,13 @@ def build_section_viewer(
                     },
                     "fingerprint": stain_viewer.payload.get("fingerprint"),
                     "display_max_od": stain_display_max_od,
-                    "palette": [
-                        "#f6f7f4",
-                        "#27807e",
-                        "#eebe46",
-                        "#b53130",
-                    ],
+                    "palette": ["#faf8f2", "#d3ae70", "#8b5b2d", "#4c2b15"],
+                    "palettes": {
+                        "h-dab": ["#faf8f2", "#d3ae70", "#8b5b2d", "#4c2b15"],
+                        "sirius-red": ["#fff8f6", "#f6b1a2", "#d3463b", "#7d151a"],
+                        "pas": ["#fff7fc", "#eea7d2", "#bd4192", "#671753"],
+                        "alcian-blue": ["#f7fbff", "#9ecae1", "#3182bd", "#0e3d6b"],
+                    },
                     "review": stain_viewer.review,
                     "qc": _stain_viewer_qc(
                         stain_viewer,
@@ -805,7 +846,7 @@ def build_section_viewer(
     )
     (output_dir / "index.html").write_text(_INDEX_HTML)
     (output_dir / "viewer.js").write_text(_VIEWER_JS)
-    (output_dir / "styles.css").write_text(_STYLES_CSS)
+    (output_dir / "styles.css").write_text(themed_review_css(_STYLES_CSS))
     _write_viewer_runtime(output_dir)
     _write_json_atomic(
         output_dir / ".histopia-asset-cache.json",
@@ -944,9 +985,10 @@ def _write_focus_runtime(output_dir: Path) -> None:
         (vendor / filename).write_bytes(content)
     packaged_focus = resources.files("histopia.visualization").joinpath("_focus_assets")
     for filename in ("focus-viewer.css", "focus-viewer.js"):
-        (output_dir / filename).write_text(
-            packaged_focus.joinpath(filename).read_text()
-        )
+        content = packaged_focus.joinpath(filename).read_text()
+        if filename.endswith(".css"):
+            content = themed_review_css(content)
+        (output_dir / filename).write_text(content)
 
 
 def build_mask_review(
@@ -984,9 +1026,8 @@ def build_mask_review(
         indexed_slide: tuple[int, dict[str, object]],
     ) -> tuple[
         dict[str, object],
-        Path,
-        str,
-        dict[str, object],
+        tuple[Path, Path],
+        dict[str, dict[str, object]],
         dict[str, int],
         tuple[str, str, str],
     ]:
@@ -998,39 +1039,66 @@ def build_mask_review(
         mask_hash = _file_sha256(mask_path)
         filename = f"{order:03d}-{_safe_name(source.stem)}.webp"
         asset_path = assets_dir / filename
+        tissue_path = assets_dir / f"tissue-{filename}"
         relative = asset_path.relative_to(output_dir).as_posix()
+        tissue_relative = tissue_path.relative_to(output_dir).as_posix()
         options = {
             "lossless": False,
             "quality": 88,
             "method": _LOSSY_WEBP_METHOD,
         }
-        input_hash = _review_asset_fingerprint(
+        overlay_input_hash = _review_asset_fingerprint(
             "histopia-mask-review-overlay-v2",
             source.name,
             thumbnail_hash,
             mask_hash,
             json.dumps(options, sort_keys=True, separators=(",", ":")),
         )
-        previous = old_cache.get(relative, {})
+        tissue_input_hash = _review_asset_fingerprint(
+            "histopia-mask-review-tissue-v1",
+            source.name,
+            thumbnail_hash,
+            json.dumps(options, sort_keys=True, separators=(",", ":")),
+        )
+        overlay_previous = old_cache.get(relative, {})
+        tissue_previous = old_cache.get(tissue_relative, {})
         mask = _read_mask(mask_path)
         foreground_fraction = float(mask.mean())
-        reused = _cached_review_asset_is_current(
+        overlay_reused = _cached_review_asset_is_current(
             asset_path,
-            input_hash,
-            previous,
+            overlay_input_hash,
+            overlay_previous,
+        )
+        tissue_reused = _cached_review_asset_is_current(
+            tissue_path,
+            tissue_input_hash,
+            tissue_previous,
         )
         slide_stats = {"reused": 0, "encoded": 0}
-        if reused:
-            cache_entry = dict(previous)
+        cache_entries: dict[str, dict[str, object]] = {}
+        if overlay_reused and tissue_reused:
+            cache_entries[relative] = dict(overlay_previous)
+            cache_entries[tissue_relative] = dict(tissue_previous)
             slide_stats["reused"] = 1
         else:
             image = _read_rgb(thumbnail_path)
-            overlay = overlay_mask(image, mask)
-            Image.fromarray(overlay).save(asset_path, "WEBP", **options)
-            cache_entry = {
-                "input_sha256": input_hash,
-                "output_sha256": _file_sha256(asset_path),
-            }
+            if overlay_reused:
+                cache_entries[relative] = dict(overlay_previous)
+            else:
+                overlay = overlay_mask(image, mask)
+                Image.fromarray(overlay).save(asset_path, "WEBP", **options)
+                cache_entries[relative] = {
+                    "input_sha256": overlay_input_hash,
+                    "output_sha256": _file_sha256(asset_path),
+                }
+            if tissue_reused:
+                cache_entries[tissue_relative] = dict(tissue_previous)
+            else:
+                Image.fromarray(image).save(tissue_path, "WEBP", **options)
+                cache_entries[tissue_relative] = {
+                    "input_sha256": tissue_input_hash,
+                    "output_sha256": _file_sha256(tissue_path),
+                }
             slide_stats["encoded"] = 1
         mask_data = slide.get("mask", {})
         review = slide.get("mask_review") or {}
@@ -1042,6 +1110,7 @@ def build_mask_review(
             "slide": source.name,
             "label": _marker_label(source.stem),
             "texture": f"assets/{filename}",
+            "tissue_texture": f"assets/tissue-{filename}",
             "method": str(mask_data.get("method", "unknown")),
             "foreground_fraction": float(
                 metrics.get("foreground_fraction", foreground_fraction)
@@ -1052,9 +1121,8 @@ def build_mask_review(
         }
         return (
             row,
-            asset_path,
-            relative,
-            cache_entry,
+            (asset_path, tissue_path),
+            cache_entries,
             slide_stats,
             (source.name, thumbnail_hash, mask_hash),
         )
@@ -1074,10 +1142,10 @@ def build_mask_review(
     expected_assets: set[Path] = set()
     digest = hashlib.sha256(b"histopia-mask-review-v2")
     try:
-        for row, asset_path, relative, cache_entry, slide_stats, inputs in results:
+        for row, asset_paths, cache_entries, slide_stats, inputs in results:
             rows.append(row)
-            expected_assets.add(asset_path)
-            new_cache[relative] = cache_entry
+            expected_assets.update(asset_paths)
+            new_cache.update(cache_entries)
             cache_stats["reused"] += slide_stats["reused"]
             cache_stats["encoded"] += slide_stats["encoded"]
             for value in inputs:
@@ -1106,7 +1174,7 @@ def build_mask_review(
     _write_review_manifest_script(output_dir, manifest)
     (output_dir / "index.html").write_text(_MASK_REVIEW_HTML)
     (output_dir / "mask-review.js").write_text(_MASK_REVIEW_JS)
-    (output_dir / "mask-review.css").write_text(_ORDER_REVIEW_CSS)
+    (output_dir / "mask-review.css").write_text(themed_review_css(_ORDER_REVIEW_CSS))
     _write_registration_feedback_assets(output_dir)
     _write_focus_runtime(output_dir)
     _write_json_atomic(
@@ -1168,9 +1236,8 @@ def build_alignment_review(
         indexed_row: tuple[int, dict[str, object]],
     ) -> tuple[
         dict[str, object],
-        Path,
-        str,
-        dict[str, object],
+        tuple[Path, Path],
+        dict[str, dict[str, object]],
         dict[str, int],
     ]:
         order, row = indexed_row
@@ -1183,13 +1250,26 @@ def build_alignment_review(
         is_reference = bool(row.get("is_reference"))
         filename = f"{order:03d}-{_safe_name(source_path.stem)}.webp"
         asset_path = assets_dir / filename
+        comparison_path = assets_dir / f"comparison-{filename}"
         relative = asset_path.relative_to(output_dir).as_posix()
+        comparison_relative = comparison_path.relative_to(output_dir).as_posix()
         options = {
             "lossless": False,
             "quality": 88,
             "method": _LOSSY_WEBP_METHOD,
         }
-        input_hash = _review_asset_fingerprint(
+        registered_input_hash = _review_asset_fingerprint(
+            "histopia-alignment-review-registered-v1",
+            source_path.name,
+            source_hash,
+            reference_path.name,
+            reference_hash,
+            json.dumps(matrix.tolist(), separators=(",", ":")),
+            json.dumps(reference.shape[:2]),
+            str(is_reference),
+            json.dumps(options, sort_keys=True, separators=(",", ":")),
+        )
+        comparison_input_hash = _review_asset_fingerprint(
             "histopia-alignment-review-checkerboard-v2",
             source_path.name,
             source_hash,
@@ -1201,27 +1281,59 @@ def build_alignment_review(
             str(is_reference),
             json.dumps(options, sort_keys=True, separators=(",", ":")),
         )
-        previous = old_cache.get(relative, {})
+        registered_previous = old_cache.get(relative, {})
+        comparison_previous = old_cache.get(comparison_relative, {})
         slide_stats = {"reused": 0, "encoded": 0}
-        if _cached_review_asset_is_current(asset_path, input_hash, previous):
-            cache_entry = dict(previous)
+        registered_reused = _cached_review_asset_is_current(
+            asset_path,
+            registered_input_hash,
+            registered_previous,
+        )
+        comparison_reused = _cached_review_asset_is_current(
+            comparison_path,
+            comparison_input_hash,
+            comparison_previous,
+        )
+        cache_entries: dict[str, dict[str, object]] = {}
+        if registered_reused and comparison_reused:
+            cache_entries[relative] = dict(registered_previous)
+            cache_entries[comparison_relative] = dict(comparison_previous)
             slide_stats["reused"] = 1
         else:
             if is_reference:
-                comparison = reference
+                registered = reference
             else:
                 source = _read_rgb(source_thumbnail_path)
                 registered = warp_rgb_thumbnail(source, matrix, reference.shape[:2])
-                comparison = checkerboard_rgb(
-                    reference,
-                    registered,
-                    tile_px=tile_px,
+            if registered_reused:
+                cache_entries[relative] = dict(registered_previous)
+            else:
+                Image.fromarray(registered).save(asset_path, "WEBP", **options)
+                cache_entries[relative] = {
+                    "input_sha256": registered_input_hash,
+                    "output_sha256": _file_sha256(asset_path),
+                }
+            if comparison_reused:
+                cache_entries[comparison_relative] = dict(comparison_previous)
+            else:
+                comparison = (
+                    registered
+                    if is_reference
+                    else checkerboard_rgb(
+                        reference,
+                        registered,
+                        tile_px=tile_px,
+                    )
                 )
-            Image.fromarray(comparison).save(asset_path, "WEBP", **options)
-            cache_entry = {
-                "input_sha256": input_hash,
-                "output_sha256": _file_sha256(asset_path),
-            }
+                Image.fromarray(comparison).save(
+                    comparison_path,
+                    "WEBP",
+                    **options,
+                )
+                cache_entries[comparison_relative] = {
+                    "input_sha256": comparison_input_hash,
+                    "output_sha256": _file_sha256(comparison_path),
+                }
             slide_stats["encoded"] = 1
         metrics = row.get("alignment_metrics")
         metrics = metrics if isinstance(metrics, dict) else {}
@@ -1230,12 +1342,13 @@ def build_alignment_review(
             "slide": source_path.name,
             "label": _marker_label(source_path.stem),
             "texture": f"assets/{filename}",
+            "comparison_texture": f"assets/comparison-{filename}",
             "reference": is_reference,
             "dice": metrics.get("dice"),
             "coverage": metrics.get("coverage"),
             "status": metrics.get("status"),
         }
-        return review_slide, asset_path, relative, cache_entry, slide_stats
+        return review_slide, (asset_path, comparison_path), cache_entries, slide_stats
 
     indexed_rows = [
         (index, row)
@@ -1260,10 +1373,10 @@ def build_alignment_review(
     review_slides: list[dict[str, object]] = []
     expected_assets: set[Path] = set()
     try:
-        for review_slide, asset_path, relative, cache_entry, slide_stats in results:
+        for review_slide, asset_paths, cache_entries, slide_stats in results:
             review_slides.append(review_slide)
-            expected_assets.add(asset_path)
-            new_cache[relative] = cache_entry
+            expected_assets.update(asset_paths)
+            new_cache.update(cache_entries)
             cache_stats["reused"] += slide_stats["reused"]
             cache_stats["encoded"] += slide_stats["encoded"]
     finally:
@@ -1291,7 +1404,9 @@ def build_alignment_review(
     _write_review_manifest_script(output_dir, manifest)
     (output_dir / "index.html").write_text(_ALIGNMENT_REVIEW_HTML)
     (output_dir / "alignment-review.js").write_text(_ALIGNMENT_REVIEW_JS)
-    (output_dir / "alignment-review.css").write_text(_ORDER_REVIEW_CSS)
+    (output_dir / "alignment-review.css").write_text(
+        themed_review_css(_ORDER_REVIEW_CSS)
+    )
     _write_registration_feedback_assets(output_dir)
     _write_focus_runtime(output_dir)
     _write_json_atomic(
@@ -1751,9 +1866,15 @@ def _semantic_rgba(
         if semantic_raster is None:
             points_um = np.asarray(data["reference_um_xy"])
             patch_um = float(data["patch_size_px"]) * float(data["analysis_mpp"])
+            grid_rc = (
+                np.asarray(data["grid_rc"], dtype=np.int64)
+                if "grid_rc" in data
+                else None
+            )
         else:
             points_um = None
             patch_um = None
+            grid_rc = None
     if labels.ndim != 1:
         raise ValueError("semantic labels must be a vector")
     thumb_height, thumb_width = registered_mask.shape
@@ -1761,16 +1882,32 @@ def _semantic_rgba(
         assert points_um is not None and patch_um is not None
         if points_um.shape != (len(labels), 2):
             raise ValueError("semantic labels and coordinates have incompatible shapes")
-        bounds = _semantic_patch_bounds(
-            points_um,
-            patch_um,
-            reference_geometry,
-            (thumb_height, thumb_width),
-        )
-        semantic_raster = _build_semantic_patch_raster(
-            bounds,
-            (thumb_height, thumb_width),
-        )
+        if grid_rc is not None:
+            try:
+                polygons = _semantic_patch_polygons(
+                    points_um,
+                    grid_rc,
+                    reference_geometry,
+                    (thumb_height, thumb_width),
+                )
+            except ValueError:
+                polygons = None
+            if polygons is not None:
+                semantic_raster = _build_semantic_polygon_raster(
+                    polygons,
+                    (thumb_height, thumb_width),
+                )
+        if semantic_raster is None:
+            bounds = _semantic_patch_bounds(
+                points_um,
+                patch_um,
+                reference_geometry,
+                (thumb_height, thumb_width),
+            )
+            semantic_raster = _build_semantic_patch_raster(
+                bounds,
+                (thumb_height, thumb_width),
+            )
     elif semantic_raster.patch_count != len(labels):
         raise ValueError("semantic K layers have incompatible patch grids")
     colors = np.asarray(
@@ -1809,6 +1946,88 @@ def _semantic_patch_bounds(
             np.trunc(points_px[:, 1] + half_height),
         ]
     ).astype(np.intp)
+
+
+def _semantic_patch_polygons(
+    points_um: np.ndarray,
+    grid_rc: np.ndarray,
+    reference_geometry: dict[str, object],
+    shape: tuple[int, int],
+) -> np.ndarray:
+    """Recover each registered patch quadrilateral from its affine grid.
+
+    Semantic features are sampled on a regular native row/column grid, while
+    their stored centers are mapped into reference space.  Fitting that exact
+    affine center lattice preserves rotation and scale; drawing axis-aligned
+    boxes at those centers creates artificial checkerboards on rotated slides.
+    """
+
+    points = np.asarray(points_um, dtype=np.float64)
+    grid = np.asarray(grid_rc, dtype=np.float64)
+    if points.ndim != 2 or points.shape[1:] != (2,) or grid.shape != points.shape:
+        raise ValueError("semantic coordinates and grid must have shape (patches, 2)")
+    if len(points) < 3:
+        raise ValueError(
+            "semantic affine patch geometry requires at least three patches"
+        )
+    height, width = shape
+    mpp_x, mpp_y = (float(value) for value in reference_geometry["mpp_xy"])
+    x, y, native_width, native_height = (
+        float(value) for value in reference_geometry["content_bbox_xywh"]
+    )
+    points_px = np.column_stack(
+        [
+            (points[:, 0] / mpp_x - x) * width / native_width,
+            (points[:, 1] / mpp_y - y) * height / native_height,
+        ]
+    )
+    design = np.column_stack([np.ones(len(grid)), grid[:, 0], grid[:, 1]])
+    coefficients, _, rank, _ = np.linalg.lstsq(design, points_px, rcond=None)
+    if rank != 3:
+        raise ValueError("semantic patch grid does not determine an affine plane")
+    predicted = design @ coefficients
+    row_vector = coefficients[1]
+    column_vector = coefficients[2]
+    spacing = min(np.linalg.norm(row_vector), np.linalg.norm(column_vector))
+    maximum_residual = float(np.max(np.linalg.norm(points_px - predicted, axis=1)))
+    if not np.isfinite(spacing) or spacing <= 0 or maximum_residual > spacing * 0.05:
+        raise ValueError("semantic reference coordinates are not an affine patch grid")
+    row_half = row_vector / 2
+    column_half = column_vector / 2
+    return np.stack(
+        [
+            points_px - row_half - column_half,
+            points_px - row_half + column_half,
+            points_px + row_half + column_half,
+            points_px + row_half - column_half,
+        ],
+        axis=1,
+    )
+
+
+def _build_semantic_polygon_raster(
+    polygons_xy: np.ndarray,
+    shape: tuple[int, int],
+) -> _SemanticPatchRaster:
+    """Rasterize transformed patch polygons once for reuse across K layers."""
+
+    from PIL import Image, ImageDraw
+
+    polygons = np.asarray(polygons_xy, dtype=np.float64)
+    if polygons.ndim != 3 or polygons.shape[1:] != (4, 2):
+        raise ValueError("semantic patch polygons must have shape (patches, 4, 2)")
+    height, width = shape
+    index_image = Image.new("I", (width, height), -1)
+    draw = ImageDraw.Draw(index_image)
+    for patch_index, polygon in enumerate(polygons):
+        draw.polygon(
+            [tuple(float(value) for value in vertex) for vertex in polygon],
+            fill=patch_index,
+        )
+    return _SemanticPatchRaster(
+        len(polygons),
+        np.asarray(index_image, dtype=np.int32),
+    )
 
 
 def _rasterize_semantic_rectangles(
@@ -2076,7 +2295,7 @@ def build_section_order_review(
     _write_review_manifest_script(output_dir, review_payload)
     (output_dir / "index.html").write_text(_ORDER_REVIEW_HTML)
     (output_dir / "order-review.js").write_text(_ORDER_REVIEW_JS)
-    (output_dir / "order-review.css").write_text(_ORDER_REVIEW_CSS)
+    (output_dir / "order-review.css").write_text(themed_review_css(_ORDER_REVIEW_CSS))
     _write_registration_feedback_assets(output_dir)
     _write_focus_runtime(output_dir)
     return output_dir / "index.html"
@@ -2087,7 +2306,10 @@ def _write_registration_feedback_assets(output_dir: Path) -> None:
         "_registration_feedback_assets"
     )
     for name in ("registration-feedback.js", "registration-feedback.css"):
-        (output_dir / name).write_text(packaged.joinpath(name).read_text())
+        content = packaged.joinpath(name).read_text()
+        if name.endswith(".css"):
+            content = themed_review_css(content)
+        (output_dir / name).write_text(content)
 
 
 def _write_review_manifest_script(
@@ -2196,7 +2418,7 @@ _INDEX_HTML = """<!doctype html>
       <p id="qc"></p>
       <label>Adjacent pair<select id="link-pair" disabled></select></label>
       <label class="check"><input id="show-links" type="checkbox" checked>Show topology links</label>
-      <label>Spacing<input id="spacing" type="range" min="2" max="80" value="24"></label>
+      <label>Display spacing<input id="spacing" type="range" min="2" max="80" value="24"></label>
       <label>Opacity<input id="opacity" type="range" min="0.05" max="1" step="0.05" value="0.72"></label>
       <div class="slide-navigation" aria-label="Slide navigation">
         <button id="previous-slide" title="Previous slide" aria-label="Previous slide">←</button>
@@ -2225,17 +2447,16 @@ _ORDER_REVIEW_HTML = """<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Histopia Section Order Review</title>
+  <title>Section order · Histopia</title>
   <link rel="stylesheet" href="order-review.css">
   <link rel="stylesheet" href="registration-feedback.css">
   <link rel="stylesheet" href="focus-viewer.css">
 </head>
 <body>
-  <header>
-    <strong>Histopia section order</strong>
+  <header class="detail-bar" aria-label="Section order details">
     <span id="status"></span>
     <span id="score"></span>
-    <code id="fingerprint"></code>
+    <code id="fingerprint" title="Result fingerprint"></code>
   </header>
   <main id="slides"></main>
   <aside id="registration-feedback"></aside>
@@ -2253,17 +2474,20 @@ _MASK_REVIEW_HTML = """<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Histopia Tissue Mask Review</title>
+  <title>Tissue mask QC · Histopia</title>
   <link rel="stylesheet" href="mask-review.css">
   <link rel="stylesheet" href="registration-feedback.css">
   <link rel="stylesheet" href="focus-viewer.css">
 </head>
 <body>
-  <header>
-    <strong>Histopia tissue masks</strong>
+  <header class="detail-bar" aria-label="Tissue mask details">
     <span id="status"></span>
     <span id="summary"></span>
-    <code id="fingerprint"></code>
+    <div class="preview-toggle" aria-label="Tissue mask visibility">
+      <button type="button" data-preview="overlay" class="active" aria-pressed="true">Mask on</button>
+      <button type="button" data-preview="tissue" aria-pressed="false">Mask off</button>
+    </div>
+    <code id="fingerprint" title="Result fingerprint"></code>
   </header>
   <main id="slides"></main>
   <aside id="registration-feedback"></aside>
@@ -2281,17 +2505,20 @@ _ALIGNMENT_REVIEW_HTML = """<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Histopia Registration Alignment Review</title>
+  <title>Registered stack · Histopia</title>
   <link rel="stylesheet" href="alignment-review.css">
   <link rel="stylesheet" href="registration-feedback.css">
   <link rel="stylesheet" href="focus-viewer.css">
 </head>
 <body>
-  <header>
-    <strong>Histopia registered stack</strong>
+  <header class="detail-bar" aria-label="Registered stack details">
     <span id="status"></span>
     <span id="summary"></span>
-    <code id="fingerprint"></code>
+    <div class="preview-toggle" aria-label="Registration preview mode">
+      <button type="button" data-preview="registered" class="active" aria-pressed="true">Registered tissue</button>
+      <button type="button" data-preview="comparison" aria-pressed="false">Alignment check</button>
+    </div>
+    <code id="fingerprint" title="Result fingerprint"></code>
   </header>
   <main id="slides"></main>
   <aside id="registration-feedback"></aside>
@@ -2312,10 +2539,14 @@ const rowCount = innerWidth >= 2400
   : (data.slides.length <= 18 ? 3 : 4);
 slides.style.setProperty('--rows', rowCount);
 slides.style.setProperty('--columns', Math.ceil(data.slides.length / rowCount));
+slides.dataset.preview = 'overlay';
 document.querySelector('#status').textContent =
-  data.approved ? 'Approved masks' : 'Approval required';
+  data.approved ? 'Approved' : 'Review required';
+document.querySelector('#status').dataset.state =
+  data.approved ? 'approved' : 'review';
+document.querySelector('#status').hidden = window.self !== window.top;
 document.querySelector('#summary').textContent =
-  `${data.slides.length} sections | ` +
+  `${data.slides.length} sections · ` +
   `${data.slides.reduce((sum, slide) => sum + slide.warning_count, 0)} warnings`;
 document.querySelector('#fingerprint').textContent = data.fingerprint.slice(0, 16);
 for (const slide of data.slides) {
@@ -2323,17 +2554,41 @@ for (const slide of data.slides) {
   if (slide.approved) card.classList.add('fixed');
   const image = document.createElement('img');
   image.src = slide.texture;
+  image.dataset.overlay = slide.texture;
+  image.dataset.tissue = slide.tissue_texture || slide.texture;
+  const tissuePreload = new Image();
+  tissuePreload.src = image.dataset.tissue;
   image.alt = `Accepted tissue mask for ${slide.slide}`;
   const label = document.createElement('div');
   label.className = 'label';
   label.textContent = `${String(slide.order).padStart(2, '0')} ${slide.label}`;
   const metrics = document.createElement('div');
   metrics.className = 'metrics';
-  metrics.textContent =
-    `${slide.method} | tissue ${(100 * slide.foreground_fraction).toFixed(1)}%`;
+  const coverage = (100 * slide.foreground_fraction).toFixed(1);
+  metrics.textContent = slide.warning_count
+    ? `Tissue ${coverage}% · ${slide.warning_count} warning${slide.warning_count === 1 ? '' : 's'}`
+    : `Tissue ${coverage}%`;
+  metrics.title = `Mask method: ${slide.method}`;
   card.append(image, label, metrics);
   slides.append(card);
 }
+document.querySelectorAll('[data-preview]').forEach(button => {
+  button.addEventListener('click', () => {
+    const mode = button.dataset.preview;
+    document.querySelectorAll('[data-preview]').forEach(item => {
+      const active = item === button;
+      item.classList.toggle('active', active);
+      item.setAttribute('aria-pressed', String(active));
+    });
+    slides.dataset.preview = mode;
+    slides.querySelectorAll('img').forEach((image, index) => {
+      image.src = image.dataset[mode];
+      image.alt = mode === 'tissue'
+        ? `Tissue without mask for ${data.slides[index].slide}`
+        : `Accepted tissue mask for ${data.slides[index].slide}`;
+    });
+  });
+});
 globalThis.HistopiaFocusViewer?.attachGrid({
   container: slides,
   data,
@@ -2349,8 +2604,12 @@ const rowCount = innerWidth >= 2400
   : (data.slides.length <= 18 ? 3 : 4);
 slides.style.setProperty('--rows', rowCount);
 slides.style.setProperty('--columns', Math.ceil(data.slides.length / rowCount));
+slides.dataset.preview = 'registered';
 document.querySelector('#status').textContent =
-  data.approved ? 'Sealed registration' : 'Final review required';
+  data.approved ? 'Approved' : 'Review required';
+document.querySelector('#status').dataset.state =
+  data.approved ? 'approved' : 'review';
+document.querySelector('#status').hidden = window.self !== window.top;
 const measured = data.slides.filter(
   slide => !slide.reference && slide.dice != null);
 const median = values => {
@@ -2359,7 +2618,7 @@ const median = values => {
   return values.length % 2 ? values[middle] : (values[middle - 1] + values[middle]) / 2;
 };
 document.querySelector('#summary').textContent = measured.length
-  ? `${data.slides.length} sections | median Dice ${median(measured.map(
+  ? `${data.slides.length} sections · median Dice ${median(measured.map(
       slide => Number(slide.dice))).toFixed(3)}`
   : `${data.slides.length} sections`;
 document.querySelector('#fingerprint').textContent = data.fingerprint.slice(0, 16);
@@ -2368,7 +2627,11 @@ for (const slide of data.slides) {
   if (slide.reference) card.classList.add('fixed');
   const image = document.createElement('img');
   image.src = slide.texture;
-  image.alt = `Registered checkerboard for ${slide.slide}`;
+  image.dataset.registered = slide.texture;
+  image.dataset.comparison = slide.comparison_texture || slide.texture;
+  const comparisonPreload = new Image();
+  comparisonPreload.src = image.dataset.comparison;
+  image.alt = `Registered tissue for ${slide.slide}`;
   const label = document.createElement('div');
   label.className = 'label';
   label.textContent = `${String(slide.order).padStart(2, '0')} ${slide.label}`;
@@ -2386,6 +2649,23 @@ for (const slide of data.slides) {
   card.append(image, label, metrics);
   slides.append(card);
 }
+document.querySelectorAll('[data-preview]').forEach(button => {
+  button.addEventListener('click', () => {
+    const mode = button.dataset.preview;
+    document.querySelectorAll('[data-preview]').forEach(item => {
+      const active = item === button;
+      item.classList.toggle('active', active);
+      item.setAttribute('aria-pressed', String(active));
+    });
+    slides.dataset.preview = mode;
+    slides.querySelectorAll('img').forEach((image, index) => {
+      image.src = image.dataset[mode];
+      image.alt = mode === 'comparison'
+        ? `Reference alignment check for ${data.slides[index].slide}`
+        : `Registered tissue for ${data.slides[index].slide}`;
+    });
+  });
+});
 globalThis.HistopiaFocusViewer?.attachGrid({
   container: slides,
   data,
@@ -2402,21 +2682,26 @@ const rowCount = innerWidth >= 2400
 slides.style.setProperty('--rows', rowCount);
 slides.style.setProperty('--columns', Math.ceil(data.slides.length / rowCount));
 document.querySelector('#status').textContent =
-  `${data.physical_area_continuity?.review_recommended
-    ? 'Area continuity review | '
-    : ''}` +
-  `${data.algorithm === 'completed-registration-order-v1'
-    ? 'Completed registration order | '
-    : ''}` +
-  `${data.approved ? 'Approved' : 'Approval required'} | ` +
-  `${data.physically_calibrated ? 'physical scale' : 'pixel scale'}`;
+  data.approved ? 'Approved' : 'Review required';
+document.querySelector('#status').dataset.state =
+  data.approved ? 'approved' : 'review';
+document.querySelector('#status').hidden = window.self !== window.top;
 const formatDiagnostic = value =>
   value == null || !Number.isFinite(Number(value))
     ? 'n/a'
     : Number(value).toFixed(4);
 document.querySelector('#score').textContent =
-  `cost ${formatDiagnostic(data.objective)} | margin ` +
-  `${formatDiagnostic(data.confidence_margin)}`;
+  [
+    data.physical_area_continuity?.review_recommended
+      ? 'Area continuity review'
+      : null,
+    data.algorithm === 'completed-registration-order-v1'
+      ? 'Completed registration order'
+      : null,
+    data.physically_calibrated ? 'Physical scale' : 'Pixel scale',
+    `cost ${formatDiagnostic(data.objective)}`,
+    `margin ${formatDiagnostic(data.confidence_margin)}`,
+  ].filter(Boolean).join(' · ');
 document.querySelector('#fingerprint').textContent =
   data.fingerprint ? data.fingerprint.slice(0, 16) : '';
 for (const slide of data.slides) {
@@ -2449,18 +2734,22 @@ globalThis.HistopiaFocusViewer?.attachGrid({
 
 _ORDER_REVIEW_CSS = """*{box-sizing:border-box}html,body{margin:0;height:100%;overflow:hidden}
 body{background:#151719;color:#f3f4f5;font:13px Arial,sans-serif}
-header{height:46px;display:flex;align-items:center;gap:16px;padding:7px 12px;border-bottom:1px solid #45494d}
-header strong{font-size:16px}header code{margin-left:auto;color:#aeb7bf}
-main{height:calc(100vh - 46px);display:grid;grid-template-columns:repeat(var(--columns),minmax(0,1fr));grid-template-rows:repeat(var(--rows),minmax(0,1fr));gap:4px;padding:4px}
+.detail-bar{height:40px;display:flex;align-items:center;gap:11px;padding:5px 10px;border-bottom:1px solid #dbe3ec;background:#fff}
+.detail-bar #status{padding:3px 8px;border:1px solid #b9dfce;border-radius:999px;color:#17613e;background:#edf8f2;font-size:10px;font-weight:800;white-space:nowrap}
+.detail-bar #status[data-state="review"]{border-color:#ead09c;color:#89550a;background:#fff8e8}
+.detail-bar #summary,.detail-bar #score{min-width:0;overflow:hidden;text-overflow:ellipsis;color:#526174;font-size:11px;white-space:nowrap}
+.preview-toggle{display:flex;margin-left:auto}.preview-toggle button{height:28px;min-height:28px;padding:0 9px;border:1px solid #b8c6d5;background:#fff;color:#415166;font:700 10px Arial,sans-serif;cursor:pointer}.preview-toggle button:first-child{border-radius:7px 0 0 7px}.preview-toggle button:last-child{border-left:0;border-radius:0 7px 7px 0}.preview-toggle button.active{background:#173b67;color:#fff;border-color:#173b67}.preview-toggle+code{margin-left:0}.detail-bar code{margin-left:auto;color:#94a3b8;font-size:10px}
+main{height:calc(100vh - 40px);display:grid;grid-template-columns:repeat(var(--columns),minmax(0,1fr));grid-template-rows:repeat(var(--rows),minmax(0,1fr));gap:4px;padding:4px}
 article{position:relative;min-width:0;min-height:0;background:#f4f4f2;border:1px solid #555;overflow:hidden}
 article.fixed{border:3px solid #e0b84b}img{display:block;width:100%;height:calc(100% - 34px);object-fit:contain;background:white}
 .label,.metrics{height:17px;padding:1px 5px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;color:#16191b}
 .label{font-weight:700}.metrics{font-size:11px;color:#4b5156}
 @media(max-width:600px){
-  header{height:32px;gap:8px;padding:4px 7px;font-size:10px;white-space:nowrap}
-  header strong{font-size:12px}header #score,header #summary,header code{display:none}
-  header #status{min-width:0;overflow:hidden;text-overflow:ellipsis}
-  main{height:calc(100vh - 32px);gap:3px;padding:3px}
+  .detail-bar{height:34px;gap:6px;padding:3px 7px;font-size:10px;white-space:nowrap}
+  .detail-bar #score,.detail-bar #summary,.detail-bar code{display:none}
+  .preview-toggle{margin-left:auto}.preview-toggle button{height:24px;padding:0 6px;font-size:9px}
+  .detail-bar #status{min-width:0;overflow:hidden;text-overflow:ellipsis}
+  main{height:calc(100vh - 34px);gap:3px;padding:3px}
   img{height:calc(100% - 32px)}
   .label,.metrics{height:16px;padding:1px 4px}.metrics{font-size:10px}
 }
@@ -2472,18 +2761,76 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 const manifest = await (await fetch('manifest.json')).json();
 const viewport = document.querySelector('#viewport');
 const sidebar = document.querySelector('aside');
-const renderer = new THREE.WebGLRenderer({
-  antialias: true,
-  alpha: true,
-});
+function webglAvailable() {
+  const probe = document.createElement('canvas');
+  try {
+    return Boolean(probe.getContext('webgl2') || probe.getContext('webgl'));
+  } catch (_error) {
+    return false;
+  }
+}
+function fallbackRenderer() {
+  const panel = document.createElement('div');
+  panel.style.cssText = 'height:100%;width:100%;display:grid;grid-template-rows:auto minmax(0,1fr);padding:14px;gap:10px;background:#eef2f5';
+  panel.setAttribute('aria-label', 'Observed section images; 3D unavailable');
+  const toolbar = document.createElement('div');
+  toolbar.style.cssText = 'display:flex;gap:10px;align-items:center;font:12px system-ui';
+  const label = document.createElement('span');
+  label.textContent = '3D unavailable · Observed section';
+  const select = document.createElement('select');
+  select.setAttribute('aria-label', 'Fallback section');
+  const image = document.createElement('img');
+  image.style.cssText = 'width:100%;height:100%;object-fit:contain;min-height:0';
+  toolbar.append(label, select); panel.append(toolbar, image);
+  let slides = [];
+  function draw() {
+    if (!slides.length) return;
+    const index = focusedSlideIndex ?? Math.max(0, Number(select.value));
+    const slide = slides[index] || slides[0];
+    select.value = String(index);
+    const url = textureUrl(slide, currentMode);
+    if (image.dataset.url !== url) {
+      image.dataset.url = url; image.src = url;
+      image.alt = `Observed section ${slide.label || slide.id}`;
+    }
+  }
+  select.onchange = () => focusSlide(Number(select.value));
+  return {
+    domElement: panel, isFallback: true,
+    setPixelRatio() {}, setClearColor() {}, setSize() {},
+    setSections(value) {
+      slides = value;
+      select.replaceChildren(...slides.map((slide, index) =>
+        new Option(slide.label || slide.id, String(index))));
+      draw();
+    },
+    render: draw,
+  };
+}
+function createRenderer() {
+  if (!webglAvailable()) return fallbackRenderer();
+  try { return new THREE.WebGLRenderer({antialias: true, alpha: true}); }
+  catch (_error) { return fallbackRenderer(); }
+}
+const renderer = createRenderer();
+viewport.dataset.renderer = renderer.isFallback ? 'fallback' : 'webgl';
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.setClearColor(0xf4f5f3, 0);
 viewport.append(renderer.domElement);
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 10000);
 camera.position.set(0, -400, 300);
-const controls = new OrbitControls(camera, renderer.domElement);
-controls.enableDamping = true;
+const controls = renderer.isFallback
+  ? {
+      target: new THREE.Vector3(),
+      enableDamping: false,
+      minDistance: 0,
+      maxDistance: Infinity,
+      update() { return false; },
+      addEventListener() {},
+    }
+  : new OrbitControls(camera, renderer.domElement);
+if (!renderer.isFallback) controls.enableDamping = true;
 const group = new THREE.Group();
 scene.add(group);
 const loader = new THREE.TextureLoader();
@@ -2531,9 +2878,11 @@ async function loadTextureSet(urls, onLoaded = null) {
 function requestRender() {
   if (renderRequested) return;
   renderRequested = true;
-  requestAnimationFrame(render);
+  if (renderer.isFallback) setTimeout(render, 0);
+  else requestAnimationFrame(render);
 }
 function requestRenderBurst(durationMs = 1600) {
+  if (renderer.isFallback) { requestRender(); return; }
   renderUntil = Math.max(renderUntil, performance.now() + durationMs);
   requestRender();
 }
@@ -2545,9 +2894,11 @@ function render() {
   renderer.render(scene, camera);
   const completed = renderWaiters;
   renderWaiters = [];
-  if (completed.length)
+  if (completed.length && renderer.isFallback)
+    completed.forEach(resolve => resolve());
+  else if (completed.length)
     requestAnimationFrame(() => completed.forEach(resolve => resolve()));
-  if (performance.now() < renderUntil) requestRender();
+  if (!renderer.isFallback && performance.now() < renderUntil) requestRender();
 }
 function waitForRender() {
   return new Promise(resolve => {
@@ -2682,6 +3033,7 @@ function focusSlide(index) {
   if (!slides.length) return;
   focusedSlideIndex = (index + slides.length) % slides.length;
   setSlideVisibility(itemIndex => itemIndex === focusedSlideIndex);
+  updateModeControls();
   resetCamera();
 }
 function stepSlide(offset) {
@@ -2807,6 +3159,13 @@ function updateModeControls() {
   } else if (current?.stain && stainMode) {
     const scale = document.createElement('div');
     scale.className = 'stain-color-scale';
+    const activeSlide = focusedSlideIndex == null
+      ? current.slides.find(slide => slide.stain?.quantified)
+      : current.slides[focusedSlideIndex];
+    const palette = current.stain.palettes?.[activeSlide?.stain?.family]
+      || current.stain.palette;
+    scale.style.background = `linear-gradient(90deg, ${palette.join(',')})`;
+    document.documentElement.style.setProperty('--stain-color', palette[2]);
     scale.title = `0 to ${Number(current.stain.display_max_od).toFixed(3)} OD`;
     legend.append(scale);
   }
@@ -3129,6 +3488,7 @@ async function loadMouse(mouse) {
     group.add(slide.mesh);
   });
   buildList(); layout(); updateModeControls(); resetCamera();
+  renderer.setSections?.(mouse.slides);
   requestRenderBurst();
   await finishTransition(transition);
 }
@@ -3200,9 +3560,12 @@ controls.addEventListener('change', () => {
   if (!updatingControls) requestRender();
 });
 controls.addEventListener('end', () => requestRenderBurst(1800));
-new ResizeObserver(resize).observe(viewport); resize(); resetCamera();
+if (renderer.isFallback) window.addEventListener('resize', resize);
+else new ResizeObserver(resize).observe(viewport);
+resize();
+resetCamera();
 try { await loadMouse(initialMouse); } catch (error) { reportLoadError(error); }
 requestRender();
 """
 
-_STYLES_CSS = """*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden}body{font-family:Arial,sans-serif;color:#202426;background:#f4f5f3}main{display:grid;grid-template-columns:300px minmax(0,1fr);width:100%;height:100%;overflow:hidden}aside{min-width:0;min-height:0;padding:18px;border-right:1px solid #c9ceca;background:#fff;overflow-y:auto;overflow-x:hidden}h1{font-size:22px;margin:0 0 18px}label{display:grid;gap:6px;font-size:13px;margin:14px 0}select,input{width:100%}.commands,.segmented,.visibility-commands{display:flex;gap:8px;margin:16px 0}button{border:1px solid #88918b;background:#fff;padding:7px 10px;border-radius:4px;cursor:pointer}.segmented{gap:0}.segmented button{flex:1;border-radius:0;margin-left:-1px}.segmented button:first-child{margin-left:0;border-radius:4px 0 0 4px}.segmented button:last-child{border-radius:0 4px 4px 0}.segmented button.active{background:#202426;color:#fff}.segmented button:disabled{color:#a7aca8;cursor:default}.slide-navigation{display:grid;grid-template-columns:36px minmax(0,1fr) 36px;align-items:center;gap:8px;margin:16px 0}.slide-navigation button{width:36px;height:32px;padding:0;font-size:18px}.slide-navigation output{text-align:center;font-size:12px;white-space:nowrap}.visibility-commands button{flex:1}#legend{display:grid;grid-template-columns:1fr 1fr;gap:5px;font-size:11px}#legend span{display:flex;align-items:center;gap:5px}#legend i{display:block;width:12px;height:12px;border:1px solid #555}#order-status{font-size:12px;color:#8a4f12}ol{padding:0;list-style:none}li{display:grid;grid-template-columns:20px minmax(0,1fr);align-items:center;min-height:32px;border-bottom:1px solid #eceeec;font-size:12px;cursor:grab}li span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}li input{width:14px}#viewport{position:relative;min-width:0;min-height:0;width:100%;height:100%;overflow:hidden;background:#f4f5f3}canvas{display:block;width:100%!important;height:100%!important}#mode.segmented{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px}#mode.segmented button,#mode.segmented button:first-child,#mode.segmented button:last-child{min-height:31px;margin:0;border-radius:4px;padding:5px 7px;font-size:11px}#stain-controls{border-top:1px solid #dfe3df;border-bottom:1px solid #dfe3df;padding:2px 0 10px}#stain-controls[hidden]{display:none}.range-value{float:right;color:#65706a;font-size:11px}.stain-color-scale{grid-column:1/-1;height:12px;border:1px solid #737b76;background:linear-gradient(90deg,#f6f7f4,#27807e,#eebe46,#b53130)}#stain-scale{font-size:11px;color:#59635d;margin:6px 0}#stain-probe{display:grid;gap:5px;max-height:260px;overflow:auto;font-size:11px}.probe-header{position:sticky;top:0;background:#fff;padding:3px 0;font-weight:700;z-index:1}.probe-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 6px;padding:4px 0;border-bottom:1px solid #eceeec}.probe-row span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.probe-row i{grid-column:1/-1;display:block;height:4px;min-width:1px;background:#27807e}.probe-row small{grid-column:1/-1;color:#65706a}#qc{font-size:11px;line-height:1.35;color:#59635d}@media(max-width:720px){main{grid-template-columns:1fr;grid-template-rows:250px minmax(0,1fr)}aside{border-right:0;border-bottom:1px solid #c9ceca}#sections{display:none}}"""
+_STYLES_CSS = """*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden}body{font-family:Arial,sans-serif;color:#202426;background:#f4f5f3}main{display:grid;grid-template-columns:300px minmax(0,1fr);width:100%;height:100%;overflow:hidden}aside{min-width:0;min-height:0;padding:18px;border-right:1px solid #c9ceca;background:#fff;overflow-y:auto;overflow-x:hidden}h1{font-size:22px;margin:0 0 18px}label{display:grid;gap:6px;font-size:13px;margin:14px 0}select,input{width:100%}.commands,.segmented,.visibility-commands{display:flex;gap:8px;margin:16px 0}button{border:1px solid #88918b;background:#fff;padding:7px 10px;border-radius:4px;cursor:pointer}.segmented{gap:0}.segmented button{flex:1;border-radius:0;margin-left:-1px}.segmented button:first-child{margin-left:0;border-radius:4px 0 0 4px}.segmented button:last-child{border-radius:0 4px 4px 0}.segmented button.active{background:#202426;color:#fff}.segmented button:disabled{color:#a7aca8;cursor:default}.slide-navigation{display:grid;grid-template-columns:36px minmax(0,1fr) 36px;align-items:center;gap:8px;margin:16px 0}.slide-navigation button{width:36px;height:32px;padding:0;font-size:18px}.slide-navigation output{text-align:center;font-size:12px;white-space:nowrap}.visibility-commands button{flex:1}#legend{display:grid;grid-template-columns:1fr 1fr;gap:5px;font-size:11px}#legend span{display:flex;align-items:center;gap:5px}#legend i{display:block;width:12px;height:12px;border:1px solid #555}#order-status{font-size:12px;color:#8a4f12}ol{padding:0;list-style:none}li{display:grid;grid-template-columns:20px minmax(0,1fr);align-items:center;min-height:32px;border-bottom:1px solid #eceeec;font-size:12px;cursor:grab}li span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}li input{width:14px}#viewport{position:relative;min-width:0;min-height:0;width:100%;height:100%;overflow:hidden;background:#f4f5f3}canvas{display:block;width:100%!important;height:100%!important}#mode.segmented{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px}#mode.segmented button,#mode.segmented button:first-child,#mode.segmented button:last-child{min-height:31px;margin:0;border-radius:4px;padding:5px 7px;font-size:11px}#stain-controls{border-top:1px solid #dfe3df;border-bottom:1px solid #dfe3df;padding:2px 0 10px}#stain-controls[hidden]{display:none}.range-value{float:right;color:#65706a;font-size:11px}.stain-color-scale{grid-column:1/-1;height:12px;border:1px solid #737b76;background:linear-gradient(90deg,#faf8f2,#d3ae70,#8b5b2d,#4c2b15)}#stain-scale{font-size:11px;color:#59635d;margin:6px 0}#stain-probe{display:grid;gap:5px;max-height:260px;overflow:auto;font-size:11px}.probe-header{position:sticky;top:0;background:#fff;padding:3px 0;font-weight:700;z-index:1}.probe-row{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 6px;padding:4px 0;border-bottom:1px solid #eceeec}.probe-row span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.probe-row i{grid-column:1/-1;display:block;height:4px;min-width:1px;background:var(--stain-color,#8b5b2d)}.probe-row small{grid-column:1/-1;color:#65706a}#qc{font-size:11px;line-height:1.35;color:#59635d}@media(max-width:720px){main{grid-template-columns:1fr;grid-template-rows:250px minmax(0,1fr)}aside{border-right:0;border-bottom:1px solid #c9ceca}#sections{display:none}}"""

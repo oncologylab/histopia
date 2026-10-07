@@ -58,6 +58,16 @@ def _main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--adopt-order",
+        type=Path,
+        help="Adopt a validated order candidate into the run given by --run-dir.",
+    )
+    parser.add_argument(
+        "--run-dir",
+        type=Path,
+        help="Registration run used with --adopt-order.",
+    )
+    parser.add_argument(
         "--reviewer",
         help="Reviewer name required with --approve-run.",
     )
@@ -167,6 +177,7 @@ def _main(argv: list[str] | None = None) -> int:
         path
         for path in (
             args.prepare_completed_review,
+            args.adopt_order,
             args.approve_masks,
             args.approve_order,
             args.approve_run,
@@ -177,6 +188,26 @@ def _main(argv: list[str] | None = None) -> int:
         parser.error(
             "--prepare-completed-review and approval actions are mutually exclusive"
         )
+
+    if args.adopt_order is not None:
+        if args.run_dir is None:
+            parser.error("--run-dir is required with --adopt-order")
+        from histopia.registration._approval import adopt_section_order_review
+
+        adoption = adopt_section_order_review(args.run_dir, args.adopt_order)
+        print(
+            json.dumps(
+                {
+                    "status": "adopted_review_required",
+                    "run_dir": str(adoption.run_dir),
+                    "archived_order": str(adoption.archived_order),
+                    "slide_count": adoption.slide_count,
+                    "order_fingerprint": adoption.order_fingerprint,
+                },
+                indent=2,
+            )
+        )
+        return 0
 
     if args.prepare_completed_review is not None:
         from histopia.registration._approval import (

@@ -4,7 +4,28 @@ from importlib import import_module
 
 _PUBLIC_IMPORTS = {
     "PatchFeatures": ("histopia.semantic._features", "PatchFeatures"),
+    "SemanticLinearProbe": (
+        "histopia.semantic._probe",
+        "SemanticLinearProbe",
+    ),
+    "SemanticProbeConfig": (
+        "histopia.semantic._probe",
+        "SemanticProbeConfig",
+    ),
+    "SemanticProbeDiagnostics": (
+        "histopia.semantic._probe",
+        "SemanticProbeDiagnostics",
+    ),
+    "SemanticProbeFit": ("histopia.semantic._probe", "SemanticProbeFit"),
+    "StampFeatureTable": (
+        "histopia.semantic._interop",
+        "StampFeatureTable",
+    ),
     "SemanticApproval": ("histopia.semantic._approval", "SemanticApproval"),
+    "SemanticBindingMigration": (
+        "histopia.semantic._binding_migration",
+        "SemanticBindingMigration",
+    ),
     "SemanticPreflight": ("histopia.semantic._preflight", "SemanticPreflight"),
     "SemanticRegistrationBinding": (
         "histopia.semantic._registration_binding",
@@ -16,6 +37,10 @@ _PUBLIC_IMPORTS = {
         "approve_semantic_result",
     ),
     "fit_saved_features": ("histopia.semantic._pipeline", "fit_saved_features"),
+    "fit_semantic_probe": (
+        "histopia.semantic._probe",
+        "fit_semantic_probe",
+    ),
     "fit_or_reuse_saved_features": (
         "histopia.semantic._pipeline",
         "fit_or_reuse_saved_features",
@@ -24,9 +49,17 @@ _PUBLIC_IMPORTS = {
         "histopia.semantic._config",
         "load_semantic_config",
     ),
+    "load_stamp_features": (
+        "histopia.semantic._interop",
+        "load_stamp_features",
+    ),
     "preflight_registration": (
         "histopia.semantic._preflight",
         "preflight_registration",
+    ),
+    "rebind_semantic_to_registration_approval": (
+        "histopia.semantic._binding_migration",
+        "rebind_semantic_to_registration_approval",
     ),
     "run_semantic_atlas": ("histopia.semantic._pipeline", "run_semantic_atlas"),
     "summarize_semantic_run": (

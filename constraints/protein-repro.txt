@@ -1,0 +1,12 @@
+# Reproducible cell-resolved protein fitting and sealed-model inference stack.
+# Pickle-backed scikit-learn estimators require this exact runtime; portable
+# NumPy/PyTorch models remain version-fingerprinted and pickle-free.
+joblib==1.5.3
+numpy==2.2.6
+pillow==12.3.0
+pyvips==2.2.3
+scikit-learn==1.9.0
+scipy==1.15.3
+tifffile==2025.5.10
+torch==2.13.0
+tomli==2.4.1; python_version < "3.11"

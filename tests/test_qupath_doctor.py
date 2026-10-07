@@ -29,11 +29,13 @@ def _fake_modules() -> dict[str, object]:
             "tifffile",
             "sklearn",
             "skimage",
+            "networkx",
             "threadpoolctl",
             "torch",
             "torchvision",
             "timm",
             "huggingface_hub",
+            "cellpose",
         )
     }
     modules["pyvips"] = _FakeVips(__version__="test")
@@ -49,11 +51,13 @@ _SUPPORTED_VERSIONS = {
     "tifffile": "2025.5.10",
     "scikit-learn": "1.7.2",
     "scikit-image": "0.25.2",
+    "networkx": "3.4.2",
     "threadpoolctl": "3.6.0",
     "torch": "2.13.0",
     "torchvision": "0.28.0",
     "timm": "1.0.28",
     "huggingface-hub": "0.36.2",
+    "cellpose": "4.2.1",
 }
 
 
@@ -107,6 +111,18 @@ def test_full_doctor_loads_libvips_before_torch_and_reports_compute():
     assert compute_calls == [("cuda:2", modules["torch"])]
     assert report["compute"] == {"selected": "cuda:2"}
     assert report["qupath_workflow_api_version"] == QUPATH_WORKFLOW_API_VERSION
+
+
+def test_cells_doctor_includes_roi_export_dependencies():
+    report = inspect_qupath_environment(
+        "cells",
+        importer=_fake_modules().__getitem__,
+        version_resolver=_SUPPORTED_VERSIONS.__getitem__,
+        compute_inspector=lambda device, **kwargs: {"selected": device},
+    )
+
+    assert report["dependencies"]["skimage"]["distribution"] == "scikit-image"
+    assert "cellpose" in report["dependencies"]
 
 
 def test_doctor_reports_missing_dependency_with_install_profile():

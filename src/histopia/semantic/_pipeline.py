@@ -35,6 +35,7 @@ from histopia.semantic._result import (
     validate_semantic_result,
     write_atlas_result,
 )
+from histopia.semantic._stack_support import filter_stack_supported_components
 
 
 def fit_saved_features(config: SemanticAtlasConfig) -> tuple[JointAtlas, Path]:
@@ -81,12 +82,21 @@ def _fit_saved_features(
     checkpoint()
     try:
         stage_started = time.perf_counter()
-        sections = _load_saved_feature_sections(config)
+        source_sections = _load_saved_feature_sections(config)
+        sections, stack_component_filter = filter_stack_supported_components(
+            source_sections,
+            min_neighbor_fraction=config.min_stack_component_neighbor_fraction,
+        )
         performance["feature_load_seconds"] = elapsed_seconds(stage_started)
         performance["slide_count"] = len(sections)
+        performance["source_total_patches"] = sum(
+            len(section.features) for section in source_sections
+        )
         performance["total_patches"] = sum(
             len(section.features) for section in sections
         )
+        if stack_component_filter is not None:
+            performance["stack_component_filter"] = stack_component_filter
         performance["feature_storage_dtypes"] = sorted(
             {str(section.features.dtype) for section in sections}
         )
@@ -178,6 +188,10 @@ def _fit_saved_features(
             balanced_patch_cap=config.balanced_patch_cap,
             seed=config.seed,
             max_cross_section_distance_um=config.max_cross_section_distance_um,
+            min_stack_component_neighbor_fraction=(
+                config.min_stack_component_neighbor_fraction
+            ),
+            stack_component_filter=stack_component_filter,
         )
         performance["artifact_write_seconds"] = elapsed_seconds(stage_started)
         performance["selected_k"] = atlas.selected_k
@@ -243,6 +257,9 @@ def _matching_saved_atlas_result(
         balanced_patch_cap=config.balanced_patch_cap,
         seed=config.seed,
         max_cross_section_distance_um=config.max_cross_section_distance_um,
+        min_stack_component_neighbor_fraction=(
+            config.min_stack_component_neighbor_fraction
+        ),
     )
     expected_runtime = {
         package: _package_version(package)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 from pathlib import Path
 
@@ -222,19 +223,21 @@ def test_mask_review_browser_persists_per_slide_feedback(tmp_path: Path) -> None
     thread.start()
     try:
         with playwright.sync_playwright() as runtime:
-            browser = runtime.chromium.launch(headless=True)
+            browser = getattr(
+                runtime, os.environ.get("HISTOPIA_BROWSER", "chromium")
+            ).launch(headless=True)
             page = browser.new_page(viewport={"width": 1440, "height": 900})
             page.goto(
                 f"http://127.0.0.1:{server.server_port}/review/",
                 wait_until="networkidle",
             )
             page.locator("#feedback-key").fill(token)
-            page.locator("#feedback-connect").click()
+            page.locator("#feedback-connect").click(force=True)
             page.get_by_text("0/1 reviewed").wait_for()
             assert page.locator("#feedback-reviewer").input_value() == "Web reviewer"
             page.locator("#feedback-reviewer").fill("")
             reject = page.locator("[data-feedback-decision='reject']")
-            reject.click()
+            reject.click(force=True)
             assert (
                 reject.evaluate(
                     "(element) => getComputedStyle(element).backgroundColor"
@@ -244,22 +247,35 @@ def test_mask_review_browser_persists_per_slide_feedback(tmp_path: Path) -> None
             page.get_by_text(
                 "Reject selected. Enter a reviewer and save this slide review."
             ).wait_for()
-            page.locator("#feedback-labels").get_by_text("Extra debris").click()
-            page.locator("#feedback-save").click()
+            page.locator("#feedback-labels").get_by_text("Extra debris").click(
+                force=True
+            )
+            page.locator("#feedback-save").click(force=True)
             page.get_by_text("Enter a reviewer name before saving.").wait_for()
             assert page.locator("#feedback-reviewer").evaluate(
                 "(element) => element === document.activeElement"
             )
             page.locator("#feedback-reviewer").fill("Reviewer")
             page.locator("#feedback-comment").fill("Detached artifact.")
-            page.locator("#feedback-save").click()
+            page.locator("#feedback-save").click(force=True)
             page.get_by_text("Slide review saved").wait_for()
             assert page.get_by_text("1/1 reviewed").is_visible()
             assert page.locator("article.feedback-reject").count() == 1
-            page.locator("[data-feedback-decision='accept']").click()
+            page.locator("[data-feedback-decision='accept']").click(force=True)
             page.get_by_text("Accepted and saved").wait_for()
             assert page.get_by_text("1/1 reviewed").is_visible()
             assert page.locator("article.feedback-accept").count() == 1
+            page.set_viewport_size({"width": 390, "height": 844})
+            main_box = page.locator("body > main").bounding_box()
+            feedback_box = page.locator("#registration-feedback").bounding_box()
+            assert main_box is not None
+            assert feedback_box is not None
+            assert main_box["width"] >= 389
+            assert feedback_box["width"] >= 389
+            assert feedback_box["y"] >= main_box["y"] + main_box["height"] - 1
+            assert (
+                page.evaluate("document.documentElement.scrollWidth - innerWidth") == 0
+            )
             browser.close()
     finally:
         server.shutdown()

@@ -5,14 +5,29 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from histopia.topology._feedback import TopologyFeedbackStore
+from histopia.visualization._cell_scope import CellSectionScope
 from histopia.visualization._feedback import RegistrationFeedbackStore
+from histopia.visualization._provisional_feedback import ProvisionalFeedbackStore
+
+if TYPE_CHECKING:
+    from histopia.annotation import AnnotationStore
 
 _COHORT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
-_STAGES = ("mask", "order", "registration", "semantic", "topology", "stain")
+_STAGES = (
+    "mask",
+    "order",
+    "registration",
+    "semantic",
+    "topology",
+    "stain",
+    "cells",
+    "protein",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,7 +38,14 @@ class ReviewRuns:
     semantic: Path | None = None
     topology: Path | None = None
     stain: Path | None = None
+    cells: Path | None = None
+    cell_geometry: Path | None = None
+    protein: Path | None = None
+    protein_models: dict[str, Path] = field(default_factory=dict)
+    protein_model_stains: dict[str, Path] = field(default_factory=dict)
+    annotations: Path | None = None
     registered_wsi: Path | None = None
+    cell_section_scope: CellSectionScope | None = None
 
 
 class ReviewDecisionService:
@@ -35,12 +57,15 @@ class ReviewDecisionService:
         *,
         feedback_store: RegistrationFeedbackStore | None = None,
         topology_feedback_store: TopologyFeedbackStore | None = None,
+        provisional_feedback_store: ProvisionalFeedbackStore | None = None,
     ) -> None:
         if not cohorts:
             raise ValueError("review registry must contain at least one cohort")
         self._cohorts = dict(sorted(cohorts.items()))
         self._feedback_store = feedback_store
         self._topology_feedback_store = topology_feedback_store
+        self._provisional_feedback_store = provisional_feedback_store
+        self._annotation_stores: dict[str, AnnotationStore] = {}
 
     @classmethod
     def from_file(cls, path: Path | str) -> ReviewDecisionService:
@@ -53,6 +78,16 @@ class ReviewDecisionService:
         raw_cohorts = payload.get("cohorts")
         if not isinstance(raw_cohorts, dict) or not raw_cohorts:
             raise ValueError("review registry cohorts must be a non-empty object")
+        shared_protein_models, shared_protein_stains = _configured_protein_models(
+            payload,
+            config_path.parent,
+            key="shared_protein_models",
+        )
+        if shared_protein_stains:
+            raise ValueError(
+                "review registry shared_protein_models cannot declare a "
+                "cohort-specific stain"
+            )
         cohorts: dict[str, ReviewRuns] = {}
         for cohort, raw in raw_cohorts.items():
             if not isinstance(cohort, str) or not _COHORT_RE.fullmatch(cohort):
@@ -66,6 +101,40 @@ class ReviewDecisionService:
                 required=True,
             )
             assert registration is not None
+            protein_models, protein_model_stains = _configured_protein_models(
+                raw,
+                config_path.parent,
+            )
+            shared_stain_value = raw.get("shared_protein_stain")
+            if shared_stain_value is not None:
+                if not shared_protein_models:
+                    raise ValueError(
+                        "review registry shared_protein_stain requires "
+                        "shared_protein_models"
+                    )
+                shared_stain = _resolved_configured_path(
+                    shared_stain_value,
+                    f"cohorts.{cohort}.shared_protein_stain",
+                    config_path.parent,
+                )
+                for model_id, shared_run in shared_protein_models.items():
+                    local_run = protein_models.get(model_id)
+                    if local_run is not None and local_run != shared_run:
+                        raise ValueError(
+                            f"review registry protein model {model_id!r} "
+                            "has conflicting local and shared runs"
+                        )
+                protein_models = {
+                    **shared_protein_models,
+                    **protein_models,
+                }
+                protein_model_stains = {
+                    **{model_id: shared_stain for model_id in shared_protein_models},
+                    **protein_model_stains,
+                }
+            raw_scope = raw.get("cell_section_scope")
+            if raw_scope is not None and raw.get("cells") is None:
+                raise ValueError("cell scope has no matching cell run")
             cohorts[cohort] = ReviewRuns(
                 registration=registration,
                 semantic=_configured_path(
@@ -83,6 +152,37 @@ class ReviewDecisionService:
                 stain=_configured_path(
                     raw,
                     "stain",
+                    config_path.parent,
+                    required=False,
+                ),
+                cells=_configured_path(
+                    raw,
+                    "cells",
+                    config_path.parent,
+                    required=False,
+                ),
+                cell_geometry=_configured_path(
+                    raw,
+                    "cell_geometry",
+                    config_path.parent,
+                    required=False,
+                ),
+                protein=_configured_path(
+                    raw,
+                    "protein",
+                    config_path.parent,
+                    required=False,
+                ),
+                protein_models=protein_models,
+                cell_section_scope=(
+                    CellSectionScope.from_dict(raw_scope)
+                    if raw_scope is not None
+                    else None
+                ),
+                protein_model_stains=protein_model_stains,
+                annotations=_configured_path(
+                    raw,
+                    "annotations",
                     config_path.parent,
                     required=False,
                 ),
@@ -118,6 +218,11 @@ class ReviewDecisionService:
                 if feedback_path is not None
                 else None
             ),
+            provisional_feedback_store=(
+                ProvisionalFeedbackStore(feedback_path / "provisional")
+                if feedback_path is not None
+                else None
+            ),
         )
 
     def status(self) -> dict[str, object]:
@@ -127,19 +232,133 @@ class ReviewDecisionService:
             "schema_version": 1,
             "stages": list(_STAGES),
             "feedback_configured": self._feedback_store is not None,
+            "provisional_feedback_configured": (
+                self._provisional_feedback_store is not None
+            ),
             "cohorts": [
                 self._cohort_status(name, runs) for name, runs in self._cohorts.items()
             ],
         }
 
-    def wsi_runs(self) -> dict[str, tuple[Path, Path]]:
+    def wsi_runs(self) -> dict[str, tuple[Path, Path | None]]:
         """Return private WSI bindings for server construction only."""
 
         return {
             cohort: (runs.registration, runs.registered_wsi)
             for cohort, runs in self._cohorts.items()
-            if runs.registered_wsi is not None
+            if (
+                runs.registered_wsi is not None
+                or runs.cells is not None
+                or runs.annotations is not None
+                or runs.stain is not None
+                or runs.protein is not None
+                or runs.protein_models
+            )
         }
+
+    def cell_runs(self) -> dict[str, Path]:
+        """Return private validated cell-run bindings for tile rendering."""
+
+        return {
+            cohort: runs.cells
+            for cohort, runs in self._cohorts.items()
+            if runs.cells is not None
+        }
+
+    def cell_section_scopes(self) -> dict[str, CellSectionScope]:
+        """Return exact cell-layer display scopes without granting approval."""
+        return {
+            cohort: runs.cell_section_scope
+            for cohort, runs in self._cohorts.items()
+            if runs.cell_section_scope is not None
+        }
+
+    def cell_geometry_runs(self) -> dict[str, Path]:
+        """Return private multiscale cell-geometry caches for static builds."""
+
+        return {
+            cohort: runs.cell_geometry
+            for cohort, runs in self._cohorts.items()
+            if runs.cell_geometry is not None
+        }
+
+    def stain_runs(self) -> dict[str, Path]:
+        """Return private validated stain-run bindings for tile rendering."""
+
+        return {
+            cohort: runs.stain
+            for cohort, runs in self._cohorts.items()
+            if runs.stain is not None
+        }
+
+    def protein_runs(self) -> dict[str, Path]:
+        """Return private validated protein-run bindings for tile rendering."""
+
+        return {
+            cohort: runs.protein
+            for cohort, runs in self._cohorts.items()
+            if runs.protein is not None
+        }
+
+    def protein_model_runs(self) -> dict[str, dict[str, Path]]:
+        """Return private model-scoped protein bindings for tile rendering."""
+
+        return {
+            cohort: dict(sorted(runs.protein_models.items()))
+            for cohort, runs in self._cohorts.items()
+            if runs.protein_models
+        }
+
+    def protein_model_stain_runs(self) -> dict[str, dict[str, Path]]:
+        """Return exact stain provenance overrides for configured models."""
+
+        return {
+            cohort: dict(sorted(runs.protein_model_stains.items()))
+            for cohort, runs in self._cohorts.items()
+            if runs.protein_model_stains
+        }
+
+    def configured_runs(self) -> dict[str, ReviewRuns]:
+        """Return a copy of the local registry for local audit/build commands."""
+
+        return dict(self._cohorts)
+
+    def annotation_catalog(self, cohort: str) -> dict[str, object]:
+        """Return path-free ontology and annotation revision metadata."""
+
+        catalog = self._annotation_store(cohort).catalog()
+        return {**catalog, "cohort": cohort}
+
+    def annotation_section(self, cohort: str, section: str) -> dict[str, object]:
+        """Return one current section annotation collection."""
+
+        return self._annotation_store(cohort).read_section(section)
+
+    def save_annotation_section(
+        self,
+        request: dict[str, object],
+    ) -> dict[str, object]:
+        """Persist one optimistic, revision-bound annotation update."""
+
+        cohort = _required_text(request, "cohort")
+        section = _required_text(request, "section")
+        reviewer = _required_text(request, "reviewer")
+        expected_revision = request.get("expected_revision")
+        if isinstance(expected_revision, bool) or not isinstance(
+            expected_revision, int
+        ):
+            raise TypeError("annotation expected_revision must be an integer")
+        feature_collection = request.get("feature_collection")
+        notes = request.get("notes", "")
+        if not isinstance(notes, str):
+            raise TypeError("annotation notes must be text")
+        return self._annotation_store(cohort, validate_current=True).save_section(
+            section,
+            feature_collection,
+            reviewer=reviewer,
+            expected_revision=expected_revision,
+            notes=notes,
+        )
 
     def approve(self, request: dict[str, object]) -> dict[str, object]:
         """Validate and apply one exact scientific approval."""
@@ -207,7 +426,7 @@ class ReviewDecisionService:
                 reviewer=reviewer,
                 notes=notes,
             )
-        else:
+        elif stage == "stain":
             if runs.stain is None:
                 raise ValueError(f"cohort {cohort} has no stain review")
             stain_status = _stain_status(runs.registration, runs.stain)
@@ -235,7 +454,47 @@ class ReviewDecisionService:
                 notes=notes,
                 families=families,
             )
+        else:
+            if runs.cells is None:
+                raise ValueError(f"cohort {cohort} has no cell review")
+            if runs.cell_section_scope is not None:
+                raise ValueError("selected cell sections cannot approve a whole run")
+            from histopia.cells import approve_cell_result
+
+            approve_cell_result(runs.cells)
         return self._cohort_status(cohort, runs)
+
+    def review_cell_section(self, request: dict[str, object]) -> dict[str, object]:
+        """Persist one section-level cell-boundary decision."""
+
+        cohort = _required_text(request, "cohort")
+        section = _required_text(request, "section")
+        reviewer = _required_text(request, "reviewer")
+        runs = self._required_cohort(cohort)
+        if runs.cells is None:
+            raise ValueError(f"cohort {cohort} has no cell review")
+        self._require_cell_section_in_scope(runs, section)
+        accepted = request.get("accepted")
+        if not isinstance(accepted, bool):
+            raise ValueError("cell review accepted must be a boolean")
+        notes = request.get("notes", "")
+        issues = request.get("issues", [])
+        if not isinstance(notes, str):
+            raise ValueError("cell review notes must be text")
+        if not isinstance(issues, list) or any(
+            not isinstance(issue, str) for issue in issues
+        ):
+            raise ValueError("cell review issues must be a list of text labels")
+        from histopia.cells import review_cell_section
+
+        return review_cell_section(
+            runs.cells,
+            section,
+            accepted=accepted,
+            reviewer=reviewer,
+            notes=notes,
+            issues=tuple(issues),
+        )
 
     def feedback(self, cohort: str, stage: str) -> dict[str, object]:
         """Return current per-slide registration feedback."""
@@ -285,7 +544,60 @@ class ReviewDecisionService:
                 if self._topology_feedback_store is not None
                 else None
             ),
+            "provisional": (
+                self._provisional_feedback_store.summary()
+                if self._provisional_feedback_store is not None
+                else None
+            ),
         }
+
+    def provisional_feedback(self, cohort: str, stage: str) -> dict[str, object]:
+        """Return current stain or cell observations without approving artifacts."""
+
+        runs = self._required_cohort(cohort)
+        run = (
+            runs.stain if stage == "stain" else runs.cells if stage == "cells" else None
+        )
+        if run is None:
+            raise ValueError(f"cohort {cohort} has no {stage} review")
+        return self._required_provisional_feedback_store().review(
+            cohort=cohort,
+            stage=stage,
+            run=run,
+        )
+
+    def save_provisional_feedback(
+        self, request: dict[str, object]
+    ) -> dict[str, object]:
+        """Persist one explicitly provisional stain or cell observation."""
+
+        cohort = _required_text(request, "cohort")
+        stage = _required_text(request, "stage")
+        runs = self._required_cohort(cohort)
+        run = (
+            runs.stain if stage == "stain" else runs.cells if stage == "cells" else None
+        )
+        if run is None:
+            raise ValueError(f"cohort {cohort} has no {stage} review")
+        if stage == "cells" and runs.cell_section_scope is not None:
+            self._require_cell_section_in_scope(
+                runs, _required_text(request, "slide_id")
+            )
+        return self._required_provisional_feedback_store().save(request, run=run)
+
+    @staticmethod
+    def _require_cell_section_in_scope(runs: ReviewRuns, section: str) -> None:
+        """Bind a scoped review write to the exact displayed cell artifact."""
+
+        scope = runs.cell_section_scope
+        if scope is None:
+            return
+        if section not in scope.labels_by_section:
+            raise ValueError("cell section is outside the selected review scope")
+        from histopia.cells._result import validate_cell_result_index
+
+        assert runs.cells is not None
+        scope.select(validate_cell_result_index(runs.cells))
 
     def _required_cohort(self, cohort: str) -> ReviewRuns:
         try:
@@ -302,6 +614,37 @@ class ReviewDecisionService:
         if self._topology_feedback_store is None:
             raise ValueError("topology feedback storage is not configured")
         return self._topology_feedback_store
+
+    def _required_provisional_feedback_store(self) -> ProvisionalFeedbackStore:
+        if self._provisional_feedback_store is None:
+            raise ValueError("provisional feedback storage is not configured")
+        return self._provisional_feedback_store
+
+    def _annotation_store(
+        self,
+        cohort: str,
+        *,
+        validate_current: bool = False,
+    ) -> AnnotationStore:
+        if not validate_current:
+            try:
+                return self._annotation_stores[cohort]
+            except KeyError:
+                pass
+        runs = self._required_cohort(cohort)
+        if runs.annotations is None:
+            raise ValueError(f"cohort {cohort} has no annotation review")
+        if runs.semantic is None:
+            raise ValueError(f"cohort {cohort} has no semantic review")
+        from histopia.annotation import AnnotationStore
+
+        store = AnnotationStore.from_runs(
+            runs.annotations,
+            registration_run=runs.registration,
+            semantic_run=runs.semantic,
+        )
+        self._annotation_stores[cohort] = store
+        return store
 
     def _require_registration_feedback(
         self,
@@ -331,6 +674,7 @@ class ReviewDecisionService:
                     runs.topology,
                 ),
                 "stain": _stain_status(runs.registration, runs.stain),
+                "cells": _cell_status(runs.registration, runs.cells),
             },
         }
 
@@ -348,6 +692,56 @@ def _configured_path(
     if not isinstance(raw, str) or not raw.strip():
         raise ValueError(f"review registry {key} path is missing")
     path = Path(raw).expanduser()
+    return (base / path).resolve() if not path.is_absolute() else path.resolve()
+
+
+def _configured_protein_models(
+    row: dict[str, object],
+    base: Path,
+    *,
+    key: str = "protein_models",
+) -> tuple[dict[str, Path], dict[str, Path]]:
+    """Parse legacy paths and provenance-bound protein model descriptors."""
+
+    raw = row.get(key)
+    if raw is None:
+        return {}, {}
+    if not isinstance(raw, dict) or not raw:
+        raise ValueError(f"review registry {key} must be a non-empty object")
+    runs: dict[str, Path] = {}
+    stains: dict[str, Path] = {}
+    for model_id, value in raw.items():
+        if not isinstance(model_id, str) or not _COHORT_RE.fullmatch(model_id):
+            raise ValueError(f"invalid protein model name: {model_id!r}")
+        run_value: object = value
+        stain_value: object | None = None
+        if isinstance(value, dict):
+            unknown = set(value) - {"run", "stain"}
+            if unknown:
+                raise ValueError(
+                    f"review registry {key}.{model_id} has unknown fields: "
+                    + ", ".join(sorted(unknown))
+                )
+            run_value = value.get("run")
+            stain_value = value.get("stain")
+        runs[model_id] = _resolved_configured_path(
+            run_value,
+            f"{key}.{model_id}.run" if isinstance(value, dict) else f"{key}.{model_id}",
+            base,
+        )
+        if isinstance(value, dict) and "stain" in value:
+            stains[model_id] = _resolved_configured_path(
+                stain_value,
+                f"{key}.{model_id}.stain",
+                base,
+            )
+    return dict(sorted(runs.items())), dict(sorted(stains.items()))
+
+
+def _resolved_configured_path(value: object, label: str, base: Path) -> Path:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"review registry {label} path is missing")
+    path = Path(value).expanduser()
     return (base / path).resolve() if not path.is_absolute() else path.resolve()
 
 
@@ -654,6 +1048,97 @@ def _topology_status(
         "approved": approved,
         "approval_ready": not approved,
         "issue": None if approved else "topology_approval_required",
+    }
+
+
+def _cell_status(
+    registration_run: Path,
+    run: Path | None,
+) -> dict[str, object]:
+    if run is None:
+        return {
+            "available": False,
+            "approved": False,
+            "approval_ready": False,
+            "sections": [],
+        }
+    result_path = run / "cell_result.json"
+    if not result_path.is_file():
+        return {
+            "available": False,
+            "approved": False,
+            "approval_ready": False,
+            "sections": [],
+        }
+    try:
+        result = _json_object(result_path)
+        _require_current_json_fingerprint(result, "cell result")
+        registration_sha = hashlib.sha256(
+            (registration_run / "registration_result.json").read_bytes()
+        ).hexdigest()
+        if result.get("registration_result_sha256") != registration_sha:
+            raise ValueError("cell registration binding is stale")
+        slides = result.get("slides")
+        if not isinstance(slides, list) or not slides:
+            raise ValueError("cell result contains no sections")
+        review = _json_object(run / "cell_review.json")
+        if (
+            review.get("schema_version") != 1
+            or review.get("fingerprint") != result.get("fingerprint")
+            or not isinstance(review.get("sections"), dict)
+        ):
+            raise ValueError("cell review is stale")
+        review_rows = review["sections"]
+        section_rows = []
+        for slide in slides:
+            if not isinstance(slide, dict) or not isinstance(slide.get("section"), str):
+                raise ValueError("cell result section row is invalid")
+            section = str(slide["section"])
+            decision = review_rows.get(section)
+            accepted = isinstance(decision, dict) and decision.get("accepted") is True
+            section_rows.append(
+                {
+                    "id": section,
+                    "slide": str(slide.get("slide", "")),
+                    "cell_count": int(slide.get("cell_count", 0)),
+                    "accepted": accepted,
+                    "reviewer": (
+                        decision.get("reviewer") if isinstance(decision, dict) else None
+                    ),
+                    "reviewed_at": (
+                        decision.get("reviewed_at")
+                        if isinstance(decision, dict)
+                        else None
+                    ),
+                    "notes": (
+                        str(decision.get("notes", ""))
+                        if isinstance(decision, dict)
+                        else ""
+                    ),
+                    "issues": (
+                        list(decision.get("issues", []))
+                        if isinstance(decision, dict)
+                        and isinstance(decision.get("issues"), list)
+                        else []
+                    ),
+                }
+            )
+        approved = all(row["accepted"] for row in section_rows)
+    except (FileNotFoundError, OSError, TypeError, ValueError, json.JSONDecodeError):
+        return {
+            "available": True,
+            "approved": False,
+            "approval_ready": False,
+            "sections": [],
+            "invalid": True,
+            "issue": "cell_result_binding_or_review_invalid",
+        }
+    return {
+        "available": True,
+        "approved": approved,
+        "approval_ready": not approved,
+        "issue": None if approved else "cell_section_review_required",
+        "sections": section_rows,
     }
 
 

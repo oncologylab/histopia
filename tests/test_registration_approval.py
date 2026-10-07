@@ -6,12 +6,66 @@ from pathlib import Path
 import pytest
 
 from histopia.registration._approval import (
+    adopt_section_order_review,
     approve_mask_review,
     approve_registration_run,
     approve_section_order,
     prepare_completed_registration_review,
     validate_registration_approval,
 )
+
+
+def test_adopt_section_order_review_archives_and_preserves_approval_gate(
+    tmp_path: Path,
+) -> None:
+    _write_run(tmp_path)
+    canonical = tmp_path / "section_order_review.json"
+    original = canonical.read_bytes()
+    candidate = tmp_path / "user-order.json"
+    payload = json.loads(canonical.read_text())
+    payload["approved"] = False
+    payload["source_registration_result_sha256"] = _sha256(
+        tmp_path / "registration_result.json"
+    )
+    payload["input_fingerprints"] = {
+        "HE.ndpi": "hash-0",
+        "CK19.ndpi": "hash-1",
+    }
+    candidate.write_text(json.dumps(payload))
+
+    adoption = adopt_section_order_review(tmp_path, candidate)
+
+    assert adoption.slide_count == 2
+    assert adoption.archived_order.read_bytes() == original
+    assert json.loads(canonical.read_text())["approved"] is False
+    assert not (tmp_path / "registration_approval.json").exists()
+
+
+def test_adopt_section_order_review_rejects_stale_or_mismatched_candidate(
+    tmp_path: Path,
+) -> None:
+    _write_run(tmp_path)
+    canonical = tmp_path / "section_order_review.json"
+    candidate = tmp_path / "user-order.json"
+    payload = json.loads(canonical.read_text())
+    payload["approved"] = False
+    payload["source_registration_result_sha256"] = "stale"
+    payload["input_fingerprints"] = {
+        "HE.ndpi": "hash-0",
+        "CK19.ndpi": "hash-1",
+    }
+    candidate.write_text(json.dumps(payload))
+
+    with pytest.raises(ValueError, match="source registration result is stale"):
+        adopt_section_order_review(tmp_path, candidate)
+
+    assert canonical.read_bytes() != candidate.read_bytes()
+
+
+def _sha256(path: Path) -> str:
+    import hashlib
+
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def test_approve_registration_run_seals_exact_reviewed_artifacts(
@@ -115,6 +169,23 @@ def test_prepare_completed_registration_review_is_fail_closed(
         )
 
 
+def test_prepare_completed_registration_review_restores_embedded_mask_sidecar(
+    tmp_path: Path,
+) -> None:
+    _write_run(tmp_path)
+    (tmp_path / "mask_review.json").unlink()
+    (tmp_path / "section_order_review.json").unlink()
+
+    prepared = prepare_completed_registration_review(tmp_path)
+
+    restored = json.loads((tmp_path / "mask_review.json").read_text())
+    result = json.loads((tmp_path / "registration_result.json").read_text())
+    assert restored["schema_version"] == 2
+    assert restored["slides"] == [row["mask_review"] for row in result["slides"]]
+    assert json.loads(prepared.read_text())["approved"] is False
+    assert not (tmp_path / "registration_approval.json").exists()
+
+
 def test_prepare_completed_registration_review_rejects_mask_mismatch(
     tmp_path: Path,
 ) -> None:
@@ -126,6 +197,20 @@ def test_prepare_completed_registration_review_rejects_mask_mismatch(
 
     with pytest.raises(ValueError, match="mask review fingerprint mismatch"):
         prepare_completed_registration_review(tmp_path)
+
+
+def test_prepare_completed_registration_review_can_write_separate_candidate(
+    tmp_path: Path,
+) -> None:
+    _write_run(tmp_path)
+    canonical_bytes = (tmp_path / "section_order_review.json").read_bytes()
+    candidate = tmp_path / "current-result-order.json"
+
+    prepared = prepare_completed_registration_review(tmp_path, output_path=candidate)
+
+    assert prepared == candidate
+    assert candidate.is_file()
+    assert (tmp_path / "section_order_review.json").read_bytes() == canonical_bytes
 
 
 def test_approve_registration_run_rejects_timestamp_without_timezone(

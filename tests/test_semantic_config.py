@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -20,6 +21,23 @@ def test_semantic_config_defaults_to_automatic_k_range(tmp_path) -> None:
     assert config.patch_workers == 1
     assert config.vips_threads is None
     assert config.fit_threads == 4
+    assert config.feature_reuse_dir is None
+    assert config.min_stack_component_neighbor_fraction == 0.0
+
+
+def test_semantic_config_loads_optional_feature_reuse_directory(tmp_path) -> None:
+    path = tmp_path / "reuse.json"
+    path.write_text(
+        json.dumps(
+            {
+                "registration_run": "registration",
+                "output_dir": "semantic",
+                "feature_reuse_dir": "prior/features",
+            }
+        )
+    )
+
+    assert load_semantic_config(path).feature_reuse_dir == Path("prior/features")
 
 
 def test_semantic_config_loads_legacy_explicit_cluster_counts(tmp_path) -> None:
@@ -108,6 +126,12 @@ def test_semantic_config_rejects_nonpositive_fit_threads(tmp_path) -> None:
         ("pca_components", 0, ValueError, "positive"),
         ("balanced_patch_cap", -1, ValueError, "positive"),
         ("max_cross_section_distance_um", float("inf"), ValueError, "finite"),
+        (
+            "min_stack_component_neighbor_fraction",
+            1.01,
+            ValueError,
+            "between zero and one",
+        ),
         ("seed", -1, ValueError, "non-negative"),
         ("seed", 2**32, ValueError, "must not exceed"),
         ("device", 1, TypeError, "string"),

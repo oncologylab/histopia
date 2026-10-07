@@ -502,16 +502,43 @@ histopia-visualize serve viewer-root/ \
 {
   "schema_version": 1,
   "feedback_dir": "/path/to/private-feedback",
+  "shared_protein_models": {
+    "panel-model-a": "/path/to/panel-model-a",
+    "panel-model-b": {"run": "/path/to/panel-model-b"}
+  },
   "cohorts": {
     "example": {
       "registration": "/path/to/registration-run",
       "semantic": "/path/to/semantic-run",
       "stain": "/path/to/stain-run",
+      "shared_protein_stain": "/path/to/panel-stain-run-for-this-cohort",
+      "protein_models": {
+        "legacy-compatible-model": "/path/to/protein-run",
+        "provenance-bound-model": {
+          "run": "/path/to/another-protein-run",
+          "stain": "/path/to/its-exact-stain-run"
+        }
+      },
       "registered_wsi": "/path/to/approved-registered-wsi"
     }
   }
 }
 ```
+
+`protein_models` is an open-ended model registry: adding another protein or
+architecture requires another entry, not a schema or server-code change. A
+plain path remains supported. The descriptor form binds a model to the exact
+validated stain run used to derive its measurements, allowing models with
+different stain-processing versions to coexist without changing the cohort's
+default stain review.
+
+For a panel reused across cohorts, `shared_protein_models` declares each run
+once. A cohort opts into that catalog with `shared_protein_stain`, which binds
+every shared model to that cohort's exact measurement-provenance run. Local
+`protein_models` entries are merged additively and take precedence only when
+they point to the same sealed model run. Conflicting model IDs are rejected at
+startup. This keeps large panels compact without weakening cohort-specific
+stain provenance or changing the path-free web API.
 
 The review access key is entered in the review hub's **Decisions** tab and is
 kept in browser session storage. It is never written into generated viewer
@@ -708,8 +735,8 @@ intensity. A candidate is accepted only if it improves tissue Dice and stays
 within the configured relative scale and anisotropy limits.
 
 The generated `registration_result.json` contains mask and alignment metrics.
-`validation_report.md` applies the acceptance thresholds documented in
-`docs/kpf_registration_validation.md`.
+Run-specific QC reports record the configured acceptance thresholds.
+These checks do not replace evaluation against independent landmarks.
 
 ## Full-Resolution Export
 

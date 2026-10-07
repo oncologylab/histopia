@@ -34,6 +34,195 @@ def _service(tmp_path: Path) -> tuple[ReviewDecisionService, dict[str, Path]]:
     return ReviewDecisionService.from_file(config), paths
 
 
+def test_review_registry_accepts_mixed_protein_model_bindings(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "registry.json"
+    config.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "cohorts": {
+                    "mouse": {
+                        "registration": "registration",
+                        "protein_models": {
+                            "ecad-model": "protein/ecad",
+                            "ki67-model": {
+                                "run": "protein/ki67",
+                                "stain": "stain/counterstain-v3",
+                            },
+                        },
+                    }
+                },
+            }
+        )
+    )
+
+    service = ReviewDecisionService.from_file(config)
+
+    assert service.protein_model_runs() == {
+        "mouse": {
+            "ecad-model": (tmp_path / "protein/ecad").resolve(),
+            "ki67-model": (tmp_path / "protein/ki67").resolve(),
+        }
+    }
+    assert service.protein_model_stain_runs() == {
+        "mouse": {
+            "ki67-model": (tmp_path / "stain/counterstain-v3").resolve(),
+        }
+    }
+    assert "stain/counterstain-v3" not in json.dumps(service.status())
+
+
+def test_review_registry_keeps_cell_geometry_binding_private(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "registry.json"
+    config.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "cohorts": {
+                    "mouse": {
+                        "registration": "registration",
+                        "cell_geometry": "protein/geometry-cache",
+                    }
+                },
+            }
+        )
+    )
+
+    service = ReviewDecisionService.from_file(config)
+
+    assert service.cell_geometry_runs() == {
+        "mouse": (tmp_path / "protein/geometry-cache").resolve()
+    }
+    status = json.dumps(service.status())
+    assert "geometry-cache" not in status
+    assert str(tmp_path) not in status
+
+
+def test_review_registry_merges_shared_protein_catalog_per_cohort(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "registry.json"
+    config.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "shared_protein_models": {
+                    "insulin-model": "protein/insulin",
+                    "glucagon-model": {"run": "protein/glucagon"},
+                },
+                "cohorts": {
+                    "mouse-a": {
+                        "registration": "registration/a",
+                        "shared_protein_stain": "stain/a",
+                        "protein_models": {
+                            "local-model": {
+                                "run": "protein/local",
+                                "stain": "stain/local-a",
+                            }
+                        },
+                    },
+                    "mouse-b": {"registration": "registration/b"},
+                },
+            }
+        )
+    )
+
+    service = ReviewDecisionService.from_file(config)
+
+    assert service.protein_model_runs() == {
+        "mouse-a": {
+            "glucagon-model": (tmp_path / "protein/glucagon").resolve(),
+            "insulin-model": (tmp_path / "protein/insulin").resolve(),
+            "local-model": (tmp_path / "protein/local").resolve(),
+        }
+    }
+    assert service.protein_model_stain_runs() == {
+        "mouse-a": {
+            "glucagon-model": (tmp_path / "stain/a").resolve(),
+            "insulin-model": (tmp_path / "stain/a").resolve(),
+            "local-model": (tmp_path / "stain/local-a").resolve(),
+        }
+    }
+
+
+def test_review_registry_rejects_stain_inside_shared_protein_catalog(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "registry.json"
+    config.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "shared_protein_models": {
+                    "model": {"run": "protein", "stain": "stain"}
+                },
+                "cohorts": {"mouse": {"registration": "registration"}},
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="cannot declare a cohort-specific stain"):
+        ReviewDecisionService.from_file(config)
+
+
+def test_review_registry_rejects_conflicting_shared_protein_run(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "registry.json"
+    config.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "shared_protein_models": {"model": "protein/shared"},
+                "cohorts": {
+                    "mouse": {
+                        "registration": "registration",
+                        "shared_protein_stain": "stain",
+                        "protein_models": {"model": "protein/local"},
+                    }
+                },
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="conflicting local and shared runs"):
+        ReviewDecisionService.from_file(config)
+
+
+@pytest.mark.parametrize(
+    "model_binding",
+    (
+        {"run": "protein", "stain": None},
+        {"run": "protein", "unexpected": "stain"},
+    ),
+)
+def test_review_registry_rejects_invalid_protein_model_descriptors(
+    tmp_path: Path,
+    model_binding: dict[str, object],
+) -> None:
+    config = tmp_path / "registry.json"
+    config.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "cohorts": {
+                    "mouse": {
+                        "registration": "registration",
+                        "protein_models": {"model": model_binding},
+                    }
+                },
+            }
+        )
+    )
+
+    with pytest.raises(ValueError, match="protein_models.model"):
+        ReviewDecisionService.from_file(config)
+
+
 @pytest.mark.parametrize(
     ("stage", "module", "function"),
     (

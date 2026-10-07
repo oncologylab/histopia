@@ -14,6 +14,23 @@ def validate_semantic_result(
     """Load and verify a schema-3 result and every referenced artifact."""
 
     root = Path(run_dir)
+    loaded = validate_semantic_result_index(root, payload)
+    references = _referenced_artifacts(root, loaded)
+    declared = loaded["artifacts"]
+    assert isinstance(declared, dict)
+    for relative, path in references.items():
+        if declared[relative] != _sha256_file(path):
+            raise ValueError(f"semantic result artifact digest mismatch: {relative}")
+    return loaded
+
+
+def validate_semantic_result_index(
+    run_dir: Path | str,
+    payload: dict[str, object] | None = None,
+) -> dict[str, object]:
+    """Validate semantic metadata without eagerly hashing large label maps."""
+
+    root = Path(run_dir)
     loaded = (
         json.loads((root / "semantic_result.json").read_text())
         if payload is None
@@ -26,15 +43,36 @@ def validate_semantic_result(
     if not isinstance(declared, dict) or set(declared) != set(references):
         raise ValueError("semantic result artifact manifest is incomplete or stale")
     for relative, path in references.items():
-        if not path.is_file():
+        digest = declared[relative]
+        if (
+            not path.is_file()
+            or not isinstance(digest, str)
+            or len(digest) != 64
+            or any(character not in "0123456789abcdef" for character in digest)
+        ):
             raise ValueError(f"semantic result artifact is missing: {relative}")
-        if declared[relative] != _sha256_file(path):
-            raise ValueError(f"semantic result artifact digest mismatch: {relative}")
     fingerprint = loaded.get("fingerprint")
     core = {key: value for key, value in loaded.items() if key != "fingerprint"}
     if fingerprint != _fingerprint_core(core):
         raise ValueError("semantic result fingerprint is stale")
     return loaded
+
+
+def validate_semantic_artifact(
+    path: Path | str,
+    expected_sha256: str,
+) -> Path:
+    """Validate one semantic artifact immediately before its first use."""
+
+    artifact = Path(path)
+    if (
+        len(expected_sha256) != 64
+        or any(character not in "0123456789abcdef" for character in expected_sha256)
+        or not artifact.is_file()
+        or _sha256_file(artifact) != expected_sha256
+    ):
+        raise ValueError(f"semantic result artifact digest mismatch: {artifact.name}")
+    return artifact
 
 
 def _seal_semantic_result(

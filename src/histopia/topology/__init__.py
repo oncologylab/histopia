@@ -3,6 +3,15 @@
 from importlib import import_module
 
 _PUBLIC_IMPORTS = {
+    "SpatialFeature": ("histopia.topology._features", "SpatialFeature"),
+    "SpatialFeatureConfig": (
+        "histopia.topology._features",
+        "SpatialFeatureConfig",
+    ),
+    "SpatialFeatureSpectrum": (
+        "histopia.topology._features",
+        "SpatialFeatureSpectrum",
+    ),
     "TopologyApproval": ("histopia.topology._approval", "TopologyApproval"),
     "TopologyConfig": ("histopia.topology._config", "TopologyConfig"),
     "approve_topology_result": (
@@ -14,6 +23,10 @@ _PUBLIC_IMPORTS = {
         "benchmark_topology",
     ),
     "build_topology": ("histopia.topology._pipeline", "build_topology"),
+    "extract_spatial_feature_spectrum": (
+        "histopia.topology._features",
+        "extract_spatial_feature_spectrum",
+    ),
     "load_topology_config": (
         "histopia.topology._config",
         "load_topology_config",

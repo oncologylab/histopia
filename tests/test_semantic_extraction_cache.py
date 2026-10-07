@@ -6,7 +6,11 @@ import numpy as np
 import pytest
 
 from histopia.semantic import PatchFeatures
-from histopia.semantic._extract import _VipsPatchReader, feature_cache_matches
+from histopia.semantic._extract import (
+    _VipsPatchReader,
+    feature_cache_matches,
+    load_feature_reuse_candidate,
+)
 
 
 def _artifact(provenance: dict[str, object]) -> PatchFeatures:
@@ -88,6 +92,50 @@ def test_feature_cache_rejects_changed_sealed_content(tmp_path: Path) -> None:
     np.savez_compressed(path, **arrays)
 
     assert not feature_cache_matches(path, provenance)
+
+
+def test_feature_reuse_accepts_only_immutable_native_extraction_invariants(
+    tmp_path: Path,
+) -> None:
+    old = {
+        "preflight_fingerprint": "old-preflight",
+        "slide_name": "section.ndpi",
+        "source_sha256": "source-a",
+        "mask_sha256": "old-mask",
+        "transform_sha256": "old-transform",
+        "model_fingerprint": "model-a",
+        "analysis_mpp": 0.5,
+        "patch_size_px": 224,
+        "min_tissue_fraction": 0.5,
+        "batch_size": 32,
+        "encoder_runtime": {"device": "cuda", "precision": "fp16"},
+        "extraction_method": "histopia-source-grid-v2",
+        "patch_reader": "pyvips-context-row-batch-v2",
+    }
+    path = _artifact(old).save(tmp_path / "feature.npz")
+    current = {
+        **old,
+        "preflight_fingerprint": "new-preflight",
+        "mask_sha256": "new-mask",
+        "transform_sha256": "new-transform",
+        "batch_size": 128,
+    }
+
+    assert load_feature_reuse_candidate(path, current) is not None
+    assert (
+        load_feature_reuse_candidate(
+            path,
+            {**current, "source_sha256": "source-b"},
+        )
+        is None
+    )
+    assert (
+        load_feature_reuse_candidate(
+            path,
+            {**current, "model_fingerprint": "model-b"},
+        )
+        is None
+    )
 
 
 @pytest.mark.parametrize("contents", [b"", b"PK\x03\x04truncated"])

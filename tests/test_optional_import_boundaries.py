@@ -13,6 +13,8 @@ import pytest
         ("histopia.registration._cli", ["--help"]),
         ("histopia.semantic._cli", ["--help"]),
         ("histopia.stain._cli", ["--help"]),
+        ("histopia.cells._cli", ["--help"]),
+        ("histopia.protein._cli", ["--help"]),
         ("histopia.visualization._cli", ["--help"]),
         ("histopia.qupath._cli", ["--help"]),
     ],
@@ -61,14 +63,22 @@ def test_public_config_loaders_do_not_import_optional_dependencies() -> None:
         from histopia.registration import load_registration_config
         from histopia.semantic import load_semantic_config
         from histopia.stain import load_stain_config
+        from histopia.cells import load_cell_config
+        from histopia.protein import load_protein_config
+        from histopia.annotation import AnnotationStore, default_pancreas_ontology
 
         assert callable(load_registration_config)
         assert callable(load_semantic_config)
         assert callable(load_stain_config)
+        assert callable(load_cell_config)
+        assert callable(load_protein_config)
+        assert AnnotationStore
+        assert default_pancreas_ontology().classes
         assert "numpy" not in sys.modules
         assert "cv2" not in sys.modules
         assert "torch" not in sys.modules
         assert "pyvips" not in sys.modules
+        assert "cellpose" not in sys.modules
         """
     )
 

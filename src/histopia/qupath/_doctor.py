@@ -16,11 +16,12 @@ from packaging.version import InvalidVersion, Version
 
 from histopia import __version__
 
-QUPATH_WORKFLOW_API_VERSION: Final[int] = 2
+QUPATH_WORKFLOW_API_VERSION: Final[int] = 3
 QUPATH_WORKFLOWS: Final[tuple[str, ...]] = (
     "registration",
     "semantic",
     "topology",
+    "cells",
     "interchange",
     "full",
 )
@@ -35,11 +36,13 @@ _MODULE_REQUIREMENTS: Final[tuple[tuple[str, str], ...]] = (
     ("tifffile", "tifffile>=2024.8"),
     ("sklearn", "scikit-learn>=1.5,<2"),
     ("skimage", "scikit-image>=0.24,<1"),
+    ("networkx", "networkx>=3.2,<4"),
     ("threadpoolctl", "threadpoolctl>=3.1,<4"),
     ("torch", "torch>=2.8,<3"),
     ("torchvision", "torchvision>=0.23,<1"),
     ("timm", "timm>=1.0.19,<2"),
     ("huggingface_hub", "huggingface-hub>=0.34,<1"),
+    ("cellpose", "cellpose>=4.2.1,<4.3"),
 )
 _WORKFLOW_MODULES: Final[dict[str, frozenset[str]]] = {
     "registration": frozenset(("numpy", "cv2", "scipy", "PIL", "pyvips", "tifffile")),
@@ -58,7 +61,19 @@ _WORKFLOW_MODULES: Final[dict[str, frozenset[str]]] = {
             "huggingface_hub",
         )
     ),
-    "topology": frozenset(("numpy", "scipy", "PIL", "sklearn", "skimage")),
+    "topology": frozenset(("numpy", "scipy", "PIL", "sklearn", "skimage", "networkx")),
+    "cells": frozenset(
+        (
+            "numpy",
+            "scipy",
+            "PIL",
+            "pyvips",
+            "tifffile",
+            "skimage",
+            "torch",
+            "cellpose",
+        )
+    ),
     "interchange": frozenset(("numpy",)),
 }
 _WORKFLOW_MODULES["full"] = frozenset().union(*_WORKFLOW_MODULES.values())
@@ -66,8 +81,9 @@ _INSTALL_PROFILES: Final[dict[str, str]] = {
     "registration": "histopia[registration,wsi]",
     "semantic": "histopia[uni2h]",
     "topology": "histopia[topology]",
+    "cells": "histopia[cells]",
     "interchange": "histopia[qupath]",
-    "full": "histopia[registration,wsi,uni2h,topology,qupath]",
+    "full": "histopia[registration,wsi,uni2h,topology,cells,qupath]",
 }
 
 
@@ -150,7 +166,7 @@ def inspect_qupath_environment(
         }
 
     compute = None
-    if normalized_workflow in {"semantic", "full"}:
+    if normalized_workflow in {"semantic", "cells", "full"}:
         if compute_inspector is None:
             from histopia.compute import inspect_compute
 
@@ -172,6 +188,7 @@ def inspect_qupath_environment(
             "registration_api_version": 1,
             "semantic_atlas_api_version": 1,
             "topology_api_version": 1,
+            "cell_boundary_api_version": 1,
             "qupath_interchange_schema_version": 4,
             "native_vips_thread_control_version": 1,
         },

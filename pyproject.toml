@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.32,<2"]
 build-backend = "hatchling.build"
 
 [project]
@@ -48,6 +48,7 @@ wsi = [
     "tifffile>=2024.8",
 ]
 semantic = [
+    "h5py>=3.11,<4",
     "numpy>=1.26,<3",
     "pillow>=10,<13",
     "scikit-learn>=1.5,<2",
@@ -55,6 +56,7 @@ semantic = [
     "threadpoolctl>=3.1,<4",
 ]
 topology = [
+    "networkx>=3.2,<4",
     "numpy>=1.26,<3",
     "pillow>=10,<13",
     "scikit-image>=0.24,<1",
@@ -70,6 +72,29 @@ stain = [
     "scipy>=1.11,<2",
     "threadpoolctl>=3.1,<4",
     "tifffile>=2024.8",
+]
+cells = [
+    "cellpose>=4.2.1,<4.3",
+    "numpy>=1.26,<3",
+    "pillow>=10,<13",
+    "pyvips>=2.2,<3",
+    "scipy>=1.11,<2",
+    "scikit-image>=0.24,<1",
+    "tifffile>=2024.8",
+    "torch>=2.8,<3",
+]
+protein = [
+    "numpy>=1.26,<3",
+    "scikit-learn>=1.5,<2",
+    "scipy>=1.11,<2",
+]
+study = [
+    "matplotlib>=3.8,<4",
+    "numpy>=1.26,<3",
+    "pillow>=10,<13",
+    "pyarrow>=15",
+    "scikit-learn>=1.5,<2",
+    "scipy>=1.11,<2",
 ]
 qupath = [
     "numpy>=1.26,<3",
@@ -92,10 +117,10 @@ browser-test = [
     "pytest>=8",
 ]
 dev = [
-    "build>=1.2",
+    "build>=1.5,<2",
     "pytest>=8",
     "ruff>=0.16,<0.17",
-    "twine>=5",
+    "twine>=7,<8",
 ]
 
 [project.scripts]
@@ -103,6 +128,8 @@ histopia-register = "histopia.registration._cli:main"
 histopia-semantic = "histopia.semantic._cli:main"
 histopia-topology = "histopia.topology._cli:main"
 histopia-stain = "histopia.stain._cli:main"
+histopia-cells = "histopia.cells._cli:main"
+histopia-protein = "histopia.protein._cli:main"
 histopia-visualize = "histopia.visualization._cli:main"
 histopia-qupath = "histopia.qupath._cli:main"
 
@@ -126,6 +153,8 @@ markers = [
     "uni2h: local tests that require a gated UNI2-h checkpoint and GPU dependencies",
     "stain: local tests that require optional WSI stain dependencies",
     "topology: local tests that require optional topology dependencies",
+    "cells: local tests that require optional Cellpose and WSI dependencies",
+    "protein: local tests that require optional protein-model dependencies",
 ]
 
 [tool.ruff]

@@ -3,6 +3,15 @@
 from importlib import import_module
 
 _PUBLIC_IMPORTS = {
+    "AdaptiveBackgroundResult": (
+        "histopia.stain._adaptive",
+        "AdaptiveBackgroundResult",
+    ),
+    "AdaptiveStainMap": ("histopia.stain._artifacts", "AdaptiveStainMap"),
+    "CounterstainAdaptiveResult": (
+        "histopia.stain._adaptive",
+        "CounterstainAdaptiveResult",
+    ),
     "SlideAssay": ("histopia.stain._assays", "SlideAssay"),
     "StainApproval": ("histopia.stain._approval", "StainApproval"),
     "StainFamilyApproval": (
@@ -24,6 +33,18 @@ _PUBLIC_IMPORTS = {
     "benchmark_stain_methods": (
         "histopia.stain._pipeline",
         "benchmark_stain_methods",
+    ),
+    "derive_adaptive_stain_run": (
+        "histopia.stain._upgrade",
+        "derive_adaptive_stain_run",
+    ),
+    "infer_adaptive_background": (
+        "histopia.stain._adaptive",
+        "infer_adaptive_background",
+    ),
+    "infer_counterstain_conditioned_background": (
+        "histopia.stain._adaptive",
+        "infer_counterstain_conditioned_background",
     ),
     "load_stain_config": ("histopia.stain._config", "load_stain_config"),
     "preflight_stain_run": (

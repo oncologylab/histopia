@@ -193,7 +193,14 @@ class NonRigidRefinementConfig:
 
 @dataclass(slots=True)
 class RegistrationConfig:
-    """Configuration for one rigid serial-section registration run."""
+    """Configuration for global and optional dense serial-section registration.
+
+    The historical ``rigid_method`` setting selects a global initializer; its
+    feature and mask-moment modes can fit scale. Affine mask refinement is
+    enabled by default. ``non_rigid`` and ``non_rigid_refinement.enabled``
+    control dense refinement; turning both off still permits similarity and
+    affine transformations.
+    """
 
     input_dir: Path
     output_dir: Path

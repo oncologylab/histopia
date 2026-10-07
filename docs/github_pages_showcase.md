@@ -44,6 +44,29 @@ semantic or stain results, and writes:
 - `showcase.json`, which records semantic and stain fingerprints plus the
   SHA-256 digest of every inventoried file.
 
+An already built cellular protein atlas can be included without introducing a
+runtime service:
+
+```bash
+histopia-visualize showcase \
+    /path/to/generated/viewer/histopia \
+    /path/to/new/showcase \
+    --mouse sample-a \
+    --mouse sample-b \
+    --protein-atlas /path/to/generated/cellular-protein-atlas \
+    --protein-atlas-max-bytes 681574400 \
+    --max-bytes 943718400
+```
+
+The atlas cohort set must exactly match the showcase mouse set. Its manifest
+must be path-free, its directory must contain no symbolic links, and it must
+fit both the independent atlas limit and the overall showcase limit. The
+result is available under `protein-atlas/` and remains functional on GitHub
+Pages because Three.js, worker code, geometry, and protein values are all
+relative static assets. See
+[cellular_protein_atlas.md](cellular_protein_atlas.md) for the scientific and
+browser contracts.
+
 The current public artifact contains 16 review-stage registration stacks
 spanning 401 serial sections. Nine carry current fingerprint-bound
 registration approvals; seven remain explicit review-gated demonstrations.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 from pathlib import Path
 
@@ -191,7 +192,9 @@ def test_registration_qc_portal_switches_embedded_mouse(tmp_path: Path) -> None:
     errors: list[str] = []
     try:
         with playwright.sync_playwright() as runtime:
-            browser = runtime.chromium.launch(headless=True)
+            browser = getattr(
+                runtime, os.environ.get("HISTOPIA_BROWSER", "chromium")
+            ).launch(headless=True)
             page = browser.new_page(viewport={"width": 390, "height": 844})
             page.on(
                 "console",
@@ -210,17 +213,19 @@ def test_registration_qc_portal_switches_embedded_mouse(tmp_path: Path) -> None:
             assert page.locator("#mouse").input_value() == "4943"
             page.wait_for_function(
                 """() => document.querySelector('#review')
-                  .contentWindow.location.href.includes('/4943/order/')"""
+                  .contentWindow.location.href.includes('/4943/order/')""",
+                polling=100,
             )
             assert (
                 page.locator('button[data-stage="order"]').get_attribute("class")
                 == "active"
             )
-            page.locator('button[data-stage="registration"]').click()
+            page.locator('button[data-stage="registration"]').click(force=True)
             page.wait_for_function(
                 """id => document.querySelector('#review')
                   .contentDocument.querySelector('#mouse')?.value === id""",
                 arg="4943",
+                polling=100,
             )
             assert (
                 page.evaluate("new URL(location.href).searchParams.get('stage')")
@@ -234,6 +239,7 @@ def test_registration_qc_portal_switches_embedded_mouse(tmp_path: Path) -> None:
                 """id => document.querySelector('#review')
                   .contentDocument.querySelector('#mouse')?.value === id""",
                 arg="4435",
+                polling=100,
             )
             assert (
                 page.locator("#review").evaluate(

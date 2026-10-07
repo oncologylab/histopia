@@ -8,7 +8,7 @@ import tempfile
 from collections import deque
 from collections.abc import Callable, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol
 
@@ -149,6 +149,35 @@ class PatchFeatures:
             )
 
 
+def subset_patch_features(
+    artifact: PatchFeatures,
+    selected: np.ndarray,
+) -> PatchFeatures:
+    """Return a content-sealed subset while preserving source provenance."""
+
+    mask = np.asarray(selected, dtype=bool)
+    if mask.shape != (len(artifact.features),):
+        raise ValueError("selected must contain one boolean per patch")
+    if not np.any(mask):
+        raise ValueError("patch feature subset must not be empty")
+    candidate = PatchFeatures(
+        slide_id=artifact.slide_id,
+        features=artifact.features[mask],
+        grid_rc=artifact.grid_rc[mask],
+        native_xy=artifact.native_xy[mask],
+        reference_um_xy=artifact.reference_um_xy[mask],
+        tissue_fraction=artifact.tissue_fraction[mask],
+        grid_shape=artifact.grid_shape,
+        patch_size_px=artifact.patch_size_px,
+        analysis_mpp=artifact.analysis_mpp,
+        provenance=artifact.provenance,
+    )
+    return replace(
+        candidate,
+        content_fingerprint=_content_fingerprint(candidate),
+    )
+
+
 def _canonical_json(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
@@ -240,8 +269,14 @@ def extract_patch_features(
     batch_size: int = 64,
     patch_workers: int = 1,
     provenance: dict[str, object] | None = None,
+    reusable_features: PatchFeatures | None = None,
 ) -> PatchFeatures:
-    """Read and encode tissue patches on a calibrated, non-overlapping grid."""
+    """Read and encode tissue patches on a calibrated, non-overlapping grid.
+
+    A sealed feature artifact from the same native slide grid may be supplied to
+    avoid encoding unchanged patches again. Tissue coverage and registered
+    coordinates are always recalculated from the current mask and transform.
+    """
 
     if patch_workers <= 0:
         raise ValueError("patch_workers must be positive")
@@ -276,6 +311,23 @@ def extract_patch_features(
     if not accepted:
         raise ValueError(f"no tissue patches passed coverage for {slide_id}")
 
+    reusable_by_grid = _reusable_features_by_grid(
+        reusable_features,
+        slide_id=slide_id,
+        geometry=geometry,
+        grid_shape=(rows, cols),
+        native_patch_shape=(native_height, native_width),
+        patch_size_px=patch_size_px,
+        analysis_mpp=analysis_mpp,
+    )
+    feature_rows: list[np.ndarray | None] = []
+    missing: list[tuple[int, tuple[int, int, int, int, float]]] = []
+    for index, row in enumerate(accepted):
+        reused = reusable_by_grid.get((row[0], row[1]))
+        feature_rows.append(reused)
+        if reused is None:
+            missing.append((index, row))
+
     def request(row: tuple[int, int, int, int, float]) -> PatchRequest:
         _, _, left, top, _ = row
         return left, top, native_width, native_height, patch_size_px
@@ -301,37 +353,65 @@ def extract_patch_features(
         return tuple(patches)
 
     batches = tuple(
-        accepted[start : start + batch_size]
-        for start in range(0, len(accepted), batch_size)
+        missing[start : start + batch_size]
+        for start in range(0, len(missing), batch_size)
     )
-    prefetch_depth = patch_workers if callable(read_many) else 1
-    prefetch_executor = ThreadPoolExecutor(max_workers=prefetch_depth)
-    feature_batches: list[np.ndarray] = []
-    pending: deque[Future[tuple[np.ndarray, ...]]] = deque(
-        prefetch_executor.submit(read_batch, batch)
-        for batch in batches[:prefetch_depth]
+    if batches:
+        prefetch_depth = patch_workers if callable(read_many) else 1
+        prefetch_executor = ThreadPoolExecutor(max_workers=prefetch_depth)
+        pending: deque[Future[tuple[np.ndarray, ...]]] = deque(
+            prefetch_executor.submit(
+                read_batch,
+                tuple(row for _, row in batch),
+            )
+            for batch in batches[:prefetch_depth]
+        )
+        try:
+            for batch_index, batch in enumerate(batches):
+                patches = pending.popleft().result()
+                next_index = batch_index + prefetch_depth
+                if next_index < len(batches):
+                    pending.append(
+                        prefetch_executor.submit(
+                            read_batch,
+                            tuple(row for _, row in batches[next_index]),
+                        )
+                    )
+                images = np.stack(patches)
+                if images.shape[1:] != (patch_size_px, patch_size_px, 3):
+                    raise ValueError(
+                        "patch reader must return output_px square RGB arrays"
+                    )
+                encoded = np.asarray(encoder.encode(images), dtype=np.float32)
+                if encoded.ndim != 2 or encoded.shape[0] != len(images):
+                    raise ValueError("encoder must return one feature vector per image")
+                if reusable_by_grid:
+                    reusable_width = next(iter(reusable_by_grid.values())).shape[0]
+                    if encoded.shape[1] != reusable_width:
+                        raise ValueError(
+                            "reusable feature width does not match encoder output"
+                        )
+                for (output_index, _), encoded_row in zip(
+                    batch,
+                    encoded,
+                    strict=True,
+                ):
+                    feature_rows[output_index] = encoded_row
+        finally:
+            for future in pending:
+                future.cancel()
+            prefetch_executor.shutdown(cancel_futures=True)
+            if patch_executor is not None:
+                patch_executor.shutdown(cancel_futures=True)
+    elif patch_executor is not None:
+        patch_executor.shutdown(cancel_futures=True)
+
+    if any(row is None for row in feature_rows):
+        raise RuntimeError("feature extraction did not fill every accepted patch")
+    features = np.stack([row for row in feature_rows if row is not None]).astype(
+        np.float32,
+        copy=False,
     )
-    try:
-        for index, _ in enumerate(batches):
-            patches = pending.popleft().result()
-            next_index = index + prefetch_depth
-            if next_index < len(batches):
-                pending.append(
-                    prefetch_executor.submit(read_batch, batches[next_index])
-                )
-            images = np.stack(patches)
-            if images.shape[1:] != (patch_size_px, patch_size_px, 3):
-                raise ValueError("patch reader must return output_px square RGB arrays")
-            encoded = np.asarray(encoder.encode(images), dtype=np.float32)
-            if encoded.ndim != 2 or encoded.shape[0] != len(images):
-                raise ValueError("encoder must return one feature vector per image")
-            feature_batches.append(encoded)
-    finally:
-        for future in pending:
-            future.cancel()
-        prefetch_executor.shutdown(cancel_futures=True)
-        if patch_executor is not None:
-            patch_executor.shutdown(cancel_futures=True)
 
     grid_rc = np.asarray([(row, col) for row, col, *_ in accepted], dtype=np.int32)
     native_xy = np.asarray(
@@ -350,7 +430,7 @@ def extract_patch_features(
     )
     return PatchFeatures(
         slide_id=slide_id,
-        features=np.concatenate(feature_batches),
+        features=features,
         grid_rc=grid_rc,
         native_xy=native_xy,
         reference_um_xy=reference_xy,
@@ -360,6 +440,63 @@ def extract_patch_features(
         analysis_mpp=analysis_mpp,
         provenance=provenance,
     )
+
+
+def _reusable_features_by_grid(
+    artifact: PatchFeatures | None,
+    *,
+    slide_id: str,
+    geometry: SlideGeometry,
+    grid_shape: tuple[int, int],
+    native_patch_shape: tuple[int, int],
+    patch_size_px: int,
+    analysis_mpp: float,
+) -> dict[tuple[int, int], np.ndarray]:
+    """Validate a reusable native-grid artifact and index its feature rows."""
+
+    if artifact is None:
+        return {}
+    if artifact.slide_id != slide_id:
+        raise ValueError("reusable features belong to a different slide")
+    if artifact.grid_shape != grid_shape:
+        raise ValueError("reusable features use a different native grid shape")
+    if artifact.patch_size_px != patch_size_px:
+        raise ValueError("reusable features use a different patch size")
+    if artifact.analysis_mpp != analysis_mpp:
+        raise ValueError("reusable features use a different analysis MPP")
+    if artifact.features.shape[1] <= 0:
+        raise ValueError("reusable features must have a positive feature width")
+
+    grid = np.asarray(artifact.grid_rc, dtype=np.int64)
+    if (
+        np.any(grid < 0)
+        or np.any(grid[:, 0] >= grid_shape[0])
+        or np.any(grid[:, 1] >= grid_shape[1])
+    ):
+        raise ValueError("reusable features contain out-of-bounds grid cells")
+    keys = [tuple(int(value) for value in row) for row in grid]
+    if len(set(keys)) != len(keys):
+        raise ValueError("reusable features contain duplicate grid cells")
+
+    native_height, native_width = native_patch_shape
+    x0, y0, _, _ = geometry.content_bbox_xywh
+    expected_native_xy = np.column_stack(
+        [
+            x0 + grid[:, 1] * native_width + native_width / 2,
+            y0 + grid[:, 0] * native_height + native_height / 2,
+        ]
+    )
+    if not np.allclose(
+        artifact.native_xy,
+        expected_native_xy,
+        rtol=0.0,
+        atol=1e-6,
+    ):
+        raise ValueError("reusable features use different native patch centers")
+    return {
+        key: np.asarray(feature, dtype=np.float32)
+        for key, feature in zip(keys, artifact.features, strict=True)
+    }
 
 
 def _mask_coverage(
