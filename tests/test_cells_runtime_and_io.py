@@ -594,6 +594,7 @@ def test_cellpose_runtime_refuses_implicit_model_download(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _fake_cellpose_modules(monkeypatch, tmp_path)
+    monkeypatch.setattr("histopia.cells._cellpose.version", lambda name: "4.2.1")
     monkeypatch.setattr(
         "histopia.cells._cellpose.resolve_compute_device",
         lambda *args, **kwargs: ComputeDevice("cpu", "cpu", "cpu"),

@@ -207,9 +207,14 @@ def test_internal_navigation_does_not_confuse_organs_or_trap_user(tmp_path, pref
                 )
                 assert frame.locator("#status").inner_text() == "Provisional · 2D"
                 frame.locator("#section").select_option(f"{organ}-{mouse}-scan-1")
+                page.wait_for_url(
+                    lambda url, organ=organ, mouse=mouse: (
+                        f"section={organ}-{mouse}-scan-1" in url
+                    )
+                )
                 page.reload(wait_until="networkidle")
-                assert (
-                    frame.locator("#section").input_value() == f"{organ}-{mouse}-scan-1"
+                playwright.expect(frame.locator("#section")).to_have_value(
+                    f"{organ}-{mouse}-scan-1"
                 )
             page.locator('[data-tab="cells"]').click()
             playwright.expect(frame.locator("#pancreas")).to_be_visible()
