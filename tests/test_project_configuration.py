@@ -13,7 +13,7 @@ except ImportError:
 def test_ci_installs_dependencies_exercised_by_semantic_tests() -> None:
     workflow = Path(".github/workflows/tests.yml").read_text()
 
-    assert '".[dev,registration,semantic,topology,stain,wsi]"' in workflow
+    assert '".[dev,registration,semantic,topology,stain,wsi,protein,study]"' in workflow
     assert '".[browser-test,registration,semantic,topology,stain,wsi]"' in workflow
     assert '".[dev,registration,semantic,topology,stain,wsi,qupath]"' in workflow
     assert "HISTOPIA_VERIFY_REPRO_CONSTRAINTS" in workflow
