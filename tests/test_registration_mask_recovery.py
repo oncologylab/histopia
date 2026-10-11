@@ -33,3 +33,26 @@ def test_recovery_excludes_isolated_black_annotation():
     assert mask[100, 150]
     assert not mask[35, 35]
     assert evidence["excluded_pixels"] > 0
+
+
+def test_annotation_rim_exclusion_preserves_coloured_and_distant_tissue(monkeypatch):
+    pytest.importorskip("cv2")
+    from histopia.registration import _mask_recovery as module
+
+    rgb = np.full((40, 50, 3), 220, dtype="uint8")
+    rgb[19, 21] = [230, 200, 220]
+    base = np.ones(rgb.shape[:2], bool)
+    excluded = np.zeros(base.shape, bool)
+    excluded[20, 20] = True
+    monkeypatch.setattr(
+        module,
+        "isolated_annotation_exclusion",
+        lambda *args: (excluded.copy(), excluded.copy()),
+    )
+    default, _ = recover_supported_mask(rgb, base, {})
+    revised, evidence = recover_supported_mask(
+        rgb, base, {}, exclude_annotation_rims=True
+    )
+    assert default[20, 21] and not revised[20, 21]
+    assert revised[19, 21] and revised[30, 30]
+    assert evidence["annotation_rim_pixels"] > 0

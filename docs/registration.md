@@ -3,6 +3,30 @@
 Histopia registration is being built around robust brightfield/IHC tissue
 masking rather than using full-image masks as the default behavior.
 
+## Experimental candidate verification
+
+`select_verified_registration` compares image-derived alignment seeds in one
+coordinate frame. `VerifiedSelectionConfig` enables modality-correct H&E/IHC
+projections, generic gradient evidence for unresolved stains, spatially separated
+feature fitting and verification, and conservative predecessor retention.
+Inputs include RGB images, tissue masks, source-to-target alignment seeds, and
+analysis-pixel-to-physical coordinate matrices. Evaluation landmarks are not an
+input. Results retain each candidate's support, physical scale changes, and
+rejection reason; unsupported cases preserve their attempted candidates.
+
+Verification uses image features and is not independent anatomical validation.
+Imported seeds may already have used those features. Physical scale constraints
+require verified pixel calibration. This experimental interface does not change
+production defaults or establish improved accuracy without a separate benchmark.
+The optional `abstain_on_incoherent_features=True` setting treats feature evidence
+as inconclusive when no candidate has distributed support. It retains an
+acceptable predecessor without relaxing physical or tissue-support guardrails.
+
+The optional dense matcher can use the same modality handling through
+`generic_unknown=True`. Annotation-fringe exclusion is separately opt-in through
+`recover_supported_mask(..., exclude_annotation_rims=True)`; it only extends
+exclusions around isolated marks on glass and is not a trained tissue detector.
+
 ## Installation
 
 Install the full registration development stack:

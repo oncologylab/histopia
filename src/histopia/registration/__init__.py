@@ -3,6 +3,14 @@
 from importlib import import_module
 
 _PUBLIC_IMPORTS = {
+    "VerifiedSelectionConfig": (
+        "histopia.registration._verified_selection",
+        "VerifiedSelectionConfig",
+    ),
+    "select_verified_registration": (
+        "histopia.registration._verified_selection",
+        "select_verified_registration",
+    ),
     "GuardedRegistrationConfig": (
         "histopia.registration._guarded",
         "GuardedRegistrationConfig",

@@ -78,6 +78,7 @@ def dense_candidates(
     config,
     source_modality="unknown",
     target_modality="unknown",
+    generic_unknown=False,
 ):
     """Frozen matcher proposals across structural channels and four orientations.
 
@@ -92,8 +93,14 @@ def dense_candidates(
         raise ValueError("unsupported dense matcher")
     torch.manual_seed(config.seed)
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    channels_a = structure_channels(source.image, source.mask, source_modality)
-    channels_b = structure_channels(target.image, target.mask, target_modality)
+    if generic_unknown:
+        from ._verified_selection import modality_channels
+
+        channels_a = modality_channels(source.image, source.mask, source_modality)
+        channels_b = modality_channels(target.image, target.mask, target_modality)
+    else:
+        channels_a = structure_channels(source.image, source.mask, source_modality)
+        channels_b = structure_channels(target.image, target.mask, target_modality)
     if backend == "romav2":
         channels_a["rgb"], channels_b["rgb"] = source.image, target.image
     candidates, evidence = [], []

@@ -7,7 +7,9 @@ import numpy as np
 from ._adaptive import isolated_annotation_exclusion
 
 
-def recover_supported_mask(image, base_mask, proposals):
+def recover_supported_mask(
+    image, base_mask, proposals, *, exclude_annotation_rims=False
+):
     """Recover proposal pixels with chromatic or textured native-image evidence.
 
     This is engineered image processing, not a trained object detector. Supplied
@@ -50,11 +52,21 @@ def recover_supported_mask(image, base_mask, proposals):
     )
     addition = np.isin(labels, indices[indices != 0])
     proposal, exclusion = isolated_annotation_exclusion(rgb, base | addition)
+    rim = np.zeros(base.shape, bool)
+    if exclude_annotation_rims:
+        # Only the light, neutral fringe of an already isolated glass annotation
+        # is eligible. Coloured pale tissue and distant neutral tissue remain.
+        near = cv2.dilate(exclusion.astype("uint8"), np.ones((7, 7), "uint8")) > 0
+        rim = (
+            near & ~exclusion & (gray > 185) & (np.ptp(rgb.astype(float), axis=2) < 12)
+        )
+        exclusion |= rim
     result = (base | addition) & ~exclusion
     return result, {
         "original_pixels": int(base.sum()),
         "added_pixels": int(addition.sum()),
         "excluded_pixels": int(((base | addition) & exclusion).sum()),
+        "annotation_rim_pixels": int(((base | addition) & rim).sum()),
         "annotation_proposal_pixels": int(proposal.sum()),
         "recovered_pixels": int(result.sum()),
         "proposal_names": used,
