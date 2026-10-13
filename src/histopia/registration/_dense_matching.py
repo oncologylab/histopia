@@ -79,11 +79,16 @@ def dense_candidates(
     source_modality="unknown",
     target_modality="unknown",
     generic_unknown=False,
+    correspondence_collector=None,
+    fit_correspondences=True,
 ):
     """Frozen matcher proposals across structural channels and four orientations.
 
     The caller owns model loading, provenance, and the shared GPU lock. All
     candidates are checked later using identical physical/support constraints.
+    An optional collector receives tissue-filtered correspondences in the two
+    original working frames. Disable fitting when the caller will partition
+    those correspondences before estimation; historical behavior is unchanged.
     """
     import cv2
     import torch
@@ -150,12 +155,28 @@ def dense_candidates(
             ax, bx, confidence = balanced_correspondences(
                 ax, bx, confidence, source.mask, target.mask
             )
-            c = candidate_from_points(
-                ax,
-                bx,
-                stage=f"{backend}_{name}_{turns * 90}",
-                target_shape=target.mask.shape,
-                config=config,
+            if correspondence_collector is not None:
+                correspondence_collector(
+                    {
+                        "backend": backend,
+                        "channel": name,
+                        "rotation": turns * 90,
+                        "coordinate_units": "working_pixel_centres",
+                        "source_xy": ax.copy(),
+                        "target_xy": bx.copy(),
+                        "confidence": confidence.copy(),
+                    }
+                )
+            c = (
+                candidate_from_points(
+                    ax,
+                    bx,
+                    stage=f"{backend}_{name}_{turns * 90}",
+                    target_shape=target.mask.shape,
+                    config=config,
+                )
+                if fit_correspondences
+                else None
             )
             evidence.append(
                 {

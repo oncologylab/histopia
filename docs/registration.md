@@ -22,6 +22,28 @@ The optional `abstain_on_incoherent_features=True` setting treats feature eviden
 as inconclusive when no candidate has distributed support. It retains an
 acceptable predecessor without relaxing physical or tissue-support guardrails.
 
+Set `partition_policy="source_spatial"` to separate fitting and checking by
+source-image cells, independent of target orientation. Repeated source or target
+features are counted once across channels. The default `"legacy_both"` preserves
+the earlier two-image parity rule for reproducibility. Pass `predecessor` as the
+unique seed name to retain, or `None` to disable retention. Results record that
+seed's transform fingerprint; retaining it preserves the input matrix exactly.
+
+`select_consensus_registration` additionally requires support from RootSIFT and
+a caller-supplied frozen RoMaV2 model, plus agreement with a separately fitted
+reverse registration, before replacing an acceptable predecessor. Each direction
+uses separate fitting and checking cells, but directions can share image features.
+Unknown stains use generic structural channels. The caller owns model loading,
+GPU scheduling, and optional correspondence artifacts; importing Histopia does
+not load either model. These checks do not establish anatomical accuracy.
+
+`propose_stack_references(image_ids, edges, reference=...)` reports every supported
+graph component and proposes a reference minimizing total confidence-weighted
+path cost. Ties use supported degree, then identifier. It reports an isolated
+explicit reference without replacing it or connecting separate components.
+Edges must belong to the declared reconstruction; confidence describes image
+support, not anatomical truth. Section order and physical spacing remain inputs.
+
 The optional dense matcher can use the same modality handling through
 `generic_unknown=True`. Annotation-fringe exclusion is separately opt-in through
 `recover_supported_mask(..., exclude_annotation_rims=True)`; it only extends

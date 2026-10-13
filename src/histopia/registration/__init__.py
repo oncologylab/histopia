@@ -3,6 +3,23 @@
 from importlib import import_module
 
 _PUBLIC_IMPORTS = {
+    "select_consensus_registration": (
+        "histopia.registration._agreement",
+        "select_consensus_registration",
+    ),
+    "StackEdge": ("histopia.registration._stack_consistency", "StackEdge"),
+    "StackReferenceComponent": (
+        "histopia.registration._stack_consistency",
+        "StackReferenceComponent",
+    ),
+    "StackReferenceSelection": (
+        "histopia.registration._stack_consistency",
+        "StackReferenceSelection",
+    ),
+    "propose_stack_references": (
+        "histopia.registration._stack_consistency",
+        "propose_stack_references",
+    ),
     "VerifiedSelectionConfig": (
         "histopia.registration._verified_selection",
         "VerifiedSelectionConfig",

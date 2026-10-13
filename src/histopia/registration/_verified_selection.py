@@ -7,6 +7,7 @@ Unknown stains use a generic gradient channel, never assumed DAB chemistry.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 
 import numpy as np
@@ -38,8 +39,11 @@ class VerifiedSelectionConfig:
     tolerance_px: float = 6.0
     minimum_gain: float = 0.01
     seed: int = 20261010
+    partition_policy: str = "legacy_both"
 
     def __post_init__(self):
+        if self.partition_policy not in {"legacy_both", "source_spatial"}:
+            raise ValueError("unknown feature partition policy")
         if self.minimum_matches < 3 or not 1 <= self.minimum_cells <= 16:
             raise ValueError("invalid verification support")
         if not np.isfinite([self.tolerance_px, self.minimum_gain]).all():
@@ -77,8 +81,93 @@ def spatial_partition(points, shape_hw):
     xy = np.asarray(points, float)
     if xy.ndim != 2 or xy.shape[1] != 2 or not np.isfinite(xy).all():
         raise ValueError("finite XY features required")
+    shape = np.asarray(shape_hw, float)
+    if shape.shape != (2,) or not np.isfinite(shape).all() or np.any(shape <= 0):
+        raise ValueError("positive finite image height and width required")
     cells = np.clip(np.floor(xy / np.array(shape_hw[::-1]) * 4).astype(int), 0, 3)
     return (cells[:, 0] + cells[:, 1]) % 2, cells
+
+
+def _unique_correspondences(source_xy, target_xy):
+    """Return deterministic one-to-one feature indices in one-working-pixel bins.
+
+    A source or target location can contribute only once, including detections
+    repeated at another scale or in another channel. Bins use nearest pixel
+    centres; no evaluation coordinates or channel-dependent scores enter here.
+    """
+    a, b = np.asarray(source_xy, float), np.asarray(target_xy, float)
+    if (
+        a.shape != b.shape
+        or a.ndim != 2
+        or a.shape[1] != 2
+        or not np.isfinite(a).all()
+        or not np.isfinite(b).all()
+    ):
+        raise ValueError("finite paired XY arrays required")
+    locations = np.c_[a, b]
+    bins = np.floor(locations + 0.5).astype(np.int64)
+    order = np.lexsort(locations[:, ::-1].T)
+    source_seen, target_seen, keep = set(), set(), []
+    for index in order:
+        source_key, target_key = tuple(bins[index, :2]), tuple(bins[index, 2:])
+        if source_key in source_seen or target_key in target_seen:
+            continue
+        source_seen.add(source_key)
+        target_seen.add(target_key)
+        keep.append(index)
+    return np.asarray(keep, dtype=int)
+
+
+def partition_correspondences(
+    source_xy, target_xy, source_shape, target_shape, *, policy="source_spatial"
+):
+    """Return fitting/checking XY pairs using a fixed image-spatial partition.
+
+    ``source_spatial`` keeps every unique pair regardless of target checkerboard
+    parity, which can change under valid quarter-turn rotations or crop changes.
+    Source cells remain disjoint between fitting and checking. Distribution in
+    *both* images must subsequently be checked with ``correspondence_evidence``.
+    ``legacy_both`` reproduces the original intersection of the two parities.
+    """
+    a, b = np.asarray(source_xy, float), np.asarray(target_xy, float)
+    keep = _unique_correspondences(a, b)
+    if policy == "source_spatial":
+        a, b = a[keep], b[keep]
+    elif policy != "legacy_both":
+        raise ValueError("unknown feature partition policy")
+    pa, _ = spatial_partition(a, source_shape)
+    pb, _ = spatial_partition(b, target_shape)
+    fitting, checking = pa == 0, pa == 1
+    if policy == "legacy_both":
+        fitting &= pb == 0
+        checking &= pb == 1
+    return a[fitting], b[fitting], a[checking], b[checking]
+
+
+def transform_fingerprint(matrix):
+    """SHA256 of an affine matrix in C-order, little-endian float64 form."""
+    h = np.asarray(matrix, dtype="<f8", order="C")
+    if (
+        h.shape != (3, 3)
+        or not np.isfinite(h).all()
+        or not np.allclose(h[2], [0, 0, 1])
+        or abs(np.linalg.det(h[:2, :2])) < 1e-12
+    ):
+        raise ValueError("finite invertible affine mapping required")
+    return hashlib.sha256(h.tobytes(order="C")).hexdigest()
+
+
+def predecessor_binding(seeds, predecessor):
+    """Resolve a requested seed uniquely before any fitting; None disables retention."""
+    if predecessor is None:
+        return {"predecessor_id": None, "predecessor_transform_sha256": None}
+    matches = [seed for seed in seeds if seed.name == predecessor]
+    if len(matches) != 1:
+        raise ValueError("predecessor identifier must resolve to exactly one seed")
+    return {
+        "predecessor_id": predecessor,
+        "predecessor_transform_sha256": transform_fingerprint(matches[0].matrix),
+    }
 
 
 def correspondence_evidence(
@@ -104,14 +193,15 @@ def correspondence_evidence(
     supported = np.maximum(forward, reverse) <= tolerance_px
     _, ac = spatial_partition(a, source_shape)
     _, bc = spatial_partition(b, target_shape)
-    occupied = min(
-        len(np.unique(ac[supported], axis=0)), len(np.unique(bc[supported], axis=0))
-    )
+    source_cells = len(np.unique(ac[supported], axis=0))
+    target_cells = len(np.unique(bc[supported], axis=0))
     return {
         "verification_matches": len(a),
         "verification_supported": int(supported.sum()),
         "verification_fraction": float(supported.mean()) if len(a) else None,
-        "verification_cells": occupied,
+        "verification_cells": min(source_cells, target_cells),
+        "verification_source_cells": source_cells,
+        "verification_target_cells": target_cells,
         "verification_median_residual_px": float(
             np.median(np.maximum(forward, reverse))
         )
@@ -126,7 +216,7 @@ def _matches(source, target, sc, tc, config):
     detector = cv2.SIFT_create(
         nfeatures=6000, contrastThreshold=0.015, edgeThreshold=12
     )
-    fits, checks = [], []
+    matches = []
     for name in sc:
         features = []
         for frame, channels in [(source, sc), (target, tc)]:
@@ -142,11 +232,32 @@ def _matches(source, target, sc, tc, config):
             features.append((xy, desc))
         pairs = mutual_ratio_matches(features[0][1], features[1][1])
         a, b = features[0][0][pairs[:, 0]], features[1][0][pairs[:, 1]]
-        pa, _ = spatial_partition(a, source.mask.shape)
-        pb, _ = spatial_partition(b, target.mask.shape)
-        fitting, checking = (pa == 0) & (pb == 0), (pa == 1) & (pb == 1)
-        fits.append((name, a[fitting], b[fitting]))
-        checks.append((a[checking], b[checking]))
+        matches.append((name, a, b))
+    if config.partition_policy == "source_spatial":
+        # Deduplicate before separating channels so repeated detector responses
+        # cannot inflate checking support or appear in several fitting pools.
+        all_a = np.concatenate([a for _, a, _ in matches])
+        all_b = np.concatenate([b for _, _, b in matches])
+        keep = _unique_correspondences(all_a, all_b)
+        selected = np.zeros(len(all_a), dtype=bool)
+        selected[keep] = True
+        offset, unique = 0, []
+        for name, a, b in matches:
+            channel_keep = selected[offset : offset + len(a)]
+            unique.append((name, a[channel_keep], b[channel_keep]))
+            offset += len(a)
+        matches = unique
+    fits, checks = [], []
+    for name, a, b in matches:
+        fa, fb, ca, cb = partition_correspondences(
+            a,
+            b,
+            source.mask.shape,
+            target.mask.shape,
+            policy=config.partition_policy,
+        )
+        fits.append((name, fa, fb))
+        checks.append((ca, cb))
     return (
         fits,
         np.concatenate([x[0] for x in checks]),
@@ -170,13 +281,16 @@ def select_verified_registration(
 ):
     """Rank a common candidate pool, preserving a supported predecessor on ambiguity.
 
-    Feature fitting and verification occupy disjoint cells in both images. Seeds
+    Feature fitting and verification occupy disjoint source cells; the legacy
+    policy also intersects target parity. Retention names one input seed uniquely,
+    or ``predecessor=None`` disables it. Seeds
     from earlier pipelines are explicitly not claimed to be independent of checks.
     No outcome-dependent per-specimen thresholds or evaluation landmarks enter here.
     """
     import cv2
 
     cfg = config or VerifiedSelectionConfig()
+    binding = predecessor_binding(seeds, predecessor)
     cv2.setRNGSeed(cfg.seed)
     guarded = GuardedRegistrationConfig(seed=cfg.seed, mask_mode="all_components")
     sf, tf = component_frame(source, source_mask), component_frame(target, target_mask)
@@ -187,6 +301,7 @@ def select_verified_registration(
     fits, va, vb = _matches(sf, tf, sc, tc, cfg)
     candidates = []
     for seed in seeds:
+        transform_fingerprint(seed.matrix)
         matrix = np.linalg.inv(tf.working_to_input) @ seed.matrix @ sf.working_to_input
         candidates.append(RegistrationCandidate(matrix, seed.name))
     if cfg.generate_features:
@@ -252,6 +367,8 @@ def select_verified_registration(
                 c.accepted, c.rejection_reason = True, None
     accepted = [c for c in candidates if c.accepted]
     diagnostics = {
+        **binding,
+        "partition_policy": cfg.partition_policy,
         "modality": {"source": source_modality, "target": target_modality},
         "evaluation_landmarks_used": False,
         "independent_anatomical_accuracy": False,
@@ -284,6 +401,19 @@ def select_verified_registration(
         "image features; imported seeds may have used them"
     )
     native = tf.working_to_input @ best.matrix @ np.linalg.inv(sf.working_to_input)
+    diagnostics["predecessor_accepted"] = previous is not None
+    diagnostics["selected_candidate_id"] = best.stage
+    diagnostics["retained_predecessor_id"] = None
+    diagnostics["retained_predecessor_transform_sha256"] = None
+    if best is previous:
+        # Retention preserves the native matrix exactly, including its binding;
+        # a working-frame round trip can otherwise alter its floating-point bytes.
+        native = np.array(next(s.matrix for s in seeds if s.name == predecessor))
+        diagnostics["retained_predecessor_id"] = predecessor
+        diagnostics["retained_predecessor_transform_sha256"] = binding[
+            "predecessor_transform_sha256"
+        ]
+    diagnostics["selected_transform_sha256"] = transform_fingerprint(native)
     return GuardedRegistrationResult(
         native, best.stage, candidates, sf, tf, guarded
     ), diagnostics
